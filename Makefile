@@ -111,5 +111,13 @@ docker-build: ## Собрать образ бота
 	docker build -t eng-remember:local .
 
 .PHONY: docker-up
-docker-up: ## Запустить бота и БД в контейнерах
+docker-up: ## Запустить бота, миграции и БД в контейнерах
 	docker compose --profile full up -d --build
+
+.PHONY: docker-down
+docker-down: ## Остановить бота (данные сохраняются)
+	docker compose --profile full down
+
+.PHONY: docker-logs
+docker-logs: ## Смотреть логи бота
+	docker compose logs -f bot

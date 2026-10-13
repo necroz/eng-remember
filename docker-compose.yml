@@ -1,5 +1,14 @@
 name: eng-remember
 
+# Inside the network the database is reachable by service name, unlike the
+# localhost URL in .env, which is for processes running on the host.
+x-database-url: &database-url postgresql+asyncpg://${POSTGRES_USER:-eng}:${POSTGRES_PASSWORD:-eng}@db:5432/${POSTGRES_DB:-eng_remember}
+
+# The bot image, built once and shared by the two services that run it.
+x-bot-image: &bot-image
+  image: eng-remember:local
+  build: .
+
 services:
   db:
     image: postgres:17-alpine
@@ -21,16 +30,38 @@ services:
       timeout: 3s
       retries: 12
 
-  bot:
-    build: .
+  migrate:
+    <<: *bot-image
+    # A missing .env is not a compose error: the bot then fails with its own
+    # message explaining what to put there.
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
-      # Inside the network the database is reachable by service name.
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-eng}:${POSTGRES_PASSWORD:-eng}@db:5432/${POSTGRES_DB:-eng_remember}
+      DATABASE_URL: *database-url
     depends_on:
       db:
         condition: service_healthy
+    # One-shot: compose runs this before the bot and waits for it to succeed, so
+    # a first deploy on an empty volume creates the schema. The container image
+    # itself never migrates (see the Dockerfile) — starting a bot must not
+    # silently change the schema.
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    profiles: ["full"]
+
+  bot:
+    <<: *bot-image
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: *database-url
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
     profiles: ["full"]
 

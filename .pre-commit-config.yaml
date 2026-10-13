@@ -31,3 +31,14 @@ repos:
         language: system
         types: [python]
         pass_filenames: false
+
+      # `.env` is gitignored, which covers the file itself but not a token
+      # pasted into a test fixture or a doc example. Telegram bot tokens and
+      # OpenAI-style keys have unmistakable shapes, so they are cheap to catch.
+      - id: no-secrets
+        name: no secrets
+        entry: >
+          bash -c 'if grep -nHE "[0-9]{8,12}:[A-Za-z0-9_-]{35}|sk-[A-Za-z0-9._-]{32,}" "$@";
+          then echo "Похоже на токен или ключ. Уберите его из индекса и перевыпустите." >&2; exit 1; fi' --
+        language: system
+        types: [text]

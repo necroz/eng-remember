@@ -12,6 +12,10 @@ venv/
 *.db
 *.sqlite3
 
+# Per-server compose tweaks: ports, extra hosts, resource limits. Merged on top
+# of docker-compose.yml automatically, so pulling does not conflict with them.
+docker-compose.override.yml
+
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/

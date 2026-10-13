@@ -56,6 +56,21 @@ Ollama). Расход на модель ограничен на пользова
 масштабируется на несколько реплик, включите `REMINDERS__ENABLED=false` и
 запускайте `eng-remember-remind` из cron: иначе каждая реплика отправит своё.
 
+## Деплой
+
+```bash
+cp .env.example .env          # BOT_TOKEN и, при необходимости, LLM__*
+docker compose --profile full up -d --build
+docker compose logs -f bot
+```
+
+Схему создаёт одноразовый сервис `migrate`, который проходит до старта бота,
+поэтому на пустом сервере всё поднимается одной командой, а обновление сводится
+к `git pull` и повторному `up -d --build`.
+
+Креды к LLM, бэкап, диагностика и деплой в несколько реплик —
+[docs/deploy.md](docs/deploy.md).
+
 ## Команды
 
 ```
@@ -67,7 +82,8 @@ make db-up / db-down / db-reset
 make migrate           применить миграции
 make revision m="..."  создать миграцию
 make psql              открыть psql
-make docker-up         бот и БД в контейнерах
+make docker-up         бот, миграции и БД в контейнерах
+make docker-down / docker-logs
 ```
 
 ## Как это устроено
@@ -107,4 +123,5 @@ Telegram, так что проверяют маршрутизацию, филь�
 их имитацию. Регрессии на экранирование и prompt injection собраны в
 `tests/test_security.py`.
 
-Инциденты, логи и лимиты — в [docs/security.md](docs/security.md).
+Инциденты, логи и лимиты — в [docs/security.md](docs/security.md). Установка на
+сервер, креды к модели, бэкап — в [docs/deploy.md](docs/deploy.md).
