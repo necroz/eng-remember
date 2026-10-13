@@ -76,6 +76,22 @@ def test_unknown_intent_and_missing_cards_are_tolerated() -> None:
     assert response.cards == []
 
 
+def test_more_words_is_read_and_off_by_default() -> None:
+    """The flag that keeps "add this word and more like it" from losing half."""
+    assert ParseResponse().more_words is False
+    response = ParseResponse.model_validate({"cards": [], "more_words": True})
+    assert response.more_words is True
+
+
+def test_a_models_own_name_for_the_mixed_request_means_both_halves() -> None:
+    """ "add_and_expand" is not our vocabulary, but dropping the search half
+    because of the label is exactly the failure the flag prevents."""
+    response = ParseResponse.model_validate({"intent": "add_and_expand", "cards": []})
+
+    assert response.intent is Intent.ADD_CARDS
+    assert response.more_words is True
+
+
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [

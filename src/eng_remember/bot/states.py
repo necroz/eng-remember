@@ -11,6 +11,7 @@ __all__ = [
     "ENGINE_KEY",
     "OPTIONS_KEY",
     "ORIGINAL_KEY",
+    "OWN_KEY",
     "QUESTION_KEY",
     "ROUND_KEY",
     "SHOWN_AT_KEY",
@@ -21,7 +22,13 @@ __all__ = [
 
 # Keys inside FSM storage. Named constants instead of scattered string literals
 # so a typo cannot silently produce an empty batch.
+#
+# A pending batch is split in two: the words the learner named themselves
+# (OWN_KEY) and the ones the search produced (DRAFT_KEY). "Ещё слова" replaces
+# only the found half, so the learner's own word cannot be lost by asking for
+# another round.
 DRAFT_KEY = "drafts"
+OWN_KEY = "own_drafts"
 ENGINE_KEY = "engine"
 TOPIC_KEY = "topic"
 COUNT_KEY = "count"

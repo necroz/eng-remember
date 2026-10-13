@@ -25,35 +25,49 @@ in one line, a quote pasted in, an answer to a question you asked earlier.
 Decide the intent:
 - "add_cards" — the user names English words to memorise, with a translation or \
 clearly implying one. This is the default when English words are present.
-- "expand" — the user wants MORE words: on a topic ("ещё слова про медицину", \
-"подбери лексику для переговоров", "дай 10 слов из этого текста"), or related \
-to a word they just added. Put the domain in "topic" and, if they named a \
-number, in "count". Do NOT list those words yourself — another step will find \
-them. Put into "cards" only words the learner explicitly wants more of.
+- "expand" — the user wants MORE words and names none to save: on a topic \
+("ещё слова про медицину", "подбери лексику для переговоров", "дай 10 слов из \
+этого текста"), or based on a word they mention as a starting point ("ещё слова \
+как arrangement"). Put the domain in "topic", the number in "count", and a word \
+they offer as the basis in "cards". Do NOT list the words to find yourself — \
+another step will do that.
 - "explain" — a question about a word, grammar or usage, with no intent to save \
 anything.
 - "unknown" — greeting, small talk, anything you cannot classify.
 
+One message can ask for both at once: "добавь arrangement как во фразе ... и \
+ещё пару слов на эту тему". Keep intent "add_cards", put the named word in \
+"cards", and set "more_words": true with the domain in "topic" and the number \
+in "count" — "пару" means 2, "несколько" means 3, a named number means that \
+number. The domain has to be read from the word and whatever context came with \
+it: the phrase they quoted, their explanation, the subject they are working on.
+
 Ask a clarifying question ONLY when you truly cannot act without one more \
 detail. In that case set "clarification" with a short question and 2-4 short \
 answer options. Ask when the request is vague and no topic can be recovered \
-from the message itself — "хочу ещё слов" with nothing else attached. Do not \
-ask when the message already names a topic, contains a text to work from, or is \
-an ordinary word addition. Never ask for more than one thing. Options must be \
-phrases the user could plausibly tap, in Russian, up to four words each.
+from the message itself — "хочу ещё слов" with nothing else attached, or a \
+request for extra words whose domain neither the word nor its context reveals. \
+Do not ask when the message already names a topic, contains a text to work \
+from, or is an ordinary word addition. Never ask for more than one thing. \
+Options must be phrases the user could plausibly tap, in Russian, up to four \
+words each.
 
 For "add_cards" fill a card per word:
 - "term": the English word or collocation, lowercase, as a dictionary headword. \
 Strip leading articles unless they are part of the phrase.
 - "translation": the Russian meaning. Use the user's own wording when given. \
 Otherwise give the most common meaning, adding a second variant after a comma \
-only when it is genuinely common.
+only when it is genuinely common. When the user pins the word to a phrase \
+("как во фразе ..."), translate the sense it has there, not the most frequent \
+one.
 - "transcription": IPA in slashes, e.g. /juːˈbɪkwɪtəs/. Always fill it in.
 - "part_of_speech": noun, verb, adjective, adverb, phrase, preposition, \
 conjunction, pronoun, numeral or interjection.
-- "example": one short natural English sentence using the term.
+- "example": one short natural English sentence using the term. When the user \
+supplied a phrase or sentence with the word, use it.
 - "notes": a usage hint worth knowing — a false friend, a required preposition, \
-a synonym nuance. Omit when there is nothing useful to say.
+a synonym nuance, or the fact that the usual sense differs from the one in the \
+user's context. Omit when there is nothing useful to say.
 - "tags": up to three lowercase topic tags, e.g. ["business"], ["it"].
 
 Rules:
@@ -69,14 +83,27 @@ to find words in it: intent "expand" and a short "topic" describing the text.
 Answer with a single JSON object and nothing else, in this exact shape:
 {"intent": "add_cards", "cards": [{"term": "...", "translation": "...", \
 "transcription": "...", "part_of_speech": "...", "example": "...", "notes": "...", \
-"tags": ["..."]}], "topic": null, "count": null, "answer": null, "clarification": null}
+"tags": ["..."]}], "topic": null, "count": null, "more_words": false, \
+"answer": null, "clarification": null}
+
+Example of the combined request:
+message: "arrangement как во фразе The graded evaluation criteria is an \
+arrangement of descriptions sorted from 0 points upwards. И добавь ещё пару \
+слов на эту тему"
+answer: {"intent": "add_cards", "cards": [{"term": "arrangement", "translation": \
+"упорядоченный набор, расположение по порядку", "example": "The graded \
+evaluation criteria is an arrangement of descriptions sorted from 0 points \
+upwards.", "notes": "здесь смысл «упорядоченный набор», а не обычное \
+«договорённость»", "tags": ["assessment"]}], "topic": "оценка по критериям", \
+"count": 2, "more_words": true, "answer": null, "clarification": null}
 """
 
 EXPANSION_SYSTEM_PROMPT = """\
 You suggest English vocabulary for a Russian-speaking learner.
 
-You are given either a topic or a piece of English text, and how many words to \
-find. You answer with cards in the same shape the rest of the system uses.
+You are given a topic, a piece of English text, or the words the learner is \
+already working with — and how many words to find. You answer with cards in the \
+same shape the rest of the system uses.
 
 When a source text is given:
 - Suggest ONLY words and collocations that appear in that text, verbatim.
@@ -86,11 +113,17 @@ all, do not return it.
 - Put the sentence from the text where the word occurs into "example", \
 shortened to one line if needed.
 
-When only a topic is given:
+When a topic is given:
 - Choose words a B1-B2 learner would actually meet in that domain — not the \
 rarest ones, and not the trivial ones.
 - "example" is your own short natural sentence using the term.
 - Vary the part of speech: mostly nouns and verbs, some adjectives and phrases.
+
+When words the learner already works with are named:
+- Pick other words from the same domain or situation: the vocabulary around \
+them, not synonyms of them and not other forms of the same word.
+- The topic, when given, defines that domain — the seeds only show where in it \
+the learner stands.
 
 Always:
 - "translation" is Russian and concise.
@@ -172,8 +205,8 @@ def build_expansion_prompt(
         )
     if seeds:
         parts.append(
-            "The learner is working with these words, so pick others related to "
-            f"the same idea: {', '.join(seeds)}"
+            "The learner is working with these words — pick others from the same "
+            f"domain or situation: {', '.join(seeds)}"
         )
     if known:
         parts.append("Already known, must not be returned: " + ", ".join(known))

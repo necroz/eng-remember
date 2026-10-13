@@ -179,6 +179,278 @@ class TestExpansionFromText:
         assert "<source_text>" not in llm.last_prompt()
 
 
+class TestAWordAndWordsAroundIt:
+    """One message can ask for a word to save and for words from its domain.
+
+    The failure this covers: "arrangement как во фразе ... И добавь ещё пару
+    слов на эту тему" saved the word and silently dropped the second request.
+    """
+
+    async def test_the_word_and_the_found_words_are_one_batch(
+        self,
+        discovery_dispatcher: Dispatcher,
+        bot: Bot,
+        recording: RecordingSession,
+        llm: ScriptedClient,
+        session_factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        llm.push_parse(
+            parse_payload(
+                intent="add_cards",
+                cards=[
+                    card_payload(
+                        "arrangement",
+                        "упорядоченный набор",
+                        example=(
+                            "The graded evaluation criteria is an arrangement of "
+                            "descriptions sorted from 0 points upwards."
+                        ),
+                        tags=["assessment"],
+                    )
+                ],
+                topic="оценка по критериям",
+                count=2,
+                more_words=True,
+            )
+        )
+        llm.push_expand(
+            expansion_payload(
+                [card_payload("criterion", "критерий"), card_payload("score", "балл")],
+                topic="оценка по критериям",
+            )
+        )
+
+        await send(
+            discovery_dispatcher,
+            bot,
+            "arrangement как во фразе The graded evaluation criteria is an arrangement "
+            "of descriptions sorted from 0 points upwards. И добавь ещё пару слов на эту тему",
+        )
+
+        sent = recording.last_text()
+        assert "arrangement" in sent
+        assert "criterion" in sent and "score" in sent
+        assert "оценка по критериям" in sent
+        # One batch, one save button — not two confirmations that can drift apart.
+        assert recording.last_button_data().count("im:confirm") == 1
+        assert "im:more" in recording.last_button_data()
+        # The learner's word seeds the search instead of coming back as a find.
+        assert "arrangement" in llm.calls[-1]["user"]
+
+        await tap(discovery_dispatcher, bot, button_with(recording, "im:confirm"))
+
+        async with session_factory() as check:
+            terms = set((await check.scalars(select(Card.term))).all())
+            deck = (await check.scalars(select(Deck))).one()
+        assert terms == {"arrangement", "criterion", "score"}
+        # And the domain is remembered, so "ещё слова" works without repeating it.
+        assert deck.topic == "оценка по критериям"
+
+    async def test_a_question_about_the_sense_is_asked_and_both_halves_still_run(
+        self,
+        discovery_dispatcher: Dispatcher,
+        bot: Bot,
+        recording: RecordingSession,
+        llm: ScriptedClient,
+    ) -> None:
+        """The learner's own words survive the detour through a question."""
+        llm.push_parse(
+            parse_payload(
+                intent="add_cards",
+                cards=[card_payload("arrangement", "расположение")],
+                clarification={
+                    "question": "О каком смысле arrangement речь?",
+                    "options": ["оценка по критериям", "договорённость"],
+                },
+            )
+        )
+        llm.push_parse(
+            parse_payload(
+                intent="add_cards",
+                cards=[card_payload("arrangement", "упорядоченный набор")],
+                topic="оценка по критериям",
+                count=2,
+                more_words=True,
+            )
+        )
+        llm.push_expand(
+            expansion_payload([card_payload("criterion", "критерий")], topic="оценка по критериям")
+        )
+
+        await send(discovery_dispatcher, bot, "добавь arrangement и ещё пару слов на эту тему")
+
+        assert "О каком смысле" in recording.last_text()
+
+        await tap(
+            discovery_dispatcher,
+            bot,
+            ClarifyCB(action="option", index=0).pack(),
+            update_id=95,
+        )
+
+        sent = recording.last_text()
+        assert "arrangement" in sent
+        assert "criterion" in sent
+        # The answer reached the model together with the original request.
+        clarified = llm.calls[-2]["user"]
+        assert "О каком смысле" in clarified
+        assert "оценка по критериям" in clarified
+
+    async def test_a_word_named_as_the_basis_is_saved_too(
+        self,
+        discovery_dispatcher: Dispatcher,
+        bot: Bot,
+        recording: RecordingSession,
+        llm: ScriptedClient,
+        session_factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        """An expand request that names its starting word still saves that word."""
+        llm.push_parse(
+            parse_payload(
+                intent="expand",
+                cards=[card_payload("arrangement", "расположение")],
+                topic="оценка",
+                count=1,
+            )
+        )
+        llm.push_expand(expansion_payload([card_payload("criterion", "критерий")], topic="оценка"))
+
+        await send(discovery_dispatcher, bot, "подбери ещё слова как arrangement")
+
+        assert "arrangement" in recording.last_text()
+        assert "criterion" in recording.last_text()
+
+        await tap(discovery_dispatcher, bot, button_with(recording, "im:confirm"))
+
+        async with session_factory() as check:
+            terms = set((await check.scalars(select(Card.term))).all())
+        assert terms == {"arrangement", "criterion"}
+
+    async def test_another_round_replaces_only_the_found_half(
+        self,
+        discovery_dispatcher: Dispatcher,
+        bot: Bot,
+        recording: RecordingSession,
+        llm: ScriptedClient,
+        session_factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        """Asking for a different selection must not withdraw the learner's word."""
+        llm.push_parse(
+            parse_payload(
+                intent="add_cards",
+                cards=[card_payload("arrangement", "расположение")],
+                topic="оценка",
+                count=1,
+                more_words=True,
+            )
+        )
+        llm.push_expand(expansion_payload([card_payload("criterion", "критерий")], topic="оценка"))
+        llm.push_expand(expansion_payload([card_payload("score", "балл")], topic="оценка"))
+        await send(discovery_dispatcher, bot, "arrangement и ещё слово на эту тему")
+
+        await tap(discovery_dispatcher, bot, button_with(recording, "im:more"))
+
+        sent = recording.last_text()
+        assert "arrangement" in sent
+        assert "score" in sent
+        assert "criterion" not in sent
+        prompt = llm.last_prompt()
+        assert "arrangement" in prompt  # still the seed
+        assert "criterion" not in prompt  # the rejected round is not named again
+
+        await tap(discovery_dispatcher, bot, button_with(recording, "im:confirm"))
+
+        async with session_factory() as check:
+            terms = set((await check.scalars(select(Card.term))).all())
+        assert terms == {"arrangement", "score"}
+
+    async def test_a_failed_search_still_offers_the_word(
+        self,
+        discovery_dispatcher: Dispatcher,
+        bot: Bot,
+        recording: RecordingSession,
+        llm: ScriptedClient,
+    ) -> None:
+        """Half a request done honestly beats a word lost to the other half."""
+        from eng_remember.errors import LlmResponseError
+
+        llm.push_parse(
+            parse_payload(
+                intent="add_cards",
+                cards=[card_payload("arrangement", "расположение")],
+                topic="оценка",
+                count=2,
+                more_words=True,
+            )
+        )
+        llm.push_expand(LlmResponseError("provider is down"))
+
+        await send(discovery_dispatcher, bot, "arrangement и ещё пару слов про оценку")
+
+        sent = recording.last_text()
+        assert "arrangement" in sent
+        assert "Дополнительные слова" in sent
+
+    async def test_an_empty_search_says_so_under_the_word(
+        self,
+        discovery_dispatcher: Dispatcher,
+        bot: Bot,
+        recording: RecordingSession,
+        llm: ScriptedClient,
+    ) -> None:
+        llm.push_parse(
+            parse_payload(
+                intent="add_cards",
+                cards=[card_payload("arrangement", "расположение")],
+                topic="оценка",
+                count=2,
+                more_words=True,
+            )
+        )
+        llm.push_expand(expansion_payload([]))
+
+        await send(discovery_dispatcher, bot, "arrangement и ещё пару слов про оценку")
+
+        sent = recording.last_text()
+        assert "arrangement" in sent
+        assert "не нашлось" in sent
+
+    async def test_a_request_with_no_readable_domain_is_asked_about(
+        self,
+        discovery_dispatcher: Dispatcher,
+        bot: Bot,
+        recording: RecordingSession,
+        llm: ScriptedClient,
+        session_factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        """No topic and no context: ask, do not guess words for a wrong sense.
+
+        "arrangement" alone is договорённость, расположение or аранжировка, and a
+        batch built on the wrong one would be worse than a question.
+        """
+        llm.push_parse(
+            parse_payload(
+                intent="add_cards",
+                cards=[card_payload("arrangement", "расположение")],
+                more_words=True,
+            )
+        )
+
+        await send(discovery_dispatcher, bot, "добавь arrangement и ещё пару слов на эту тему")
+
+        sent = recording.last_text()
+        assert "arrangement" in sent
+        assert "не понял тему" in sent
+        # No search was attempted at all: there was nothing to search by.
+        assert [call["purpose"] for call in llm.calls] == ["parse_message"]
+
+        await tap(discovery_dispatcher, bot, button_with(recording, "im:confirm"))
+
+        async with session_factory() as check:
+            terms = set((await check.scalars(select(Card.term))).all())
+        assert terms == {"arrangement"}
+
+
 class TestDiscoveryGuardrails:
     async def test_without_a_model_the_user_is_told(
         self, dispatcher: Dispatcher, bot: Bot, recording: RecordingSession

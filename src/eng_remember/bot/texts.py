@@ -46,6 +46,10 @@ __all__ = [
     "import_preview",
     "import_result",
     "looking_for_more",
+    "more_found_nothing",
+    "more_needs_topic",
+    "more_quota_exceeded",
+    "more_unavailable",
     "no_cards_yet",
     "nothing_due",
     "nothing_to_save",
@@ -196,15 +200,73 @@ def rating_buttons_hint() -> str:
     return "Выберите вариант — покажу, через сколько слово вернётся."
 
 
-def import_preview(drafts: list[CardDraft], engine: str) -> str:
+def import_preview(
+    drafts: list[CardDraft],
+    engine: str,
+    *,
+    found: DiscoveryResult | None = None,
+    note: str | None = None,
+) -> str:
+    """The batch waiting for confirmation.
+
+    ``found`` adds the words the search produced for the same message — the
+    learner asked for both at once, so they are offered as one batch with one
+    save button. ``note`` carries what could not be done, so a partial result is
+    never read as the whole answer.
+    """
     lines = [f"Разобрал <b>{len(drafts)}</b> {_plural(len(drafts), 'слово', 'слова', 'слов')}:", ""]
     lines.extend(cards_listing(drafts))
+
+    if found is not None and found.drafts:
+        lines.append("")
+        lines.append(_more_words_head(found))
+        lines.append("")
+        lines.extend(cards_listing(found.drafts))
+        footnotes = _discovery_footnotes(found)
+        if footnotes:
+            lines.append("")
+            lines.extend(footnotes)
+
+    if note:
+        lines.append("")
+        lines.append(note)
+
     lines.append("")
     if engine != "rules":
         lines.append(f"<i>Разобрано моделью {escape(engine)}</i>")
     else:
         lines.append("<i>Разобрано без модели. Проверьте переводы.</i>")
     return "\n".join(lines)
+
+
+def _more_words_head(found: DiscoveryResult) -> str:
+    count = found.found
+    words = _plural(count, "слово", "слова", "слов")
+    if found.topic:
+        return f"🔍 Ещё <b>{count}</b> {words} по теме «{escape(found.topic)}»:"
+    return f"🔍 Ещё <b>{count}</b> {words}:"
+
+
+def _discovery_footnotes(result: DiscoveryResult) -> list[str]:
+    """What was dropped and where the count fell short, in the wording used
+    everywhere a suggestion batch is shown."""
+    dropped: list[str] = []
+    if result.dropped_out_of_text:
+        dropped.append(f"отброшено {result.dropped_out_of_text} — этих слов нет в тексте")
+    if result.dropped_known:
+        dropped.append(f"{result.dropped_known} уже есть в коллекции")
+    if result.dropped_repeated:
+        dropped.append(f"{result.dropped_repeated} повторились")
+
+    lines: list[str] = []
+    if dropped:
+        lines.append(f"<i>Отсеяно: {'; '.join(dropped)}.</i>")
+    if result.short_by:
+        lines.append(
+            f"<i>Просили {result.requested}, нашлось {result.found} — "
+            f"честно больше не набралось.</i>"
+        )
+    return lines
 
 
 def cards_listing(drafts: Sequence[CardDraft]) -> list[str]:
@@ -286,21 +348,10 @@ def discovery_preview(
     lines = [head, ""]
     lines.extend(cards_listing(result.drafts))
 
-    footnotes: list[str] = []
-    if result.dropped_out_of_text:
-        footnotes.append(f"отброшено {result.dropped_out_of_text} — этих слов нет в тексте")
-    if result.dropped_known:
-        footnotes.append(f"{result.dropped_known} уже есть в коллекции")
-    if result.dropped_repeated:
-        footnotes.append(f"{result.dropped_repeated} повторились")
+    footnotes = _discovery_footnotes(result)
     if footnotes:
         lines.append("")
-        lines.append(f"<i>Отсеяно: {'; '.join(footnotes)}.</i>")
-    if result.short_by:
-        lines.append(
-            f"<i>Просили {result.requested}, нашлось {result.found} — "
-            f"честно больше не набралось.</i>"
-        )
+        lines.extend(footnotes)
     lines.append("")
     lines.append(f"<i>Пойдёт в колоду «{escape(deck_name)}».</i>")
     return "\n".join(lines)
@@ -337,6 +388,32 @@ def discovery_unavailable() -> str:
         "Пока я умею только разбирать пары «слово — перевод». "
         "Ключ добавляется в <code>LLM__API_KEY</code>."
     )
+
+
+def more_needs_topic() -> str:
+    """The learner asked for extra words, but their domain could not be read.
+
+    Shown under the words that did get through: the addition is not lost, and
+    the missing half is asked for instead of guessed. A word on its own does not
+    name a domain — "arrangement" is договорённость, расположение or аранжировка,
+    and the words around the wrong sense would be useless.
+    """
+    return (
+        "<i>Дополнительные слова не подобрал: не понял тему. Назовите её — "
+        "например, «ещё слова про оценку» — и я подберу.</i>"
+    )
+
+
+def more_unavailable() -> str:
+    return "<i>Дополнительные слова подобрать не удалось: нужна подключённая модель.</i>"
+
+
+def more_quota_exceeded() -> str:
+    return "<i>Дополнительные слова не подобрал: исчерпан лимит обращений к модели.</i>"
+
+
+def more_found_nothing() -> str:
+    return "<i>Дополнительных слов по теме не нашлось — эти можно сохранить.</i>"
 
 
 def quota_exceeded() -> str:

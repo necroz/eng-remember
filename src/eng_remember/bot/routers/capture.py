@@ -1,10 +1,13 @@
 """The main input path: free text in, cards out.
 
-Three ways a request can go:
+Four ways a request can go:
 
 * the user names words, and the parser turns them into cards;
 * the user asks for *more* words — on a topic, or inside a text they pasted —
   and the explorer finds them;
+* the user does both in one message — names a word to save and asks for words
+  from the same domain, often attaching a phrase to pin the sense — and the
+  result is offered as a single confirmable batch;
 * the request is too vague to act on, and the bot asks one question first.
 
 Everything a user types that is not a command or a menu button lands here. The
@@ -38,6 +41,7 @@ from eng_remember.bot.states import (
     ENGINE_KEY,
     OPTIONS_KEY,
     ORIGINAL_KEY,
+    OWN_KEY,
     QUESTION_KEY,
     ROUND_KEY,
     TOPIC_KEY,
@@ -49,6 +53,7 @@ from eng_remember.models.deck import Deck
 from eng_remember.models.user import User
 from eng_remember.repositories.cards import CardDraft
 from eng_remember.services.container import Services
+from eng_remember.services.discovery import DiscoveryResult
 from eng_remember.services.llm.schema import Intent, ParseResponse
 
 log = structlog.get_logger(__name__)
@@ -119,7 +124,13 @@ def build_router() -> Router:
             )
             return
 
-        if response.intent is Intent.EXPAND:
+        own = response.to_drafts()
+
+        # One message can carry two requests: a word to save and a call for
+        # words from the same domain ("добавь arrangement ... и ещё пару слов
+        # на эту тему"). Running only the first was silently dropping half of
+        # what the learner asked for.
+        if response.intent is Intent.EXPAND or response.more_words:
             await run_discovery(
                 bot=bot,
                 chat_id=chat_id,
@@ -129,14 +140,15 @@ def build_router() -> Router:
                 response=response,
                 source_text=text,
                 settings=settings,
+                own=own,
+                engine=outcome.engine,
             )
             return
 
-        drafts = response.to_drafts()
-        if not drafts:
+        if not own:
             await bot.send_message(chat_id, texts.cannot_parse(_llm_available(services)))
             return
-        await _present(bot, chat_id, state, drafts, outcome.engine)
+        await _present(bot=bot, chat_id=chat_id, state=state, own=own, engine=outcome.engine)
 
     async def run_discovery(
         *,
@@ -149,16 +161,60 @@ def build_router() -> Router:
         source_text: str,
         settings: DiscoverySettings,
         exclude: tuple[str, ...] = (),
+        own: Sequence[CardDraft] = (),
+        engine: str = "",
     ) -> None:
-        """Look for words the user does not have yet, then offer them."""
+        """Look for words the user does not have yet, then offer them.
+
+        ``own`` are the words the learner named in this message. When there are
+        any, they join the batch — the request was "add this word and find more
+        like it" — and a search that cannot run degrades to a note under them
+        instead of replacing the whole answer with an error.
+
+        Whatever ``own`` holds also decides where the found words come from: a
+        topic has to be read out of the request or away from its context, so a
+        message that names no domain gets a question rather than a guess.
+        """
+        own = list(own)
+        seeds = [draft.term for draft in own]
+
         if not services.discovery_service.available:
-            await bot.send_message(chat_id, texts.discovery_unavailable())
+            if own:
+                await _present(
+                    bot=bot,
+                    chat_id=chat_id,
+                    state=state,
+                    own=own,
+                    engine=engine,
+                    note=texts.more_unavailable(),
+                )
+            else:
+                await bot.send_message(chat_id, texts.discovery_unavailable())
             return
 
         deck = await services.card_service.default_deck(user)
-        topic, context = _discovery_inputs(response, source_text, deck, settings)
+        # Words the learner typed make the message a request, not source
+        # material: a phrase that came with them is context for the topic, and
+        # mining it as text would throw away every word it does not contain.
+        topic, context = _discovery_inputs(
+            response,
+            source_text if not own else "",
+            deck,
+            settings,
+            allow_deck_topic=not own,
+        )
         if topic is None and context is None:
-            await bot.send_message(chat_id, texts.discovery_needs_context())
+            if own:
+                await _present(
+                    bot=bot,
+                    chat_id=chat_id,
+                    state=state,
+                    own=own,
+                    engine=engine,
+                    note=texts.more_needs_topic(),
+                )
+            else:
+                await bot.send_message(chat_id, texts.discovery_needs_context())
             return
 
         try:
@@ -166,7 +222,7 @@ def build_router() -> Router:
                 user,
                 topic=topic,
                 context_text=context,
-                seeds=[draft.term for draft in response.to_drafts()],
+                seeds=seeds,
                 count=response.count,
                 exclude=exclude,
                 user_id=user.id,
@@ -175,11 +231,31 @@ def build_router() -> Router:
             # A budget refusal is not a broken model; saying "connect a model"
             # here would send the learner looking for the wrong problem.
             log.info("discovery_quota_exceeded", user_id=user.id, error=str(exc))
-            await bot.send_message(chat_id, texts.quota_exceeded())
+            if own:
+                await _present(
+                    bot=bot,
+                    chat_id=chat_id,
+                    state=state,
+                    own=own,
+                    engine=engine,
+                    note=texts.more_quota_exceeded(),
+                )
+            else:
+                await bot.send_message(chat_id, texts.quota_exceeded())
             return
         except LlmError as exc:
             log.warning("discovery_failed", user_id=user.id, error=str(exc))
-            await bot.send_message(chat_id, texts.discovery_unavailable())
+            if own:
+                await _present(
+                    bot=bot,
+                    chat_id=chat_id,
+                    state=state,
+                    own=own,
+                    engine=engine,
+                    note=texts.more_unavailable(),
+                )
+            else:
+                await bot.send_message(chat_id, texts.discovery_unavailable())
             return
 
         # Persist the audit rows before anything else can fail: a discovery that
@@ -187,27 +263,32 @@ def build_router() -> Router:
         await services.commit()
 
         if not result.drafts:
-            await bot.send_message(chat_id, texts.discovery_empty(context_used=context is not None))
+            if own:
+                await _present(
+                    bot=bot,
+                    chat_id=chat_id,
+                    state=state,
+                    own=own,
+                    engine=engine,
+                    note=texts.more_found_nothing(),
+                )
+            else:
+                await bot.send_message(
+                    chat_id, texts.discovery_empty(context_used=context is not None)
+                )
             return
 
-        await state.set_state(AddWords.confirming)
-        await state.update_data(
-            {
-                DRAFT_KEY: [asdict(draft) for draft in result.drafts],
-                ENGINE_KEY: result.engine,
-                TOPIC_KEY: result.topic,
-                COUNT_KEY: result.requested,
-                CONTEXT_KEY: context,
-            }
-        )
-        await bot.send_message(
-            chat_id,
-            texts.discovery_preview(
-                result,
-                context_used=context is not None,
-                deck_name=deck.name,
-            ),
-            reply_markup=keyboards.import_confirm(len(result.drafts), offer_more=True),
+        await _present(
+            bot=bot,
+            chat_id=chat_id,
+            state=state,
+            own=own,
+            engine=engine or result.engine,
+            found=result,
+            topic=result.topic,
+            count=result.requested,
+            context=context,
+            deck_name=deck.name,
         )
 
     async def _ask_clarification(
@@ -243,20 +324,58 @@ def build_router() -> Router:
         )
 
     async def _present(
+        *,
         bot: Bot,
         chat_id: int,
         state: FSMContext,
-        drafts: list[CardDraft],
+        own: list[CardDraft],
         engine: str,
+        found: DiscoveryResult | None = None,
+        note: str | None = None,
+        topic: str | None = None,
+        count: int | None = None,
+        context: str | None = None,
+        deck_name: str | None = None,
     ) -> None:
+        """Show a batch for confirmation and remember it for the save button.
+
+        The state keeps the learner's own words and the found ones apart, so
+        "Ещё слова" can replace the second half without touching the first.
+        What the button advertises is exactly what confirm will save.
+        """
+        details = list(found.drafts) if found is not None else []
+        batch = [*own, *details]
+        if not batch:  # pragma: no cover - callers never offer an empty batch
+            await bot.send_message(chat_id, texts.nothing_to_save())
+            return
+
         await state.set_state(AddWords.confirming)
         await state.update_data(
-            {DRAFT_KEY: [asdict(draft) for draft in drafts], ENGINE_KEY: engine}
+            {
+                DRAFT_KEY: [asdict(draft) for draft in details],
+                OWN_KEY: [asdict(draft) for draft in own],
+                ENGINE_KEY: engine,
+                TOPIC_KEY: topic,
+                COUNT_KEY: count,
+                CONTEXT_KEY: context,
+            }
         )
+
+        if own:
+            preview = texts.import_preview(own, engine, found=found, note=note)
+        elif found is not None:
+            preview = texts.discovery_preview(
+                found,
+                context_used=context is not None,
+                deck_name=deck_name or "",
+            )
+        else:  # pragma: no cover - guarded by the batch check above
+            preview = texts.import_preview([], engine, note=note)
+
         await bot.send_message(
             chat_id,
-            texts.import_preview(drafts, engine),
-            reply_markup=keyboards.import_confirm(len(drafts)),
+            preview,
+            reply_markup=keyboards.import_confirm(len(batch), offer_more=found is not None),
         )
 
     @router.message(Command("add"))
@@ -268,7 +387,9 @@ def build_router() -> Router:
             "• <code>ubiquitous — вездесущий</code>\n"
             "• <code>resilient, thorough, ubiquitous</code>\n"
             "• <code>ещё 10 слов про медицину</code>\n"
-            "• пришлите абзац текста — найду в нём слова"
+            "• пришлите абзац текста — найду в нём слова\n\n"
+            "Можно совместить: <code>arrangement как во фразе … и ещё пару слов "
+            "на эту тему</code> — добавлю слово и подберу слова того же домена."
         )
 
     @router.message(F.text, ~F.text.startswith("/"))
@@ -384,7 +505,9 @@ def build_router() -> Router:
         data = await state.get_data()
         await state.clear()
 
-        raw = data.get(DRAFT_KEY) or []
+        # The learner's own words and what the search found are one batch again
+        # at save time: they were offered together, so they are saved together.
+        raw = [*(data.get(OWN_KEY) or []), *(data.get(DRAFT_KEY) or [])]
         if not raw:
             await edit_or_send(query, texts.nothing_to_save(), bot=bot)
             return
@@ -419,9 +542,15 @@ def build_router() -> Router:
         services: Services,
         state: FSMContext,
     ) -> None:
-        """Another round from the same topic, without saving this one."""
+        """Another round from the same topic, without saving this one.
+
+        Only the found half of the batch is replaced: a word the learner typed
+        themselves stays on the button, because they asked for it to be saved
+        and did not withdraw it by asking to look further.
+        """
         data = await state.get_data()
-        raw = data.get(DRAFT_KEY) or []
+        found_raw = data.get(DRAFT_KEY) or []
+        own_raw = data.get(OWN_KEY) or []
         topic = data.get(TOPIC_KEY)
         context = data.get(CONTEXT_KEY)
 
@@ -440,7 +569,11 @@ def build_router() -> Router:
             ),
             source_text=context if isinstance(context, str) else "",
             settings=services.settings.discovery,
-            exclude=tuple(str(item.get("term", "")) for item in raw if isinstance(item, dict)),
+            exclude=tuple(
+                str(item.get("term", "")) for item in found_raw if isinstance(item, dict)
+            ),
+            own=[CardDraft(**item) for item in own_raw if isinstance(item, dict)],
+            engine=str(data.get(ENGINE_KEY) or ""),
         )
 
     @router.callback_query(ImportCB.filter(F.action == "cancel"))
@@ -489,6 +622,8 @@ def _discovery_inputs(
     source_text: str,
     deck: Deck,
     settings: DiscoverySettings,
+    *,
+    allow_deck_topic: bool = True,
 ) -> tuple[str | None, str | None]:
     """Decide what to expand from: a topic, a pasted text, or the deck's own.
 
@@ -497,11 +632,15 @@ def _discovery_inputs(
     remembered topic is the last resort, and it is deliberately not mixed with a
     fresh text: an old subject would pull the suggestions away from what the user
     just pasted.
+
+    ``allow_deck_topic=False`` is for a message that names words of its own: the
+    learner gave the domain's starting point right there, and an unrelated
+    remembered subject is worse than admitting the domain was not understood.
     """
     text = source_text.strip()
     context = text if len(text) >= settings.context_text_min_length else None
     topic = (response.topic or "").strip() or None
 
-    if topic is None and context is None:
+    if topic is None and context is None and allow_deck_topic:
         topic = (deck.topic or "").strip() or None
     return topic, context

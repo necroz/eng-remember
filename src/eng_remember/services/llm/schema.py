@@ -20,7 +20,14 @@ import json
 import re
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 from eng_remember.repositories.cards import CardDraft
 
@@ -248,10 +255,35 @@ class ParseResponse(BaseModel):
         default=None,
         description="How many words were asked for, when the user named a number",
     )
+    more_words: bool = Field(
+        default=False,
+        description=(
+            "True when the message also asks for more words on the same topic, "
+            "alongside the cards to save"
+        ),
+    )
     clarification: Clarification | None = Field(
         default=None,
         description="Set when the request cannot be acted on without one more detail",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _split_add_and_expand(cls, data: object) -> object:
+        """Read a model's own name for the mixed request as both halves of it.
+
+        "add_and_expand" is not in the vocabulary this schema teaches, but it
+        says exactly what the learner asked for — treating it as a plain
+        addition would silently drop the second half, which is the failure this
+        flag exists to prevent.
+        """
+        if isinstance(data, dict):
+            raw = data.get("intent")
+            if isinstance(raw, str):
+                normalized = raw.strip().lower().replace("-", "_").replace(" ", "_")
+                if normalized == "add_and_expand":
+                    return {**data, "intent": "add_cards", "more_words": True}
+        return data
 
     @field_validator("count")
     @classmethod
