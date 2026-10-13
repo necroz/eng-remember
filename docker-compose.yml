@@ -9,9 +9,19 @@ x-bot-image: &bot-image
   image: eng-remember:local
   build: .
 
+# Container logs are the only place the bot's JSON output goes, and on a server
+# that runs for months they grow until the disk fills. Three files of 10m cap
+# each service, which is days of normal operation.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   db:
     image: postgres:17-alpine
+    logging: *logging
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-eng}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-eng}
@@ -32,6 +42,7 @@ services:
 
   migrate:
     <<: *bot-image
+    logging: *logging
     # A missing .env is not a compose error: the bot then fails with its own
     # message explaining what to put there.
     env_file:
@@ -52,6 +63,7 @@ services:
 
   bot:
     <<: *bot-image
+    logging: *logging
     env_file:
       - path: .env
         required: false
