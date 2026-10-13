@@ -49,9 +49,14 @@ class CardSchedule:
     lapses: int = 0
 
     @classmethod
-    def fresh(cls, now: datetime | None = None) -> CardSchedule:
-        """Schedule for a card that has never been reviewed."""
-        return cls(due_at=ensure_utc(now) or utcnow(), state=CardState.LEARNING)
+    def fresh(cls, now: datetime | None = None, *, due_at: datetime | None = None) -> CardSchedule:
+        """Schedule for a card that has never been reviewed.
+
+        ``due_at`` overrides the default "due right now": that is how a card is
+        kept out of the queue on the day its word was added.
+        """
+        first_due = ensure_utc(due_at) or ensure_utc(now) or utcnow()
+        return cls(due_at=first_due, state=CardState.LEARNING)
 
     def is_due(self, now: datetime | None = None) -> bool:
         moment = ensure_utc(now) or utcnow()
@@ -88,9 +93,15 @@ class SrsScheduler:
     def settings(self) -> SrsSettings:
         return self._settings
 
-    def fresh_schedule(self, now: datetime | None = None) -> CardSchedule:
-        """Schedule for a card that has just been created — due immediately."""
-        return CardSchedule.fresh(now)
+    def fresh_schedule(
+        self, now: datetime | None = None, *, due_at: datetime | None = None
+    ) -> CardSchedule:
+        """Schedule for a card that has just been created — due immediately.
+
+        Pass ``due_at`` to hold the first repetition until later; the caller that
+        knows the learner's timezone decides when "later" is.
+        """
+        return CardSchedule.fresh(now, due_at=due_at)
 
     def review(
         self,

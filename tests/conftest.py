@@ -8,6 +8,7 @@ middleware opens a session of its own while the test holds another one.
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator, AsyncIterator
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,7 @@ from aiogram.exceptions import TelegramForbiddenError
 from aiogram.methods import EditMessageText, SendMessage, TelegramMethod
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from pydantic import SecretStr
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 import eng_remember.models  # noqa: F401  — registers tables on Base.metadata
@@ -31,9 +33,27 @@ from eng_remember.models.user import User
 from eng_remember.repositories.cards import CardDraft
 from eng_remember.repositories.users import TelegramProfile, UserRepository
 from eng_remember.services.container import Services, build_services
+from eng_remember.utils.time import utcnow
 from tests.factories import TEST_USER_ID, ScriptedClient, response_for
 
 TEST_TOKEN = "42:TEST-TOKEN"
+
+
+async def make_due(session_factory: async_sessionmaker[AsyncSession], *terms: str) -> None:
+    """Bring saved cards to the moment their repetition is due.
+
+    A word is added with its first repetition scheduled for the learner's next
+    day, so today's queue is empty by design. A test that wants a card in front of
+    the user has to let that day arrive — moving the due date into the past is
+    that day arriving, without sleeping until midnight. With no terms every card
+    is moved, which is what a whole-collection assertion wants.
+    """
+    stmt = update(Card).values(due_at=utcnow() - timedelta(minutes=1))
+    if terms:
+        stmt = stmt.where(Card.term.in_(terms))
+    async with session_factory() as session:
+        await session.execute(stmt)
+        await session.commit()
 
 
 class RecordingSession(BaseSession):

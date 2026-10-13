@@ -213,11 +213,14 @@ class CardRepository:
         return int(await self._session.scalar(stmt) or 0)
 
     async def next_due_at(self, user_id: int, *, now: datetime) -> datetime | None:
-        """When the earliest scheduled card comes back — for the empty-queue screen."""
+        """When the earliest scheduled card comes back — for the empty-queue screen.
+
+        Unseen cards count too: a word added today is scheduled for tomorrow, and
+        that is exactly what a learner staring at an empty queue should be told.
+        """
         stmt = select(func.min(Card.due_at)).where(
             Card.user_id == user_id,
             Card.is_suspended.is_(False),
-            Card.reps > 0,
             Card.due_at > now,
         )
         return ensure_utc(await self._session.scalar(stmt))

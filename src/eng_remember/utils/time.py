@@ -18,6 +18,7 @@ __all__ = [
     "humanize_interval",
     "local_date",
     "local_day_start",
+    "next_local_day_start",
     "parse_clock",
     "resolve_timezone",
     "utcnow",
@@ -74,6 +75,24 @@ def local_day_start(timezone_name: str, *, now: datetime | None = None) -> datet
     if midnight.utcoffset() is None:  # pragma: no cover - defensive
         midnight = local.replace(hour=1, minute=0, second=0, microsecond=0)
     return ensure_utc(midnight.astimezone(UTC)) or midnight
+
+
+def next_local_day_start(timezone_name: str, *, now: datetime | None = None) -> datetime:
+    """UTC timestamp of the next midnight in the user's timezone.
+
+    A word added today must not come back for review today: its first repetition
+    is scheduled for the learner's next calendar day. That is also where the daily
+    budget of new cards resets, so a card can never arrive before there is budget
+    for it.
+
+    Counted in local calendar days rather than by adding 24 hours: the day a zone
+    leaves daylight saving lasts 25 hours, and "plus one day" would still land
+    inside it — in the past, which is the queue this is meant to stay out of.
+    """
+    moment = ensure_utc(now) or utcnow()
+    zone = resolve_timezone(timezone_name)
+    next_day = moment.astimezone(zone).date() + timedelta(days=1)
+    return datetime.combine(next_day, time(0, 0), tzinfo=zone).astimezone(UTC)
 
 
 def add_days(moment: datetime, days: float) -> datetime:

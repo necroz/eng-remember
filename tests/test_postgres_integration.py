@@ -102,13 +102,16 @@ async def test_timestamps_come_back_timezone_aware(
 async def test_the_review_flow_survives_a_real_scheduler(
     pg_services: Services, pg_session: AsyncSession, pg_user: User
 ) -> None:
-    await pg_services.card_service.add_drafts(
+    outcome = await pg_services.card_service.add_drafts(
         pg_user,
         [CardDraft(term=f"word{i}", translation=f"слово{i}") for i in range(3)],
     )
     await pg_session.commit()
 
-    queue = await pg_services.review_service.build_queue(pg_user)
+    # A word added today is scheduled for the learner's next day: that is when it
+    # is waiting, and a timestamptz round trip must survive that wait.
+    arrives = outcome.added[0].due_at
+    queue = await pg_services.review_service.build_queue(pg_user, now=arrives)
     assert len(queue.cards) == 3
 
     for card in queue.cards:
@@ -157,7 +160,7 @@ async def test_deleting_a_user_removes_its_data(
     card = await pg_services.card_service.add_draft(
         pg_user, CardDraft(term="run", translation="бежать")
     )
-    queue = await pg_services.review_service.build_queue(pg_user)
+    queue = await pg_services.review_service.build_queue(pg_user, now=card.due_at)
     await pg_services.review_service.answer(pg_user, queue.cards[0], ReviewRating.GOOD)
     await pg_session.commit()
     deck_id = card.deck_id
@@ -181,18 +184,21 @@ async def test_the_daily_new_card_budget_uses_real_timestamps(
     pg_services: Services, pg_session: AsyncSession, pg_user: User
 ) -> None:
     pg_user.new_cards_per_day = 1
-    await pg_services.card_service.add_drafts(
+    outcome = await pg_services.card_service.add_drafts(
         pg_user, [CardDraft(term=f"w{i}", translation=f"с{i}") for i in range(4)]
     )
     await pg_session.commit()
 
-    first = await pg_services.review_service.build_queue(pg_user)
+    # The budget is counted in the learner's days, so the whole scenario happens
+    # on the day the words arrive rather than on the day they were typed in.
+    arrives = outcome.added[0].due_at
+    first = await pg_services.review_service.build_queue(pg_user, now=arrives)
     assert len(first.cards) == 1
 
-    await pg_services.review_service.answer(pg_user, first.cards[0], ReviewRating.GOOD)
+    await pg_services.review_service.answer(pg_user, first.cards[0], ReviewRating.GOOD, now=arrives)
     await pg_session.commit()
 
-    second = await pg_services.review_service.build_queue(pg_user)
+    second = await pg_services.review_service.build_queue(pg_user, now=arrives)
     assert second.cards == []
 
 

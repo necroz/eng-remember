@@ -459,7 +459,7 @@ def import_result(outcome: ImportOutcome, deck_name: str) -> str:
         lines.append(f"Повторились в сообщении: {_terms(outcome.skipped_in_batch)}")
     if outcome.added:
         lines.append("")
-        lines.append(f"Слова уже ждут в «{BTN_REVIEW}».")
+        lines.append("Первое повторение — завтра: в день добавления слова не показываются.")
     return "\n".join(lines)
 
 

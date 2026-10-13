@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from eng_remember.domain.srs import SrsScheduler
+from eng_remember.domain.srs import CardSchedule, SrsScheduler
 from eng_remember.errors import DuplicateCardError
 from eng_remember.models.card import Card
 from eng_remember.models.deck import Deck
@@ -13,7 +13,7 @@ from eng_remember.models.user import User
 from eng_remember.repositories.cards import CardDraft, CardRepository
 from eng_remember.repositories.decks import DeckRepository
 from eng_remember.repositories.reviews import ReviewRepository
-from eng_remember.utils.time import ensure_utc, local_day_start, utcnow
+from eng_remember.utils.time import ensure_utc, local_day_start, next_local_day_start, utcnow
 
 __all__ = ["CardService", "ImportOutcome", "UserStats"]
 
@@ -97,7 +97,7 @@ class CardService:
             user_id=user.id,
             deck_id=target.id,
             draft=cleaned,
-            schedule=self._scheduler.fresh_schedule(now),
+            schedule=self._first_schedule(user, now=now),
             source=source,
         )
 
@@ -134,12 +134,25 @@ class CardService:
                 user_id=user.id,
                 deck_id=target.id,
                 draft=cleaned,
-                schedule=self._scheduler.fresh_schedule(now),
+                schedule=self._first_schedule(user, now=now),
                 source=source,
             )
             outcome.added.append(card)
 
         return outcome
+
+    def _first_schedule(self, user: User, *, now: datetime | None = None) -> CardSchedule:
+        """When a newly added word comes back for the first time.
+
+        Not today: a word is added to be remembered later, and showing it again in
+        the same session the learner typed it in is drilling, not spaced
+        repetition. The learner's next midnight is the boundary, which is also
+        where the daily budget of new cards resets.
+        """
+        moment = ensure_utc(now) or utcnow()
+        return self._scheduler.fresh_schedule(
+            moment, due_at=next_local_day_start(user.timezone, now=moment)
+        )
 
     async def list_cards(
         self,

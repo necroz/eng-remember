@@ -208,6 +208,18 @@ class TestCards:
         assert found is not None
         assert abs((found - soonest.due_at).total_seconds()) < 1
 
+    async def test_next_due_at_counts_a_word_that_waits_for_tomorrow(
+        self, cards: CardRepository, session: AsyncSession, user: User, deck: int
+    ) -> None:
+        """The queue is empty on the day a word is added — say when it fills up."""
+        tomorrow = await add(cards, session, user, deck, "tomorrow", due_in_days=1)
+        await add(cards, session, user, deck, "later", due_in_days=5, reps=3)
+
+        found = await cards.next_due_at(user.id, now=utcnow())
+
+        assert found is not None
+        assert abs((found - tomorrow.due_at).total_seconds()) < 1
+
     async def test_counts_split_due_rotation_and_new(
         self, cards: CardRepository, session: AsyncSession, user: User, deck: int
     ) -> None:

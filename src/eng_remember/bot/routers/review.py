@@ -166,7 +166,10 @@ def build_router() -> Router:
 
         next_card = await services.review_service.get_next(user)
         if next_card is None:
-            await edit_or_send(query, texts.nothing_due(None), bot=bot)
+            # A real timestamp, not None: the queue is empty, but the collection
+            # is not — the card just postponed comes back in ten minutes.
+            next_due = await services.cards.next_due_at(user.id, now=utcnow())
+            await edit_or_send(query, texts.nothing_due(next_due), bot=bot)
             return
         await _send_front(bot, chat_id, next_card, state)
 

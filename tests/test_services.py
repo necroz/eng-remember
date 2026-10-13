@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import func, select
@@ -35,14 +35,57 @@ class TestCardService:
         assert card.deck_id == deck.id
         assert card.term == "ubiquitous"
 
-    async def test_a_new_card_is_due_immediately(
+    async def test_a_word_added_today_is_not_in_todays_queue(
         self, services: Services, user: User, draft: CardDraft
     ) -> None:
-        card = await services.card_service.add_draft(user, draft)
+        """The day a word is added is not a day it is drilled on."""
+        moment = datetime(2026, 5, 14, 21, 30, tzinfo=UTC)
+
+        card = await services.card_service.add_draft(user, draft, now=moment)
 
         assert card.reps == 0
         assert card.state is CardState.LEARNING
-        assert card.schedule.is_due()
+        assert card.due_at == datetime(2026, 5, 15, 0, 0, tzinfo=UTC)
+        assert not card.schedule.is_due(moment)
+        queue = await services.review_service.build_queue(user, now=moment)
+        assert queue.cards == []
+
+    async def test_the_word_is_waiting_the_next_day(
+        self, services: Services, user: User, draft: CardDraft
+    ) -> None:
+        moment = datetime(2026, 5, 14, 21, 30, tzinfo=UTC)
+        card = await services.card_service.add_draft(user, draft, now=moment)
+
+        queue = await services.review_service.build_queue(user, now=card.due_at)
+
+        assert [queued.id for queued in queue.cards] == [card.id]
+
+    async def test_the_next_day_is_the_learners_midnight(
+        self, services: Services, user: User, draft: CardDraft
+    ) -> None:
+        """Berlin's tomorrow can still be today in UTC — the learner's zone wins."""
+        user.timezone = "Europe/Berlin"
+        moment = datetime(2026, 5, 14, 21, 30, tzinfo=UTC)  # 23:30 in Berlin
+
+        card = await services.card_service.add_draft(user, draft, now=moment)
+
+        assert card.due_at == datetime(2026, 5, 14, 22, 0, tzinfo=UTC)
+
+    async def test_the_wait_survives_the_dst_day_that_lasts_25_hours(
+        self, services: Services, user: User, draft: CardDraft
+    ) -> None:
+        """Berlin leaves daylight saving on 25 October 2026; that local day is 25 hours long.
+
+        A word added just after its midnight is in the past a day later by the
+        clock — and a due date in the past is a card back in today's queue.
+        """
+        user.timezone = "Europe/Berlin"
+        moment = datetime(2026, 10, 24, 22, 30, tzinfo=UTC)  # 00:30 CEST on the 25th
+
+        card = await services.card_service.add_draft(user, draft, now=moment)
+
+        assert card.due_at == datetime(2026, 10, 25, 23, 0, tzinfo=UTC)  # 00:00 CET on the 26th
+        assert not card.schedule.is_due(moment)
 
     async def test_the_same_term_twice_is_refused(
         self, services: Services, user: User, draft: CardDraft
@@ -116,18 +159,21 @@ class TestCardService:
     async def test_stats_reflect_the_queue(
         self, services: Services, session: AsyncSession, user: User
     ) -> None:
-        await services.card_service.add_drafts(
+        outcome = await services.card_service.add_drafts(
             user,
             [CardDraft(term=f"word{i}", translation=f"слово{i}") for i in range(3)],
         )
         await session.commit()
 
-        stats = await services.card_service.stats(user)
+        # Added today: in the collection, but not in today's queue.
+        today = await services.card_service.stats(user)
+        assert today.total_cards == 3
+        assert today.new_cards == 0
+        assert today.due_now == 0
+        assert today.reviews_today == 0
 
-        assert stats.total_cards == 3
-        assert stats.new_cards == 3
-        assert stats.due_now == 0
-        assert stats.reviews_today == 0
+        tomorrow = await services.card_service.stats(user, now=outcome.added[0].due_at)
+        assert tomorrow.new_cards == 3
 
 
 class TestReviewService:

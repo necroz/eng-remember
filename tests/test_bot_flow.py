@@ -21,7 +21,7 @@ from eng_remember.models.deck import Deck
 from eng_remember.models.review import Review
 from eng_remember.models.user import User
 from eng_remember.utils.time import utcnow
-from tests.conftest import RecordingSession
+from tests.conftest import RecordingSession, make_due
 from tests.factories import TEST_USER_ID, ScriptedClient, make_callback_update, make_message_update
 
 
@@ -46,10 +46,16 @@ async def card_id(
     recording: RecordingSession,
     session_factory: async_sessionmaker[AsyncSession],
 ) -> int:
-    """A saved card, created the way a user would: by confirming a parse."""
+    """A saved card whose first repetition has come.
+
+    Created the way a user would — by confirming a parse — and then carried past
+    its due date: a word added today is deliberately kept out of today's queue,
+    and these tests are about what the next day looks like.
+    """
     await send(dispatcher, bot, "ubiquitous — вездесущий")
     await tap(dispatcher, bot, button_with(recording, "im:confirm"))
     recording.clear()
+    await make_due(session_factory, "ubiquitous")
 
     async with session_factory() as check:
         created = await check.scalar(select(Card.id))
@@ -124,6 +130,16 @@ class TestCapturingWords:
         async with session_factory() as check:
             terms = set((await check.scalars(select(Card.term))).all())
             assert terms == {"resilient", "thorough"}
+
+    async def test_saving_says_when_the_first_repetition_comes(
+        self, dispatcher: Dispatcher, bot: Bot, recording: RecordingSession
+    ) -> None:
+        """The learner is told not to look for the word today: it is not there yet."""
+        await send(dispatcher, bot, "resilient - устойчивый")
+
+        await tap(dispatcher, bot, button_with(recording, "im:confirm"))
+
+        assert "Первое повторение — завтра" in recording.last_text()
 
     async def test_a_quota_refusal_falls_back_to_the_rules_parser(
         self,
@@ -224,6 +240,20 @@ class TestReview:
 
         assert "нет слов" in recording.last_text()
 
+    async def test_a_word_added_today_waits_for_tomorrow(
+        self, dispatcher: Dispatcher, bot: Bot, recording: RecordingSession
+    ) -> None:
+        """The queue is empty on the day of adding, and the screen says when to come back."""
+        await send(dispatcher, bot, "ubiquitous — вездесущий", update_id=50)
+        await tap(dispatcher, bot, button_with(recording, "im:confirm"), update_id=51)
+        recording.clear()
+
+        await send(dispatcher, bot, "/review", update_id=52)
+
+        sent = recording.last_text()
+        assert "всё повторено" in sent
+        assert "Следующая карточка" in sent
+
     async def test_review_shows_the_front_of_a_card(
         self, dispatcher: Dispatcher, bot: Bot, recording: RecordingSession, card_id: int
     ) -> None:
@@ -318,11 +348,16 @@ class TestReview:
 
 class TestEscaping:
     async def test_markup_in_a_word_cannot_break_the_message(
-        self, dispatcher: Dispatcher, bot: Bot, recording: RecordingSession
+        self,
+        dispatcher: Dispatcher,
+        bot: Bot,
+        recording: RecordingSession,
+        session_factory: async_sessionmaker[AsyncSession],
     ) -> None:
         await send(dispatcher, bot, "<b>bold</b> - жирный")
         await tap(dispatcher, bot, button_with(recording, "im:confirm"))
         recording.clear()
+        await make_due(session_factory)
 
         await send(dispatcher, bot, "/review")
 

@@ -38,6 +38,19 @@ def test_new_card_is_due_immediately(scheduler: SrsScheduler) -> None:
     assert schedule.reps == 0
 
 
+def test_a_new_card_can_be_held_back_until_later(scheduler: SrsScheduler) -> None:
+    """How "not on the day it was added" is expressed: the caller sets the date."""
+    now = utcnow()
+    tomorrow = now + timedelta(days=1)
+
+    schedule = scheduler.fresh_schedule(now, due_at=tomorrow)
+
+    assert schedule.due_at == tomorrow
+    assert not schedule.is_due(now)
+    assert schedule.is_due(tomorrow)
+    assert schedule.is_new
+
+
 def test_first_good_answer_stays_in_learning(scheduler: SrsScheduler) -> None:
     now = utcnow()
     updated = scheduler.review(scheduler.fresh_schedule(now), ReviewRating.GOOD, now=now)
