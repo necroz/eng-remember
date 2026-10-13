@@ -22,6 +22,11 @@ services:
   db:
     image: postgres:17-alpine
     logging: *logging
+    # Without a policy of its own the database is the one service a reboot does
+    # not bring back: Docker restarts the bot, which then crash-loops against a
+    # missing db. Compose dependencies do not apply here — the daemon has no
+    # idea what depends on what.
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-eng}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-eng}
