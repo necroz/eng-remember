@@ -1,0 +1,22 @@
+version: 2
+
+updates:
+  # Python dependencies, pinned by uv.lock.
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+
+  # The actions used by the workflow itself.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  # The python base image in the Dockerfile. The uv builder image lives on
+  # ghcr.io, which this ecosystem does not read; it is bumped by hand.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"

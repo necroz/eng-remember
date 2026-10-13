@@ -1,0 +1,38 @@
+name: eng-remember
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-eng}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-eng}
+      POSTGRES_DB: ${POSTGRES_DB:-eng_remember}
+    # 55432 on the host: a Postgres on the default port is common enough that
+    # colliding with it would be the first thing a new checkout hits.
+    ports:
+      - "${POSTGRES_PORT:-55432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Creates the extra database the integration tests use.
+      - ./docker/postgres-init.sql:/docker-entrypoint-initdb.d/10-test-database.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-eng} -d ${POSTGRES_DB:-eng_remember}"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  bot:
+    build: .
+    env_file:
+      - .env
+    environment:
+      # Inside the network the database is reachable by service name.
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-eng}:${POSTGRES_PASSWORD:-eng}@db:5432/${POSTGRES_DB:-eng_remember}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    profiles: ["full"]
+
+volumes:
+  pgdata:
