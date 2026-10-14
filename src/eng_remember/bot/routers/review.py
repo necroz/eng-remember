@@ -18,7 +18,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from eng_remember.bot import keyboards, rendering, texts
-from eng_remember.bot.callbacks import ReviewCB
+from eng_remember.bot.callbacks import LeechCB, ReviewCB
 from eng_remember.bot.rendering import callback_chat_id
 from eng_remember.bot.states import (
     ANSWERED_KEY,
@@ -32,7 +32,10 @@ from eng_remember.bot.states import (
     Review,
 )
 from eng_remember.domain.cloze import cloze
+from eng_remember.domain.enums import ReviewRating
 from eng_remember.domain.examples import pick_example
+from eng_remember.domain.leech import next_level, should_offer
+from eng_remember.errors import LlmError, LlmNotConfiguredError
 from eng_remember.models.card import Card
 from eng_remember.models.user import User
 from eng_remember.services.container import Services
@@ -226,6 +229,75 @@ def build_router() -> Router:
     async def legacy_button(query: CallbackQuery) -> None:
         await query.answer(texts.stale_button(), show_alert=True)
 
+    @router.callback_query(LeechCB.filter(F.action == "mnemonic"))
+    @router.callback_query(LeechCB.filter(F.action == "example"))
+    async def treat_with_the_model(
+        query: CallbackQuery,
+        callback_data: LeechCB,
+        bot: Bot,
+        user: User,
+        services: Services,
+    ) -> None:
+        """The two actions that only a configured model can fulfil."""
+        card = await services.cards.get(callback_data.card_id, user_id=user.id)
+        if card is None:
+            await query.answer(texts.card_unavailable(), show_alert=True)
+            return
+        try:
+            if callback_data.action == "mnemonic":
+                mnemonic = await services.enrichment.add_mnemonic(card=card, user_id=user.id)
+                confirmation = texts.leech_mnemonic_done(card, mnemonic)
+            else:
+                example = await services.enrichment.add_example(card=card, user_id=user.id)
+                confirmation = texts.leech_example_done(card, example)
+        except LlmNotConfiguredError:
+            await query.answer(texts.llm_required(), show_alert=True)
+            return
+        except LlmError as exc:
+            log.warning(
+                "leech_enrichment_failed",
+                card_id=card.id,
+                action=callback_data.action,
+                error=str(exc),
+            )
+            await query.answer(texts.llm_failed(), show_alert=True)
+            return
+
+        await services.commit()
+        await query.answer()
+        await rendering.edit_or_send(query, confirmation, bot=bot)
+
+    @router.callback_query(LeechCB.filter(F.action == "pause"))
+    async def pause_leech(
+        query: CallbackQuery,
+        callback_data: LeechCB,
+        bot: Bot,
+        user: User,
+        services: Services,
+    ) -> None:
+        card = await services.card_service.suspend(user, callback_data.card_id)
+        if card is None:
+            await query.answer(texts.card_unavailable(), show_alert=True)
+            return
+        await services.commit()
+        await query.answer()
+        await rendering.edit_or_send(query, texts.leech_paused(card), bot=bot)
+
+    @router.callback_query(LeechCB.filter(F.action == "leave"))
+    async def leave_leech(
+        query: CallbackQuery,
+        callback_data: LeechCB,
+        bot: Bot,
+        user: User,
+        services: Services,
+    ) -> None:
+        card = await services.cards.get(callback_data.card_id, user_id=user.id)
+        if card is None:
+            await query.answer(texts.card_unavailable(), show_alert=True)
+            return
+        await query.answer()
+        await rendering.edit_or_send(query, texts.leech_left(card), bot=bot)
+
     async def _send_front(
         bot: Bot, chat_id: int, card: Card, state: FSMContext, services: Services
     ) -> None:
@@ -322,6 +394,21 @@ def build_router() -> Router:
             message_id=front_message if isinstance(front_message, int) else None,
             text=result,
         )
+
+        # A word that keeps failing earns an offer of help. The menu is a
+        # message of its own so it survives the next card arriving.
+        threshold = services.settings.review.leech_threshold
+        if outcome.rating is ReviewRating.AGAIN and should_offer(
+            card.again_count, card.leech_level, threshold=threshold
+        ):
+            card.leech_level = next_level(card.again_count, threshold=threshold)
+            await services.commit()
+            await bot.send_message(
+                chat_id,
+                texts.leech_offer(card),
+                reply_markup=keyboards.leech_menu(card.id),
+            )
+
         await _advance(bot, chat_id, user, services, state)
 
     async def _advance(

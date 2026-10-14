@@ -15,11 +15,12 @@ from aiogram.types import (
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from eng_remember.bot import texts
-from eng_remember.bot.callbacks import ClarifyCB, ImportCB, ReviewCB
+from eng_remember.bot.callbacks import ClarifyCB, ImportCB, LeechCB, ReviewCB
 
 __all__ = [
     "clarification",
     "import_confirm",
+    "leech_menu",
     "main_menu",
     "review_prompt",
 ]
@@ -81,4 +82,31 @@ def review_prompt(card_id: int, *, hint: bool = False) -> InlineKeyboardMarkup:
         callback_data=ReviewCB(action="dont_know", card_id=card_id),
     )
     builder.adjust(2 if hint else 1)
+    return builder.as_markup()
+
+
+def leech_menu(card_id: int) -> InlineKeyboardMarkup:
+    """What to try about a word that keeps failing.
+
+    Every tap on this menu ends it: the message is edited into the outcome, so
+    the same card cannot collect three mnemonics from one offer.
+    """
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text="🧠 Мнемоника",
+        callback_data=LeechCB(action="mnemonic", card_id=card_id),
+    )
+    builder.button(
+        text="✍️ Свежий пример",
+        callback_data=LeechCB(action="example", card_id=card_id),
+    )
+    builder.button(
+        text="⏸ Пауза",
+        callback_data=LeechCB(action="pause", card_id=card_id),
+    )
+    builder.button(
+        text="✅ Оставить",
+        callback_data=LeechCB(action="leave", card_id=card_id),
+    )
+    builder.adjust(2, 2)
     return builder.as_markup()

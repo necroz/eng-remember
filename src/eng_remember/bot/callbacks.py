@@ -11,11 +11,21 @@ from typing import Literal
 
 from aiogram.filters.callback_data import CallbackData
 
-__all__ = ["ClarifyAction", "ClarifyCB", "ImportAction", "ImportCB", "ReviewAction", "ReviewCB"]
+__all__ = [
+    "ClarifyAction",
+    "ClarifyCB",
+    "ImportAction",
+    "ImportCB",
+    "LeechAction",
+    "LeechCB",
+    "ReviewAction",
+    "ReviewCB",
+]
 
 ReviewAction = Literal["dont_know", "hint"]
 ImportAction = Literal["confirm", "cancel", "more"]
 ClarifyAction = Literal["option", "skip"]
+LeechAction = Literal["mnemonic", "example", "pause", "leave"]
 
 
 class ReviewCB(CallbackData, prefix="rv"):
@@ -51,3 +61,14 @@ class ClarifyCB(CallbackData, prefix="cl"):
 
     action: ClarifyAction
     index: int = 0
+
+
+class LeechCB(CallbackData, prefix="lc"):
+    """What to do about a word that keeps failing.
+
+    The card id travels in the payload: the menu message outlives the review
+    session, and treating a word must not depend on it still being on screen.
+    """
+
+    action: LeechAction
+    card_id: int = 0

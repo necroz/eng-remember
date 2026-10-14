@@ -49,6 +49,13 @@ __all__ = [
     "import_cancelled",
     "import_preview",
     "import_result",
+    "leech_example_done",
+    "leech_left",
+    "leech_mnemonic_done",
+    "leech_offer",
+    "leech_paused",
+    "llm_failed",
+    "llm_required",
     "looking_for_more",
     "more_found_nothing",
     "more_needs_topic",
@@ -253,6 +260,41 @@ def card_unavailable() -> str:
 
 def hint_unavailable() -> str:
     return "Для этой карточки подсказки нет."
+
+
+def leech_offer(card: Card) -> str:
+    return f"🪤 <b>{escape(card.term)}</b> не даётся: {card.again_count}-й провал. Что сделаем?"
+
+
+def leech_mnemonic_done(card: Card, mnemonic: str) -> str:
+    return (
+        f"🧠 Мнемоника для <b>{escape(card.term)}</b>:\n\n"
+        f"<i>{escape(mnemonic)}</i>\n\n"
+        "Сохранена в заметки к карточке."
+    )
+
+
+def leech_example_done(card: Card, example: str) -> str:
+    return f"✍️ Свежий пример для <b>{escape(card.term)}</b>:\n\n<i>{escape(example)}</i>"
+
+
+def leech_paused(card: Card) -> str:
+    return (
+        f"⏸ <b>{escape(card.term)}</b> на паузе — из повторений выпало. "
+        "Вернуть можно командой /paused."
+    )
+
+
+def leech_left(card: Card) -> str:
+    return f"Ок, оставляю <b>{escape(card.term)}</b> как есть."
+
+
+def llm_required() -> str:
+    return "Для этого нужна подключённая модель."
+
+
+def llm_failed() -> str:
+    return "Модель не ответила — попробуйте ещё раз позже."
 
 
 def import_preview(
