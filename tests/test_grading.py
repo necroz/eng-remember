@@ -6,6 +6,7 @@ from eng_remember.errors import LlmQuotaExceededError, LlmResponseError
 from eng_remember.models.card import Card
 from eng_remember.models.review import Review
 from eng_remember.models.user import User
+from eng_remember.repositories.cards import CardDraft
 from eng_remember.services.container import Services
 from eng_remember.services.grading import AnswerGradingService
 from eng_remember.services.llm.checker import AnswerChecker
@@ -130,3 +131,31 @@ async def test_a_skip_is_again_without_a_check(
     assert outcome.rating is ReviewRating.AGAIN
     assert outcome.typed is None
     assert client.calls == []
+
+
+async def test_a_reverse_match_is_correct_without_the_model(services: Services, user: User) -> None:
+    forward = await services.card_service.add_draft(
+        user, CardDraft(term="run", translation="бежать")
+    )
+    twin = await services.cards.find_twin(forward)
+    assert twin is not None
+
+    outcome = await build(services, None).grade(user, twin, typed="Run!", duration_seconds=1.0)
+
+    assert outcome.verdict is Verdict.CORRECT
+    assert outcome.rating is ReviewRating.EASY
+
+
+async def test_a_reverse_synonym_escalates_to_the_model(services: Services, user: User) -> None:
+    forward = await services.card_service.add_draft(
+        user, CardDraft(term="run", translation="бежать")
+    )
+    twin = await services.cards.find_twin(forward)
+    assert twin is not None
+    client = ScriptedClient().push_check({"verdict": "almost"})
+
+    outcome = await build(services, client).grade(user, twin, typed="jog", duration_seconds=1.0)
+
+    assert outcome.verdict is Verdict.ALMOST
+    assert outcome.rating is ReviewRating.HARD
+    assert "<expected_term>run</expected_term>" in client.calls[-1]["user"]

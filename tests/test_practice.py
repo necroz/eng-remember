@@ -5,7 +5,7 @@ from __future__ import annotations
 import random
 
 from eng_remember.config import Settings
-from eng_remember.domain.enums import CardState
+from eng_remember.domain.enums import CardState, ReviewRating
 from eng_remember.models.card import Card
 from eng_remember.models.user import User
 from eng_remember.repositories.cards import CardDraft
@@ -144,6 +144,31 @@ async def test_variant_listings_are_excluded_from_distractors(
     assert "ужасный" not in awful.options
     terrible = next(q for q in questions if card_by_id[q.card_id].term == "terrible")
     assert "ужасный, кошмарный" not in terrible.options
+
+
+async def test_a_word_pair_yields_one_question(
+    services: Services, user: User, settings: Settings
+) -> None:
+    """Practice works on forward cards: the reverse twin is not a second word."""
+    forward = await services.card_service.add_draft(
+        user, CardDraft(term="run", translation="бежать")
+    )
+    twin = await services.cards.find_twin(forward)
+    assert twin is not None
+    await services.review_service.answer(user, forward, ReviewRating.GOOD)
+    await services.review_service.answer(user, twin, ReviewRating.GOOD)
+    await seed_cards(
+        services,
+        user,
+        ("swim", "плавать", "verb"),
+        ("fly", "летать", "verb"),
+        ("go", "идти", "verb"),
+    )
+
+    questions = await build(services, settings).build_session(user)
+
+    run_questions = [question for question in questions if question.term == "run"]
+    assert len(run_questions) == 1
 
 
 async def test_duplicate_translations_never_appear_twice(

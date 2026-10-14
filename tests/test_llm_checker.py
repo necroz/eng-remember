@@ -60,3 +60,21 @@ async def test_the_checker_refuses_without_a_model() -> None:
     assert checker.available is False
     with pytest.raises(LlmNotConfiguredError):
         await checker.check(term="ubiquitous", translation="вездесущий", answer="вездесущий")
+
+
+async def test_the_reverse_check_asks_about_the_english_word() -> None:
+    client = ScriptedClient()
+    client.push_check({"verdict": "almost"})
+    checker = AnswerChecker(llm=client)
+
+    verdict = await checker.check(
+        term="run",
+        translation="бежать",
+        answer="jog",
+        direction="reverse",
+        user_id=1,
+    )
+
+    assert verdict is Verdict.ALMOST
+    assert "<expected_term>run</expected_term>" in client.calls[-1]["user"]
+    assert "synonym" in client.calls[-1]["system"]

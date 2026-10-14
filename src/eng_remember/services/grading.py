@@ -13,7 +13,7 @@ from datetime import datetime
 import structlog
 
 from eng_remember.domain.answers import Verdict, matches, rating_for
-from eng_remember.domain.enums import ReviewRating
+from eng_remember.domain.enums import CardDirection, ReviewRating
 from eng_remember.errors import LlmError
 from eng_remember.models.card import Card
 from eng_remember.models.user import User
@@ -73,7 +73,8 @@ class AnswerGradingService:
         """Simple match first, then the model, then a conservative "wrong"."""
         if typed is None:
             return Verdict.WRONG
-        if matches(typed, card.translation):
+        expected = card.term if card.direction is CardDirection.REVERSE else card.translation
+        if matches(typed, expected):
             return Verdict.CORRECT
         if not self._checker.available:
             return Verdict.WRONG
@@ -82,6 +83,7 @@ class AnswerGradingService:
                 term=card.term,
                 translation=card.translation,
                 answer=typed,
+                direction=card.direction.value,
                 user_id=user_id,
             )
         except LlmError as exc:

@@ -15,6 +15,7 @@ from html import escape
 from eng_remember.domain.answers import Verdict
 from eng_remember.domain.digest import HEATMAP_DAYS
 from eng_remember.domain.digest import heatmap as digest_heatmap
+from eng_remember.domain.enums import CardDirection
 from eng_remember.domain.gamification import StreakState, StreakTransition
 from eng_remember.domain.praise import render
 from eng_remember.models.card import Card
@@ -196,9 +197,16 @@ def review_finished(answered: int) -> str:
 
 
 def card_front(card: Card, *, hint: str | None = None) -> str:
-    lines = [f"<b>{escape(card.term)}</b>"]
-    if card.part_of_speech:
-        lines.append(f"<i>{escape(card.part_of_speech)}</i>")
+    if card.direction is CardDirection.REVERSE:
+        lines = [
+            "🇬🇧 <i>Переведите на английский</i>",
+            "",
+            f"<b>{escape(card.translation)}</b>",
+        ]
+    else:
+        lines = [f"<b>{escape(card.term)}</b>"]
+        if card.part_of_speech:
+            lines.append(f"<i>{escape(card.part_of_speech)}</i>")
     lines.append("")
     lines.append(f"<i>{card.state.label} · повторений: {card.reps}</i>")
     if hint:

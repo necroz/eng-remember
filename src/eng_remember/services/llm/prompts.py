@@ -11,6 +11,7 @@ from collections.abc import Sequence
 from eng_remember.services.llm.schema import flatten_line
 
 __all__ = [
+    "ANSWER_CHECK_REVERSE_SYSTEM_PROMPT",
     "ANSWER_CHECK_SYSTEM_PROMPT",
     "ENRICH_EXAMPLES_SYSTEM_PROMPT",
     "EXPANSION_SYSTEM_PROMPT",
@@ -176,6 +177,22 @@ Answer with a single JSON object and nothing else: {"verdict": "correct"} \
 (or "almost", or "wrong").
 """
 
+ANSWER_CHECK_REVERSE_SYSTEM_PROMPT = """\
+You check how close a learner's English answer is to the target word of a vocabulary card.
+
+The learner is a Russian speaker who was shown the Russian meaning and had to \
+recall the English word. Judge the word, not the phrasing.
+
+- "correct": the target word itself; small spelling slips (a missing or doubled \
+letter) count as correct.
+- "almost": a valid English word for the meaning that is not the target word \
+(a synonym), or a substantially misspelt form of the target.
+- "wrong": an unrelated word or empty text.
+
+Answer with a single JSON object and nothing else: {"verdict": "correct"} \
+(or "almost", or "wrong").
+"""
+
 # A pasted paragraph must not bloat the prompt, and the verdict needs no more
 # than one meaning's worth of text to be made.
 CHECK_FIELD_LIMIT = 200
@@ -297,7 +314,13 @@ def build_expansion_prompt(
     return "\n\n".join(parts)
 
 
-def build_answer_check_prompt(*, term: str, translation: str, answer: str) -> str:
+def build_answer_check_prompt(
+    *,
+    term: str,
+    translation: str,
+    answer: str,
+    direction: str = "forward",
+) -> str:
     """Wrap the three values so a stray instruction inside any of them stays data.
 
     Term and translation come from a card and the answer comes from the
@@ -313,6 +336,14 @@ def build_answer_check_prompt(*, term: str, translation: str, answer: str) -> st
         name: flatten_line(value, limit=CHECK_FIELD_LIMIT, strip_brackets=True)
         for name, value in fields.items()
     }
+    if direction == "reverse":
+        return (
+            "The learner was shown the meaning and answered with the English word. "
+            "Decide which verdict applies.\n"
+            f"<expected_term>{safe['term']}</expected_term>\n"
+            f"<meaning_shown>{safe['expected_meaning']}</meaning_shown>\n"
+            f"<learner_answer>{safe['learner_answer']}</learner_answer>"
+        )
     return (
         "The learner was shown the term and answered with the meaning below. "
         "Decide which verdict applies.\n"

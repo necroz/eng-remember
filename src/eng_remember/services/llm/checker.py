@@ -12,6 +12,7 @@ from eng_remember.domain.answers import Verdict
 from eng_remember.errors import LlmNotConfiguredError
 from eng_remember.services.llm.client import JsonChatClient
 from eng_remember.services.llm.prompts import (
+    ANSWER_CHECK_REVERSE_SYSTEM_PROMPT,
     ANSWER_CHECK_SYSTEM_PROMPT,
     build_answer_check_prompt,
 )
@@ -36,6 +37,7 @@ class AnswerChecker:
         term: str,
         translation: str,
         answer: str,
+        direction: str = "forward",
         user_id: int | None = None,
     ) -> Verdict:
         """Ask the model to grade the answer. Raises :class:`LlmNotConfiguredError`.
@@ -43,18 +45,27 @@ class AnswerChecker:
         Refusing instead of returning "wrong" matters: the caller has to know
         the model was never asked, so its own fallback decision stays visible in
         the code rather than being mistaken for a verdict.
+
+        ``direction`` decides which side the learner was shown: "reverse" means
+        the expected answer is the English term, not the Russian meaning.
         """
         llm = self._llm
         if llm is None or not llm.available:
             raise LlmNotConfiguredError("answer checking needs a configured LLM")
 
+        system = (
+            ANSWER_CHECK_REVERSE_SYSTEM_PROMPT
+            if direction == "reverse"
+            else ANSWER_CHECK_SYSTEM_PROMPT
+        )
         response = await llm.complete_json(
             purpose=PURPOSE_CHECK,
-            system=ANSWER_CHECK_SYSTEM_PROMPT,
+            system=system,
             user=build_answer_check_prompt(
                 term=term,
                 translation=translation,
                 answer=answer,
+                direction=direction,
             ),
             schema=AnswerCheckResponse,
             user_id=user_id,

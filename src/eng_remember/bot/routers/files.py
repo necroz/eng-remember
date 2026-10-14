@@ -26,6 +26,7 @@ from eng_remember.bot.states import (
     FILE_UNTRANSLATED_KEY,
     ImportFile,
 )
+from eng_remember.domain.enums import CardDirection
 from eng_remember.errors import LlmError
 from eng_remember.models.user import User
 from eng_remember.repositories.cards import CardDraft
@@ -57,7 +58,11 @@ def build_router() -> Router:
 
     @router.message(Command("export"))
     async def export_cards(message: Message, user: User, services: Services) -> None:
-        cards = await services.cards.list_for_user(user.id, limit=EXPORT_LIMIT)
+        # Forward cards only: a word is a pair in the database, but one row in
+        # the file — a round-trip recreates the pair from the forward side.
+        cards = await services.cards.list_for_user(
+            user.id, limit=EXPORT_LIMIT, direction=CardDirection.FORWARD
+        )
         decks = await services.decks.list_for_user(user.id)
         names = {deck.id: deck.name for deck in decks}
         content = cards_to_csv(cards, deck_names=names).encode("utf-8-sig")
