@@ -77,10 +77,10 @@ BTN_HELP = "❓ Помощь"
 
 MAIN_MENU_BUTTONS = (BTN_ADD, BTN_REVIEW, BTN_DECKS, BTN_STATS, BTN_HELP)
 
-# The revealed answer plus the card must stay under Telegram's 4096-character
-# message limit; a pasted paragraph is not worth showing in full anyway. The
-# whole text still goes to grading — only the display is capped.
-ANSWER_DISPLAY_LIMIT = 500
+# A translation is a few words; anything longer is a paste, and showing a
+# paragraph of it helps nobody. The whole text still goes to grading — only
+# the revealed line is capped.
+ANSWER_DISPLAY_LIMIT = 200
 
 
 def welcome_new(first_name: str | None, deck_name: str) -> str:

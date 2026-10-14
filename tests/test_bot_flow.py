@@ -434,17 +434,18 @@ class TestReview:
         session_factory: async_sessionmaker[AsyncSession],
         card_id: int,
     ) -> None:
-        """A pasted paragraph must not overflow Telegram's message limit.
+        """A pasted paragraph must not overflow the revealed answer.
 
-        The whole answer is used for grading; only the revealed line is capped,
-        or the result would be rejected by the API and the session would wedge.
+        The whole answer is used for grading; only the revealed line is capped.
+        A translation is a few words, so the cap is far below Telegram's limit.
         """
         await send(dispatcher, bot, "/review", update_id=20)
-        await send(dispatcher, bot, "а" * 4000, update_id=21, date=utcnow())
+        await send(dispatcher, bot, "а" * 300, update_id=21, date=utcnow())
 
         text = result_text(recording)
-        assert len(text) < 4096
+        assert "а" * 201 not in text
         assert "…" in text
+        assert len(text) < 4096
 
     async def test_a_pause_during_the_check_wins(
         self,
