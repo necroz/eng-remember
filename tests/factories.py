@@ -23,7 +23,9 @@ from eng_remember.domain.enums import CardState
 from eng_remember.domain.srs import CardSchedule
 from eng_remember.services.llm.schema import (
     AnswerCheckResponse,
+    ExamplesResponse,
     ExpansionResponse,
+    MnemonicResponse,
     ParseResponse,
 )
 from eng_remember.utils.time import utcnow
@@ -215,6 +217,8 @@ class ScriptedClient:
         self.parse_queue: list[Any] = []
         self.expand_queue: list[Any] = []
         self.check_queue: list[Any] = []
+        self.examples_queue: list[Any] = []
+        self.mnemonic_queue: list[Any] = []
         self.calls: list[dict[str, Any]] = []
 
     @property
@@ -237,6 +241,14 @@ class ScriptedClient:
         self.check_queue.extend(responses)
         return self
 
+    def push_examples(self, *responses: Any) -> ScriptedClient:
+        self.examples_queue.extend(responses)
+        return self
+
+    def push_mnemonic(self, *responses: Any) -> ScriptedClient:
+        self.mnemonic_queue.extend(responses)
+        return self
+
     async def complete_json(
         self,
         *,
@@ -246,13 +258,25 @@ class ScriptedClient:
         schema: Any,
         user_id: int | None = None,
     ) -> Any:
-        self.calls.append({"purpose": purpose, "system": system, "user": user, "schema": schema})
+        self.calls.append(
+            {
+                "purpose": purpose,
+                "system": system,
+                "user": user,
+                "schema": schema,
+                "user_id": user_id,
+            }
+        )
         if schema is ParseResponse:
             queue = self.parse_queue
         elif schema is ExpansionResponse:
             queue = self.expand_queue
         elif schema is AnswerCheckResponse:
             queue = self.check_queue
+        elif schema is ExamplesResponse:
+            queue = self.examples_queue
+        elif schema is MnemonicResponse:
+            queue = self.mnemonic_queue
         else:
             raise AssertionError(f"no scripted queue for {schema.__name__}")
         if not queue:

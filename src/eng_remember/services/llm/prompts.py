@@ -6,16 +6,22 @@ the prompts are part of the code review when behaviour changes.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from eng_remember.services.llm.schema import flatten_line
 
 __all__ = [
     "ANSWER_CHECK_SYSTEM_PROMPT",
+    "ENRICH_EXAMPLES_SYSTEM_PROMPT",
     "EXPANSION_SYSTEM_PROMPT",
+    "MNEMONIC_SYSTEM_PROMPT",
     "PARSE_SYSTEM_PROMPT",
     "REPAIR_TEMPLATE",
     "build_answer_check_prompt",
     "build_clarified_prompt",
+    "build_enrich_examples_prompt",
     "build_expansion_prompt",
+    "build_mnemonic_prompt",
     "build_user_prompt",
 ]
 
@@ -67,8 +73,9 @@ one.
 - "transcription": IPA in slashes, e.g. /juːˈbɪkwɪtəs/. Always fill it in.
 - "part_of_speech": noun, verb, adjective, adverb, phrase, preposition, \
 conjunction, pronoun, numeral or interjection.
-- "example": one short natural English sentence using the term. When the user \
-supplied a phrase or sentence with the word, use it.
+- "examples": up to three short natural English sentences using the term. When \
+the user supplied a phrase or sentence with the word, the first example must be \
+exactly that phrase.
 - "notes": a usage hint worth knowing — a false friend, a required preposition, \
 a synonym nuance, or the fact that the usual sense differs from the one in the \
 user's context. Omit when there is nothing useful to say.
@@ -86,7 +93,7 @@ to find words in it: intent "expand" and a short "topic" describing the text.
 
 Answer with a single JSON object and nothing else, in this exact shape:
 {"intent": "add_cards", "cards": [{"term": "...", "translation": "...", \
-"transcription": "...", "part_of_speech": "...", "example": "...", "notes": "...", \
+"transcription": "...", "part_of_speech": "...", "examples": ["..."], "notes": "...", \
 "tags": ["..."]}], "topic": null, "count": null, "more_words": false, \
 "answer": null, "clarification": null}
 
@@ -95,9 +102,9 @@ message: "arrangement как во фразе The graded evaluation criteria is a
 arrangement of descriptions sorted from 0 points upwards. И добавь ещё пару \
 слов на эту тему"
 answer: {"intent": "add_cards", "cards": [{"term": "arrangement", "translation": \
-"упорядоченный набор, расположение по порядку", "example": "The graded \
+"упорядоченный набор, расположение по порядку", "examples": ["The graded \
 evaluation criteria is an arrangement of descriptions sorted from 0 points \
-upwards.", "notes": "здесь смысл «упорядоченный набор», а не обычное \
+upwards."], "notes": "здесь смысл «упорядоченный набор», а не обычное \
 «договорённость»", "tags": ["assessment"]}], "topic": "оценка по критериям", \
 "count": 2, "more_words": true, "answer": null, "clarification": null}
 """
@@ -114,13 +121,13 @@ When a source text is given:
 - The lemma may be a dictionary form, but the word must really be there: if the \
 text says "running" you may return "run"; if the word is not in the text at \
 all, do not return it.
-- Put the sentence from the text where the word occurs into "example", \
+- Put the sentence from the text where the word occurs first in "examples", \
 shortened to one line if needed.
 
 When a topic is given:
 - Choose words a B1-B2 learner would actually meet in that domain — not the \
 rarest ones, and not the trivial ones.
-- "example" is your own short natural sentence using the term.
+- "examples" are up to three of your own short natural sentences using the term.
 - Vary the part of speech: mostly nouns and verbs, some adjectives and phrases.
 
 When words the learner already works with are named:
@@ -142,7 +149,7 @@ pad the list with words that are not in it.
 
 Answer with a single JSON object and nothing else:
 {"topic": "...", "cards": [{"term": "...", "translation": "...", \
-"transcription": "...", "part_of_speech": "...", "example": "...", "notes": "...", \
+"transcription": "...", "part_of_speech": "...", "examples": ["..."], "notes": "...", \
 "tags": ["..."]}]}
 """
 
@@ -165,6 +172,30 @@ Answer with a single JSON object and nothing else: {"verdict": "correct"} \
 # A pasted paragraph must not bloat the prompt, and the verdict needs no more
 # than one meaning's worth of text to be made.
 CHECK_FIELD_LIMIT = 200
+
+# The enrichment prompt only needs enough existing sentences to steer away from
+# repeating them.
+EXISTING_EXAMPLES_IN_PROMPT = 10
+
+ENRICH_EXAMPLES_SYSTEM_PROMPT = """\
+You write fresh example sentences for an English vocabulary card.
+
+The learner is a Russian speaker studying English. Every sentence must contain \
+the target term exactly as written and stay at a B1-B2 level. Never repeat a \
+sentence that is already on the card.
+
+Answer with a single JSON object and nothing else: {"examples": ["..."]}
+"""
+
+MNEMONIC_SYSTEM_PROMPT = """\
+You invent a mnemonic for a Russian speaker learning an English word.
+
+Connect the sound or spelling of the English term to its Russian meaning with \
+one vivid association: an image, a pun or a rhyme to recall the word by. Write \
+in Russian, one or two short sentences, under 200 characters.
+
+Answer with a single JSON object and nothing else: {"mnemonic": "..."}
+"""
 
 REPAIR_TEMPLATE = """\
 Your previous answer could not be used.
@@ -259,4 +290,39 @@ def build_answer_check_prompt(*, term: str, translation: str, answer: str) -> st
         f"<term>{safe['term']}</term>\n"
         f"<expected_meaning>{safe['expected_meaning']}</expected_meaning>\n"
         f"<learner_answer>{safe['learner_answer']}</learner_answer>"
+    )
+
+
+def build_enrich_examples_prompt(
+    *,
+    term: str,
+    translation: str,
+    count: int,
+    existing: Sequence[str],
+) -> str:
+    """Assemble the enrichment request, fields wrapped like every other prompt."""
+    safe_term = flatten_line(term, limit=CHECK_FIELD_LIMIT, strip_brackets=True)
+    safe_translation = flatten_line(translation, limit=CHECK_FIELD_LIMIT, strip_brackets=True)
+    parts = [
+        f"Write {count} new example sentences for this card.",
+        f"<term>{safe_term}</term>",
+        f"<translation>{safe_translation}</translation>",
+    ]
+    safe_existing = [
+        flatten_line(item, limit=CHECK_FIELD_LIMIT, strip_brackets=True)
+        for item in list(existing)[:EXISTING_EXAMPLES_IN_PROMPT]
+    ]
+    safe_existing = [item for item in safe_existing if item]
+    if safe_existing:
+        parts.append("Already on the card, do not repeat: " + "; ".join(safe_existing))
+    return "\n".join(parts)
+
+
+def build_mnemonic_prompt(*, term: str, translation: str) -> str:
+    safe_term = flatten_line(term, limit=CHECK_FIELD_LIMIT, strip_brackets=True)
+    safe_translation = flatten_line(translation, limit=CHECK_FIELD_LIMIT, strip_brackets=True)
+    return (
+        "Invent a mnemonic for this card.\n"
+        f"<term>{safe_term}</term>\n"
+        f"<translation>{safe_translation}</translation>"
     )

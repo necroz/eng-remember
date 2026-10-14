@@ -5,9 +5,12 @@ from __future__ import annotations
 import json
 
 import pytest
+from pydantic import ValidationError
 
 from eng_remember.services.llm.schema import (
+    ExamplesResponse,
     Intent,
+    MnemonicResponse,
     ParsedCard,
     ParseResponse,
     extract_json_object,
@@ -110,3 +113,30 @@ def test_json_is_recovered_from_chatty_answers(raw: str, expected: str) -> None:
 def test_unusable_answers_raise(raw: str) -> None:
     with pytest.raises(json.JSONDecodeError):
         json.loads(extract_json_object(raw))
+
+
+def test_parsed_card_merges_singular_and_plural_examples() -> None:
+    singular = ParsedCard(term="run", translation="бежать", example="He runs.")
+
+    assert singular.examples == ["He runs."]
+
+    plural = ParsedCard.model_validate(
+        {"term": "run", "translation": "бежать", "examples": "He runs.\nA run."}
+    )
+
+    assert plural.example == "He runs."
+    assert plural.examples == ["He runs.", "A run."]
+    assert plural.to_draft().examples == ("He runs.", "A run.")
+
+
+def test_examples_response_dedupes_and_caps_at_five() -> None:
+    response = ExamplesResponse.model_validate(
+        {"examples": ["One.", " ", "one.", "Two.", "Three.", "Four.", "Five.", "Six."]}
+    )
+
+    assert response.examples == ["One.", "Two.", "Three.", "Four.", "Five."]
+
+
+def test_mnemonic_response_rejects_blank() -> None:
+    with pytest.raises(ValidationError):
+        MnemonicResponse.model_validate({"mnemonic": "   "})

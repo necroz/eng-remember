@@ -35,8 +35,10 @@ from eng_remember.repositories.cards import CardDraft
 __all__ = [
     "AnswerCheckResponse",
     "Clarification",
+    "ExamplesResponse",
     "ExpansionResponse",
     "Intent",
+    "MnemonicResponse",
     "ParseResponse",
     "ParsedCard",
     "extract_json_object",
@@ -56,10 +58,15 @@ TRANSCRIPTION_LIMIT = 80
 PART_OF_SPEECH_LIMIT = 40
 EXAMPLE_LIMIT = 300
 NOTES_LIMIT = 300
+MNEMONIC_LIMIT = 200
 TAG_LIMIT = 40
 TOPIC_LIMIT = 80
 QUESTION_LIMIT = 200
 OPTION_LIMIT = 48
+
+# The prompts ask for up to three examples; the hard ceiling is higher so a
+# generous model is not rejected, and everything past it is dropped in code.
+EXAMPLES_LIMIT = 5
 
 
 def flatten_line(value: str, *, limit: int, strip_brackets: bool = False) -> str:
@@ -73,6 +80,27 @@ def flatten_line(value: str, *, limit: int, strip_brackets: bool = False) -> str
     if strip_brackets:
         flat = _ANGLE_BRACKETS.sub("", flat)
     return " ".join(flat.split())[:limit].strip()
+
+
+def _accept_string_examples(value: object) -> object:
+    """Some models return one newline-joined string instead of a list."""
+    if isinstance(value, str):
+        return [part for part in value.splitlines() if part.strip()]
+    return value
+
+
+def _clean_example_list(examples: list[str]) -> list[str]:
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for item in examples:
+        flat = flatten_line(item, limit=EXAMPLE_LIMIT)
+        if not flat or flat.casefold() in seen:
+            continue
+        seen.add(flat.casefold())
+        cleaned.append(flat)
+        if len(cleaned) == EXAMPLES_LIMIT:
+            break
+    return cleaned
 
 
 class Intent(StrEnum):
@@ -119,6 +147,10 @@ class ParsedCard(BaseModel):
     transcription: str | None = Field(default=None, description="IPA, with slashes")
     part_of_speech: str | None = Field(default=None, description="noun, verb, adjective…")
     example: str | None = Field(default=None, description="One short English example sentence")
+    examples: list[str] = Field(
+        default_factory=list,
+        description="Up to three short English example sentences",
+    )
     notes: str | None = Field(default=None, description="Usage hint, false friend, register")
     tags: list[str] = Field(default_factory=list)
 
@@ -186,6 +218,33 @@ class ParsedCard(BaseModel):
         cleaned = [flatten_line(tag, limit=TAG_LIMIT, strip_brackets=True) for tag in tags]
         return [tag for tag in cleaned if tag]
 
+    @field_validator("examples", mode="before")
+    @classmethod
+    def _accept_string_examples(cls, value: object) -> object:
+        return _accept_string_examples(value)
+
+    @field_validator("examples")
+    @classmethod
+    def _clean_examples(cls, examples: list[str]) -> list[str]:
+        return _clean_example_list(examples)
+
+    @model_validator(mode="after")
+    def _sync_example_forms(self) -> ParsedCard:
+        """Keep ``example`` and ``examples`` telling the same story.
+
+        Small models fill only the singular field; ours fill the list. Both are
+        accepted, and afterwards the main example is the first of the list, so
+        rotation and the revealed card cannot disagree.
+        """
+        if not self.examples and self.example:
+            self.examples = [self.example]
+        elif self.examples:
+            if not self.example:
+                self.example = self.examples[0]
+            elif self.example not in self.examples:
+                self.examples = [self.example, *self.examples][:EXAMPLES_LIMIT]
+        return self
+
     def to_draft(self) -> CardDraft:
         return CardDraft(
             term=self.term,
@@ -193,6 +252,7 @@ class ParsedCard(BaseModel):
             transcription=self.transcription,
             part_of_speech=self.part_of_speech,
             example=self.example,
+            examples=tuple(self.examples),
             notes=self.notes,
             tags=tuple(self.tags),
         ).normalized()
@@ -348,6 +408,40 @@ class ExpansionResponse(BaseModel):
 
     def to_drafts(self) -> list[CardDraft]:
         return [card.to_draft() for card in self.cards]
+
+
+class ExamplesResponse(BaseModel):
+    """Fresh example sentences for an already existing card."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    examples: list[str] = Field(default_factory=list)
+
+    @field_validator("examples", mode="before")
+    @classmethod
+    def _accept_string_examples(cls, value: object) -> object:
+        return _accept_string_examples(value)
+
+    @field_validator("examples")
+    @classmethod
+    def _clean_examples(cls, examples: list[str]) -> list[str]:
+        return _clean_example_list(examples)
+
+
+class MnemonicResponse(BaseModel):
+    """One short memory hook for a card, in the learner's own language."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    mnemonic: str = Field(min_length=1)
+
+    @field_validator("mnemonic")
+    @classmethod
+    def _clean_mnemonic(cls, value: str) -> str:
+        cleaned = flatten_line(value, limit=MNEMONIC_LIMIT, strip_brackets=True)
+        if not cleaned:
+            raise ValueError("mnemonic is empty")
+        return cleaned
 
 
 # Near-misses seen from smaller models, mapped onto the three verdicts.
