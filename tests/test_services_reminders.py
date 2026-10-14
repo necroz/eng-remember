@@ -460,6 +460,7 @@ class TestDigestPlanning:
         user: User,
         notifier: RecordingNotifier,
     ) -> None:
+        settings.reminders.digest_enabled = True
         settings.reminders.digest_weekday = TODAY.weekday()
         service = build_reminder_service(session, settings, notifier)
         await give_work(services, user, due=2)
@@ -503,6 +504,7 @@ class TestDigestPlanning:
         user: User,
         notifier: RecordingNotifier,
     ) -> None:
+        settings.reminders.digest_enabled = True
         settings.reminders.digest_weekday = TODAY.weekday()
         service = build_reminder_service(session, settings, notifier)
         await give_work(services, user)

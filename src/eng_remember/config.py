@@ -153,6 +153,10 @@ class ReminderSettings(BaseModel):
         le=6,
         description="Weekday of the weekly digest; 0 is Monday, as date.weekday() counts",
     )
+    digest_enabled: bool = Field(
+        default=True,
+        description="Global switch for the digest; learners can also switch theirs off",
+    )
     # How many learners are fetched and decided at once. A tick always walks the
     # whole candidate list — a ceiling here would mean accounts past it never got
     # looked at, because every tick restarts from the lowest id.

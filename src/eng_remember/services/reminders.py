@@ -30,6 +30,7 @@ from eng_remember.repositories.cards import CardRepository
 from eng_remember.repositories.reviews import ReviewRepository
 from eng_remember.repositories.streaks import StreakRepository
 from eng_remember.repositories.users import UserRepository
+from eng_remember.services.digest import bucket_by_local_day, local_midnight
 from eng_remember.utils.time import ensure_utc, local_date, local_day_start, utcnow
 
 __all__ = ["Notifier", "ReminderPlan", "ReminderRun", "ReminderService", "build_reminder_service"]
@@ -190,7 +191,7 @@ class ReminderService:
                 answered_today=answered.get(user.id, 0) > 0,
                 streak_alive=streak.state.is_alive,
                 streak_days=streak.state.current,
-                digest_enabled=user.digest_enabled,
+                digest_enabled=user.digest_enabled and self._reminders.digest_enabled,
                 last_digest_on=user.last_digest_on,
             )
             kind = decide(context, now=now, settings=self._reminders)
@@ -219,43 +220,44 @@ class ReminderService:
 
         The summary covers the seven *complete* local days before today, so a
         Monday digest reads Mon–Sun instead of a nearly empty today. The heatmap
-        does include today — it is a rolling picture, not a report.
+        does include today — it is a rolling picture, not a report. Boundaries
+        are local midnights of specific dates, so a DST week cannot shift them
+        by an hour.
         """
-        day_start = local_day_start(user.timezone, now=now)
-        report_start = day_start - timedelta(days=7)
-        history = await self._reviews.history_since(
-            user.id, since=day_start - timedelta(days=HEATMAP_DAYS - 1)
-        )
+        moment = ensure_utc(now) or now
+        today = local_date(user.timezone, now=moment)
+        week_start = today - timedelta(days=7)
+        oldest = today - timedelta(days=HEATMAP_DAYS - 1)
 
-        by_day: dict[date, int] = {}
+        history = await self._reviews.history_since(
+            user.id, since=local_midnight(user.timezone, oldest)
+        )
+        by_day = bucket_by_local_day(history, user.timezone)
+
         total = 0
         correct = 0
         for review in history:
             reviewed_at = ensure_utc(review.reviewed_at) or review.reviewed_at
             day = local_date(user.timezone, now=reviewed_at)
-            by_day[day] = by_day.get(day, 0) + 1
-            if report_start <= reviewed_at < day_start:
+            if week_start <= day < today:
                 total += 1
                 if review.rating is not ReviewRating.AGAIN:
                     correct += 1
 
-        series = daily_series(
-            by_day,
-            end=local_date(user.timezone, now=now),
-            length=HEATMAP_DAYS,
-        )
         weak = await self._cards.weakest(user.id)
         return WeeklyDigest(
-            days=tuple(series),
+            days=tuple(daily_series(by_day, end=today, length=HEATMAP_DAYS)),
             total=total,
             correct=correct,
             new_words=await self._cards.count_added_since(
-                user.id, since=report_start, until=day_start
+                user.id,
+                since=local_midnight(user.timezone, week_start),
+                until=local_midnight(user.timezone, today),
             ),
             weak=tuple((card.term, card.again_count) for card in weak),
             due_now=due_now,
             due_week=await self._cards.count_due_within(
-                user.id, now=now, until=now + timedelta(days=7)
+                user.id, now=moment, until=moment + timedelta(days=7)
             ),
         )
 

@@ -26,7 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 import eng_remember.models  # noqa: F401  — registers tables on Base.metadata
 from eng_remember.bot.dispatcher import build_dispatcher
-from eng_remember.config import Settings
+from eng_remember.config import ReminderSettings, Settings
 from eng_remember.db import Base, create_engine, create_session_factory
 from eng_remember.models.card import Card
 from eng_remember.models.user import User
@@ -133,13 +133,18 @@ class RecordingSession(BaseSession):
 
 @pytest.fixture
 def settings(tmp_path: Path) -> Settings:
-    """Settings pointing at a scratch database, with no LLM key configured."""
+    """Settings pointing at a scratch database, with no LLM key configured.
+
+    The weekly digest is off here on purpose: a test suite that depends on the
+    real weekday would go red once a week. Digest tests switch it back on.
+    """
     return Settings(
         _env_file=None,
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'test.db'}",
         bot_token=SecretStr(TEST_TOKEN),
         log_json=False,
         log_level="WARNING",
+        reminders=ReminderSettings(digest_enabled=False),
     )
 
 

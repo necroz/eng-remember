@@ -108,7 +108,8 @@ def _digest_owed(
     settings: ReminderSettings,
 ) -> bool:
     return (
-        context.digest_enabled
+        settings.digest_enabled
+        and context.digest_enabled
         and today.weekday() == settings.digest_weekday
         and context.last_digest_on != today
         and context.last_morning_on != today
