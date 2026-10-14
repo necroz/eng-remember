@@ -177,10 +177,13 @@ def build_router() -> Router:
 
         await query.answer()
         await state.update_data({HINT_USED_KEY: True})
+        # The keyboard is passed back explicitly: an edit without one drops the
+        # front's buttons, and «Не знаю» must survive the hint.
         await rendering.edit_or_send(
             query,
             texts.card_front(card, hint=cloze(example, card.term)),
             bot=bot,
+            reply_markup=keyboards.review_prompt(card.id, hint=True),
         )
 
     @router.callback_query(ReviewCB.filter(F.action == "dont_know"))

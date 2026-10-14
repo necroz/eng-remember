@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from aiogram import Bot, Dispatcher
-from aiogram.methods import AnswerCallbackQuery
+from aiogram.methods import AnswerCallbackQuery, EditMessageText
+from aiogram.types import InlineKeyboardMarkup
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -119,6 +120,33 @@ async def test_the_hint_shows_a_cloze_and_caps_a_fast_answer_at_good(
         review = (await check.scalars(select(Review))).one()
         assert review.rating is ReviewRating.GOOD
     assert "💡 подсказка" in result_text(recording)
+
+
+async def test_the_hint_keeps_the_front_buttons(
+    dispatcher: Dispatcher,
+    bot: Bot,
+    recording: RecordingSession,
+    services: Services,
+    user: User,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await seed_due_card(
+        services,
+        user,
+        session_factory,
+        CardDraft(term="run", translation="бежать", examples=("He runs every morning.",)),
+    )
+    await send(dispatcher, bot, "/review", update_id=20)
+
+    await tap(dispatcher, bot, button_with(recording, "rv:hint"), update_id=21)
+
+    edits = [m for m in recording.requests if isinstance(m, EditMessageText)]
+    assert edits, recording.requests
+    markup = edits[-1].reply_markup
+    assert isinstance(markup, InlineKeyboardMarkup)
+    data = [button.callback_data or "" for row in markup.inline_keyboard for button in row]
+    assert any("rv:hint" in value for value in data)
+    assert any("rv:dont_know" in value for value in data)
 
 
 async def test_a_repeated_hint_tap_is_a_quiet_no_op(
