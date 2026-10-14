@@ -49,3 +49,36 @@ def test_rating_for_uses_speed_only_for_correct_answers() -> None:
         rating_for(Verdict.WRONG, duration_seconds=1.0, easy_threshold_seconds=5.0)
         is ReviewRating.AGAIN
     )
+
+
+def test_hint_caps_fast_correct_at_good() -> None:
+    assert (
+        rating_for(
+            Verdict.CORRECT,
+            duration_seconds=1.0,
+            easy_threshold_seconds=5.0,
+            hint_used=True,
+        )
+        is ReviewRating.GOOD
+    )
+
+
+def test_hint_does_not_touch_other_verdicts() -> None:
+    assert (
+        rating_for(
+            Verdict.ALMOST,
+            duration_seconds=1.0,
+            easy_threshold_seconds=5.0,
+            hint_used=True,
+        )
+        is ReviewRating.HARD
+    )
+    assert (
+        rating_for(
+            Verdict.WRONG,
+            duration_seconds=1.0,
+            easy_threshold_seconds=5.0,
+            hint_used=True,
+        )
+        is ReviewRating.AGAIN
+    )

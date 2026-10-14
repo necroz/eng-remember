@@ -73,14 +73,21 @@ def rating_for(
     *,
     duration_seconds: float | None,
     easy_threshold_seconds: float,
+    hint_used: bool = False,
 ) -> ReviewRating:
     """The FSRS grade a verdict earns.
 
     Speed only separates the two correct grades: a fast correct answer is
     "easy", a slow one is only "good". A missing duration counts as slow — a
     card answered after a break must not collect the easy bonus for it.
+
+    A hint, when one was shown, caps the grade at "good": the answer is real,
+    but it was reached with the context on screen, and that is not the recall
+    "easy" is meant to reward.
     """
     if verdict is Verdict.CORRECT:
+        if hint_used:
+            return ReviewRating.GOOD
         if duration_seconds is not None and duration_seconds < easy_threshold_seconds:
             return ReviewRating.EASY
         return ReviewRating.GOOD
