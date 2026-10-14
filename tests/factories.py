@@ -15,7 +15,7 @@ from aiogram.methods import (
     SendMessage,
     TelegramMethod,
 )
-from aiogram.types import CallbackQuery, Chat, Message, Update
+from aiogram.types import CallbackQuery, Chat, Document, Message, Update
 from aiogram.types import User as TelegramUser
 from openai.types.chat import ChatCompletion
 
@@ -39,6 +39,7 @@ __all__ = [
     "completion",
     "expansion_payload",
     "make_callback_update",
+    "make_document_update",
     "make_message_update",
     "message_from",
     "parse_payload",
@@ -100,6 +101,30 @@ def make_callback_update(
             chat_instance="chat-instance",
             data=data,
             message=message_from(text, message_id=message_id, user_id=user_id),
+        ),
+    )
+
+
+def make_document_update(
+    file_name: str,
+    *,
+    update_id: int = 3,
+    user_id: int = TEST_USER_ID,
+) -> Update:
+    """A private-chat message carrying a document, for the import flow."""
+    return Update(
+        update_id=update_id,
+        message=Message(
+            message_id=1,
+            date=_FIXED_DATE,
+            chat=Chat(id=user_id, type="private"),
+            from_user=telegram_user(user_id),
+            document=Document(
+                file_id="document-1",
+                file_unique_id="document-unique-1",
+                file_name=file_name,
+                file_size=128,
+            ),
         ),
     )
 

@@ -10,6 +10,7 @@ from eng_remember.bot.middlewares.user import UserMiddleware
 from eng_remember.bot.routers import (
     capture,
     errors,
+    files,
     library,
     practice,
     preferences,
@@ -46,6 +47,7 @@ def build_dispatcher(settings: Settings, session_factory: SessionFactory) -> Dis
     dispatcher.include_router(review.build_router())
     dispatcher.include_router(practice.build_router())
     dispatcher.include_router(library.build_router())
+    dispatcher.include_router(files.build_router())
     dispatcher.include_router(preferences.build_router())
     # Last: claims any plain text no other router wanted.
     dispatcher.include_router(capture.build_router())

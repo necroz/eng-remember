@@ -30,6 +30,8 @@ COMMANDS = [
     BotCommand(command="decks", description="Колоды"),
     BotCommand(command="stats", description="Статистика"),
     BotCommand(command="paused", description="Слова на паузе"),
+    BotCommand(command="export", description="Выгрузить слова в CSV"),
+    BotCommand(command="import", description="Загрузить слова из CSV"),
     BotCommand(command="limit", description="Сколько новых слов в день"),
     BotCommand(command="tz", description="Часовой пояс"),
     BotCommand(command="remind", description="Напоминания"),

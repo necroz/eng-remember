@@ -19,6 +19,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from eng_remember.bot import texts
 from eng_remember.bot.callbacks import (
     ClarifyCB,
+    FileImportCB,
     ImportCB,
     LeechCB,
     PauseCB,
@@ -29,6 +30,7 @@ from eng_remember.models.card import Card
 
 __all__ = [
     "clarification",
+    "file_import_confirm",
     "import_confirm",
     "leech_menu",
     "main_menu",
@@ -73,6 +75,15 @@ def clarification(options: list[str]) -> InlineKeyboardMarkup:
     for index, option in enumerate(options):
         builder.button(text=option, callback_data=ClarifyCB(action="option", index=index))
     builder.button(text="🤷 Реши сам", callback_data=ClarifyCB(action="skip"))
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def file_import_confirm() -> InlineKeyboardMarkup:
+    """Confirmation of a CSV batch: exactly the same yes/no shape as capture."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✅ Сохранить", callback_data=FileImportCB(action="confirm"))
+    builder.button(text="❌ Отмена", callback_data=FileImportCB(action="cancel"))
     builder.adjust(1)
     return builder.as_markup()
 

@@ -14,6 +14,8 @@ from aiogram.filters.callback_data import CallbackData
 __all__ = [
     "ClarifyAction",
     "ClarifyCB",
+    "FileImportAction",
+    "FileImportCB",
     "ImportAction",
     "ImportCB",
     "LeechAction",
@@ -32,6 +34,7 @@ ClarifyAction = Literal["option", "skip"]
 LeechAction = Literal["mnemonic", "example", "pause", "leave"]
 PauseAction = Literal["resume"]
 PracticeAction = Literal["start", "answer"]
+FileImportAction = Literal["confirm", "cancel"]
 
 
 class ReviewCB(CallbackData, prefix="rv"):
@@ -99,3 +102,9 @@ class PracticeCB(CallbackData, prefix="pr"):
     token: int = 0
     question: int = 0
     option: int = 0
+
+
+class FileImportCB(CallbackData, prefix="fi"):
+    """Confirmation of a CSV import waiting in FSM storage."""
+
+    action: FileImportAction

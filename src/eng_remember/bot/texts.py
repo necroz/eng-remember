@@ -18,8 +18,12 @@ from eng_remember.domain.praise import render
 from eng_remember.models.card import Card
 from eng_remember.repositories.cards import CardDraft
 from eng_remember.services.cards import ImportOutcome, UserStats
+from eng_remember.services.csv_io import CsvRow
 from eng_remember.services.discovery import DiscoveryResult
 from eng_remember.utils.time import ensure_utc, humanize_interval, utcnow
+
+# How many imported rows the preview shows before it starts counting.
+PREVIEW_ROWS = 10
 
 __all__ = [
     "BTN_ADD",
@@ -44,6 +48,14 @@ __all__ = [
     "discovery_preview",
     "discovery_unavailable",
     "explain",
+    "file_export_caption",
+    "file_import_cancelled",
+    "file_import_empty",
+    "file_import_preview",
+    "file_import_prompt",
+    "file_import_result",
+    "file_import_too_big",
+    "file_import_unreadable",
     "global_error",
     "hint_unavailable",
     "import_cancelled",
@@ -113,7 +125,8 @@ def welcome_new(first_name: str | None, deck_name: str) -> str:
         "• <code>to run, to jump, to swim</code>\n\n"
         f"Дальше — «{BTN_REVIEW}», и я буду показывать то, что пора повторить.\n\n"
         "Если слово никак не даётся, я сам предложу помощь, а приостановленные "
-        "слова ждут в /paused. Хочется просто погонять слова — /practice."
+        "слова ждут в /paused. Хочется просто погонять слова — /practice.\n"
+        "Выгрузить или загрузить свой список файлом — /export и /import."
     )
 
 
@@ -340,6 +353,74 @@ def practice_finished(correct: int, total: int) -> str:
 
 def practice_unavailable() -> str:
     return "Для тренировки нужно хотя бы 4 слова в повторениях."
+
+
+def file_export_caption(total: int) -> str:
+    word = _plural(total, "слово", "слова", "слов")
+    return f"📄 В файле {total} {word}."
+
+
+def file_import_prompt() -> str:
+    return (
+        "Пришлите CSV-файл со словами — разберу и покажу, что нашёл.\n\n"
+        "Колонки: <code>term;translation;transcription;part_of_speech;example;notes;tags;deck</code>.\n"
+        "Обязательна только <code>term</code>; переводы, если их нет, дополнит модель.\n"
+        "Разделитель — <code>;</code>, <code>,</code> или табуляция; заголовок необязателен."
+    )
+
+
+def file_import_preview(
+    rows: Sequence[CsvRow],
+    *,
+    duplicates: int,
+    untranslated: int,
+    skipped: int,
+    filled: int,
+) -> str:
+    word = _plural(len(rows), "слово", "слова", "слов")
+    lines = [f"📄 Нашёл {len(rows)} {word} для импорта.", ""]
+    for row in list(rows)[:PREVIEW_ROWS]:
+        lines.append(f"• <b>{escape(row.term)}</b> — {escape(row.translation or '')}")
+    if len(rows) > PREVIEW_ROWS:
+        lines.append(f"… и ещё {len(rows) - PREVIEW_ROWS}")
+
+    notes: list[str] = []
+    if duplicates:
+        notes.append(f"уже было: {duplicates}")
+    if untranslated:
+        notes.append(f"без перевода пропущено: {untranslated}")
+    if skipped:
+        notes.append(f"нераспознанных строк: {skipped}")
+    if filled:
+        notes.append(f"переводов добавила модель: {filled}")
+    if notes:
+        lines.append("")
+        lines.append("<i>(" + "; ".join(notes) + ")</i>")
+    return "\n".join(lines)
+
+
+def file_import_result(outcome: ImportOutcome) -> str:
+    word = _plural(len(outcome.added), "слово", "слова", "слов")
+    lines = [f"✅ Импортировано: {len(outcome.added)} {word}."]
+    if outcome.total_skipped:
+        lines.append(f"Пропущено дублей: {outcome.total_skipped}.")
+    return "\n".join(lines)
+
+
+def file_import_cancelled() -> str:
+    return "Импорт отменён."
+
+
+def file_import_empty() -> str:
+    return "В файле не нашлось слов с переводом."
+
+
+def file_import_too_big() -> str:
+    return "Файл слишком большой — пришлите CSV до 1 МБ."
+
+
+def file_import_unreadable() -> str:
+    return "Не удалось прочитать файл — сохраните его в UTF-8."
 
 
 def import_preview(

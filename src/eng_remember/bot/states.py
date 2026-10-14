@@ -13,6 +13,11 @@ __all__ = [
     "DRAFT_KEY",
     "ENGINE_KEY",
     "EXAMPLE_KEY",
+    "FILE_DUPLICATES_KEY",
+    "FILE_FILLED_KEY",
+    "FILE_ROWS_KEY",
+    "FILE_SKIPPED_KEY",
+    "FILE_UNTRANSLATED_KEY",
     "FRONT_MESSAGE_KEY",
     "HINT_USED_KEY",
     "OPTIONS_KEY",
@@ -29,6 +34,7 @@ __all__ = [
     "SHOWN_CARD_KEY",
     "TOPIC_KEY",
     "AddWords",
+    "ImportFile",
     "Practice",
     "Review",
 ]
@@ -81,6 +87,15 @@ CORRECT_COUNT_KEY = "practice_correct"
 PRACTICE_TOKEN_KEY = "practice_token"
 PRACTICE_ANSWER_KEY = "practice_answering"
 
+# A CSV import waiting for confirmation: the cleaned rows (plain dicts) and the
+# counters the preview showed, so the result message can stay honest about what
+# was skipped and why.
+FILE_ROWS_KEY = "file_rows"
+FILE_SKIPPED_KEY = "file_skipped"
+FILE_DUPLICATES_KEY = "file_duplicates"
+FILE_UNTRANSLATED_KEY = "file_untranslated"
+FILE_FILLED_KEY = "file_filled"
+
 
 class AddWords(StatesGroup):
     """Waiting for the user to confirm a parsed batch of cards."""
@@ -101,3 +116,9 @@ class Practice(StatesGroup):
     """Waiting for the learner to pick one of the quiz options."""
 
     awaiting_answer = State()
+
+
+class ImportFile(StatesGroup):
+    """Waiting for the learner to confirm a CSV import."""
+
+    confirming = State()
