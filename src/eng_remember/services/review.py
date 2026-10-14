@@ -132,6 +132,12 @@ class ReviewService:
         previous = card.schedule
         updated = self._scheduler.review(previous, rating, now=moment)
 
+        if rating is ReviewRating.AGAIN:
+            # Every failed answer counts, in any state: FSRS lapses only grow in
+            # review, and the words stuck in learning are exactly the ones the
+            # leech flow exists for.
+            card.again_count = (card.again_count or 0) + 1
+
         last_review = previous.last_review_at
         scheduled_seconds = (previous.due_at - last_review).total_seconds() if last_review else 0.0
         elapsed_seconds = (moment - last_review).total_seconds() if last_review else 0.0

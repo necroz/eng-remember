@@ -16,7 +16,9 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     false,
+    text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from eng_remember.db.base import Base, TimestampMixin, UtcDateTime
@@ -61,6 +63,13 @@ class Card(Base, TimestampMixin):
     transcription: Mapped[str | None] = mapped_column(String(128))
     part_of_speech: Mapped[str | None] = mapped_column(String(32))
     example: Mapped[str | None] = mapped_column(Text)
+    # JSONB on PostgreSQL: plain ``json`` has no equality operator, which breaks
+    # alembic's server-default comparison (``'[]'::json = '[]'``).
+    examples: Mapped[list[str]] = mapped_column(
+        JSON().with_variant(JSONB, "postgresql"),
+        default=list,
+        server_default=text("'[]'"),
+    )
     notes: Mapped[str | None] = mapped_column(Text)
     tags: Mapped[list[str]] = mapped_column(JSON, default=list)
     source: Mapped[str] = mapped_column(String(32), default="manual", server_default="manual")
@@ -78,6 +87,11 @@ class Card(Base, TimestampMixin):
     last_review_at: Mapped[datetime | None] = mapped_column(UtcDateTime)
     reps: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     lapses: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
+    # Every failed answer, in any state. FSRS lapses only grow once a card
+    # leaves learning, which would hide the words stuck in the earliest stage.
+    again_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    leech_level: Mapped[int] = mapped_column(SmallInteger, default=0, server_default="0")
 
     is_suspended: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
 

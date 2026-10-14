@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from eng_remember.domain.enums import CardState, ReviewRating
 from eng_remember.errors import DuplicateCardError
+from eng_remember.models.card import Card
 from eng_remember.models.review import Review
 from eng_remember.models.user import User
 from eng_remember.repositories.cards import CardDraft
@@ -337,3 +338,40 @@ class TestReviewService:
 
         assert result.due_at.tzinfo is not None
         assert abs((result.due_at - utcnow()) - timedelta(minutes=10)) < timedelta(minutes=2)
+
+
+class TestCardExamples:
+    async def test_draft_normalizes_example_and_examples(self) -> None:
+        draft = CardDraft(
+            term="run", translation="бежать", examples=("He runs.", "A run.")
+        ).normalized()
+
+        assert draft.example == "He runs."
+        assert draft.examples == ("He runs.", "A run.")
+
+    async def test_new_card_keeps_all_examples(self, services: Services, user: User) -> None:
+        card = await services.card_service.add_draft(
+            user,
+            CardDraft(term="run", translation="бежать", examples=("He runs.", "A run.")),
+        )
+
+        assert card.examples == ["He runs.", "A run."]
+        assert card.example == "He runs."
+
+
+class TestAgainCount:
+    async def test_again_counts_even_while_learning(
+        self, services: Services, user: User, saved_card: Card
+    ) -> None:
+        """lapses ignores failures in learning; leech detection must not."""
+        await services.review_service.answer(user, saved_card, ReviewRating.AGAIN)
+
+        assert saved_card.again_count == 1
+        assert saved_card.lapses == 0
+
+    async def test_other_ratings_do_not_count(
+        self, services: Services, user: User, saved_card: Card
+    ) -> None:
+        await services.review_service.answer(user, saved_card, ReviewRating.GOOD)
+
+        assert saved_card.again_count == 0

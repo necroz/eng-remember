@@ -8,6 +8,7 @@ from typing import Any, cast
 from sqlalchemy import CursorResult, Select, and_, case, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from eng_remember.domain.examples import merge_examples
 from eng_remember.domain.srs import CardSchedule
 from eng_remember.models.card import Card
 from eng_remember.utils.time import ensure_utc
@@ -41,17 +42,25 @@ class CardDraft:
     transcription: str | None = None
     part_of_speech: str | None = None
     example: str | None = None
+    examples: tuple[str, ...] = field(default_factory=tuple)
     notes: str | None = None
     tags: tuple[str, ...] = field(default_factory=tuple)
 
     def normalized(self) -> CardDraft:
-        """Trim whitespace; a trailing space must not create a duplicate card."""
+        """Trim whitespace; a trailing space must not create a duplicate card.
+
+        The example list keeps its invariant here: the main example is the
+        first element, so rotation always starts with the sentence the learner
+        may have pinned themselves.
+        """
+        examples = tuple(merge_examples(self.example, self.examples))
         return CardDraft(
             term=self.term.strip(),
             translation=self.translation.strip(),
             transcription=_clean(self.transcription),
             part_of_speech=_clean(self.part_of_speech),
-            example=_clean(self.example),
+            example=examples[0] if examples else None,
+            examples=examples,
             notes=_clean(self.notes),
             tags=tuple(tag.strip() for tag in self.tags if tag.strip()),
         )
@@ -89,6 +98,7 @@ class CardRepository:
             transcription=cleaned.transcription,
             part_of_speech=cleaned.part_of_speech,
             example=cleaned.example,
+            examples=list(cleaned.examples),
             notes=cleaned.notes,
             tags=list(cleaned.tags),
             source=source,
@@ -274,9 +284,35 @@ class CardRepository:
         card.transcription = draft.transcription
         card.part_of_speech = draft.part_of_speech
         card.example = draft.example
+        card.examples = list(draft.examples)
         card.notes = draft.notes
         card.tags = list(draft.tags)
         await self._session.flush()
+
+    async def update_examples(self, card: Card, examples: list[str]) -> None:
+        card.examples = list(examples)
+        card.example = examples[0] if examples else None
+        await self._session.flush()
+
+    async def update_notes(self, card: Card, notes: str | None) -> None:
+        card.notes = notes
+        await self._session.flush()
+
+    async def list_suspended(self, user_id: int, *, limit: int = 20) -> list[Card]:
+        stmt = (
+            select(Card)
+            .where(Card.user_id == user_id, Card.is_suspended.is_(True))
+            .order_by(Card.term)
+            .limit(limit)
+        )
+        return list((await self._session.scalars(stmt)).all())
+
+    async def count_suspended(self, user_id: int) -> int:
+        stmt = select(func.count(Card.id)).where(
+            Card.user_id == user_id,
+            Card.is_suspended.is_(True),
+        )
+        return int(await self._session.scalar(stmt) or 0)
 
     async def set_suspended(self, card: Card, *, suspended: bool) -> None:
         card.is_suspended = suspended

@@ -90,6 +90,17 @@ class ReviewSettings(BaseModel):
         gt=0,
         description="A correct answer faster than this earns the easy grade",
     )
+    leech_threshold: int = Field(
+        default=4,
+        ge=2,
+        description="Failed answers before the treatment menu is offered",
+    )
+    examples_per_card: int = Field(
+        default=3,
+        ge=1,
+        le=5,
+        description="Example sentences kept per card; prompts ask for up to three",
+    )
 
 
 class StreakSettings(BaseModel):

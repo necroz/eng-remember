@@ -401,3 +401,22 @@ class TestReviewLog:
 
         assert len(history) == 2
         assert history[0].reviewed_at > history[1].reviewed_at
+
+
+class TestSuspendedListing:
+    async def test_suspended_cards_are_listed_and_counted(
+        self,
+        cards: CardRepository,
+        session: AsyncSession,
+        user: User,
+        deck: int,
+    ) -> None:
+        card = await add(cards, session, user, deck, "ubiquitous")
+
+        await cards.set_suspended(card, suspended=True)
+        assert [item.id for item in await cards.list_suspended(user.id)] == [card.id]
+        assert await cards.count_suspended(user.id) == 1
+
+        await cards.set_suspended(card, suspended=False)
+        assert await cards.list_suspended(user.id) == []
+        assert await cards.count_suspended(user.id) == 0
