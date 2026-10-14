@@ -23,15 +23,20 @@ from eng_remember.bot.rendering import callback_chat_id
 from eng_remember.bot.states import (
     ANSWERED_KEY,
     ANSWERING_KEY,
+    EXAMPLE_KEY,
     FRONT_MESSAGE_KEY,
+    HINT_USED_KEY,
     SESSION_KEY,
     SHOWN_AT_KEY,
     SHOWN_CARD_KEY,
     Review,
 )
+from eng_remember.domain.cloze import cloze
+from eng_remember.domain.examples import pick_example
 from eng_remember.models.card import Card
 from eng_remember.models.user import User
 from eng_remember.services.container import Services
+from eng_remember.services.enrichment import enqueue_examples
 from eng_remember.utils.time import ensure_utc, utcnow
 
 log = structlog.get_logger(__name__)
@@ -69,7 +74,7 @@ def build_router() -> Router:
             await message.answer(texts.nothing_due(next_due), reply_markup=keyboards.main_menu())
             return
 
-        await _send_front(bot, message.chat.id, queue.cards[0], state)
+        await _send_front(bot, message.chat.id, queue.cards[0], state, services)
 
     @router.message(Review.awaiting_answer, Command("add"))
     @router.message(Review.awaiting_answer, F.text == texts.BTN_ADD)
@@ -134,6 +139,47 @@ def build_router() -> Router:
             duration_seconds=_seconds_between(shown_at, sent_at),
         )
 
+    @router.callback_query(ReviewCB.filter(F.action == "hint"))
+    async def show_hint(
+        query: CallbackQuery,
+        callback_data: ReviewCB,
+        bot: Bot,
+        user: User,
+        services: Services,
+        state: FSMContext,
+    ) -> None:
+        """Reveal the example with the term blanked, and remember it was used.
+
+        The tap only makes sense while its own card is on screen — the same
+        freshness check as «Не знаю» keeps a leftover button in the chat history
+        from putting a hint on someone else's card.
+        """
+        data = await state.get_data()
+        if (
+            await state.get_state() != Review.awaiting_answer.state
+            or data.get(SHOWN_CARD_KEY) != callback_data.card_id
+            or data.get(ANSWERING_KEY) is not None
+        ):
+            await query.answer(texts.stale_button(), show_alert=True)
+            return
+        if data.get(HINT_USED_KEY):
+            await query.answer()
+            return
+
+        example = data.get(EXAMPLE_KEY)
+        card = await services.cards.get(callback_data.card_id, user_id=user.id)
+        if card is None or not isinstance(example, str) or not example:
+            await query.answer(texts.hint_unavailable(), show_alert=True)
+            return
+
+        await query.answer()
+        await state.update_data({HINT_USED_KEY: True})
+        await rendering.edit_or_send(
+            query,
+            texts.card_front(card, hint=cloze(example, card.term)),
+            bot=bot,
+        )
+
     @router.callback_query(ReviewCB.filter(F.action == "dont_know"))
     async def dont_know(
         query: CallbackQuery,
@@ -180,21 +226,34 @@ def build_router() -> Router:
     async def legacy_button(query: CallbackQuery) -> None:
         await query.answer(texts.stale_button(), show_alert=True)
 
-    async def _send_front(bot: Bot, chat_id: int, card: Card, state: FSMContext) -> None:
+    async def _send_front(
+        bot: Bot, chat_id: int, card: Card, state: FSMContext, services: Services
+    ) -> None:
+        # The example for this repetition is chosen once and remembered: the
+        # hint and the revealed back must show the same sentence even though the
+        # card's review counter moves between the front and the answer.
+        example = pick_example(card.examples or [], card.example, card.reps)
         await state.set_state(Review.awaiting_answer)
         await state.update_data(
             {
                 SHOWN_CARD_KEY: card.id,
                 SHOWN_AT_KEY: utcnow().isoformat(),
                 ANSWERING_KEY: None,
+                EXAMPLE_KEY: example,
+                HINT_USED_KEY: False,
             }
         )
         sent = await bot.send_message(
             chat_id,
             texts.card_front(card),
-            reply_markup=keyboards.review_prompt(card.id),
+            reply_markup=keyboards.review_prompt(card.id, hint=example is not None),
         )
         await state.update_data({FRONT_MESSAGE_KEY: sent.message_id})
+
+        # Older cards catch up on examples in the background; the current
+        # repetition runs on whatever it already has.
+        if services.enrichment.needs_examples(card):
+            enqueue_examples(card.user_id, card.id)
 
     async def _complete(
         *,
@@ -209,8 +268,14 @@ def build_router() -> Router:
     ) -> None:
         """Grade the answer, reveal the card and move on."""
         before = await state.get_data()
+        hint_used = bool(before.get(HINT_USED_KEY))
+        example = before.get(EXAMPLE_KEY)
         outcome = await services.grading_service.grade(
-            user, card, typed=typed, duration_seconds=duration_seconds
+            user,
+            card,
+            typed=typed,
+            duration_seconds=duration_seconds,
+            hint_used=hint_used,
         )
 
         # While the model was checking, the learner may have paused the review,
@@ -247,6 +312,8 @@ def build_router() -> Router:
             interval_text=outcome.answer.interval_text,
             streak=streak.current if streak else 0,
             notes=texts.streak_notes(outcome.answer.streak),
+            hint_used=hint_used,
+            example=example if isinstance(example, str) else None,
         )
         front_message = data.get(FRONT_MESSAGE_KEY)
         await rendering.edit_message_or_send(
@@ -270,7 +337,7 @@ def build_router() -> Router:
                 reply_markup=keyboards.main_menu(),
             )
             return
-        await _send_front(bot, chat_id, next_card, state)
+        await _send_front(bot, chat_id, next_card, state, services)
 
     def _seconds_between(start: datetime | None, end: datetime | None) -> float | None:
         if start is None or end is None:

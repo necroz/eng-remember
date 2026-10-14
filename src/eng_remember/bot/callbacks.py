@@ -13,7 +13,7 @@ from aiogram.filters.callback_data import CallbackData
 
 __all__ = ["ClarifyAction", "ClarifyCB", "ImportAction", "ImportCB", "ReviewAction", "ReviewCB"]
 
-ReviewAction = Literal["dont_know"]
+ReviewAction = Literal["dont_know", "hint"]
 ImportAction = Literal["confirm", "cancel", "more"]
 ClarifyAction = Literal["option", "skip"]
 
@@ -21,9 +21,10 @@ ClarifyAction = Literal["option", "skip"]
 class ReviewCB(CallbackData, prefix="rv"):
     """Everything the review card buttons need.
 
-    One button per card: «Не знаю». The card id travels in the payload instead
-    of being kept in FSM storage, so a stale tap is detected by the state check
-    rather than acting on whatever card happens to be current.
+    Buttons per card: «Не знаю» and, when the card has an example, «Подсказка».
+    The card id travels in the payload instead of being kept in FSM storage, so
+    a stale tap is detected by the state check rather than acting on whatever
+    card happens to be current.
     """
 
     action: ReviewAction

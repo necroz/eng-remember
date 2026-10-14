@@ -72,6 +72,17 @@ async def test_a_slow_correct_answer_is_good(
     assert outcome.rating is ReviewRating.GOOD
 
 
+async def test_a_hint_caps_a_fast_correct_answer_at_good(
+    services: Services, user: User, saved_card: Card
+) -> None:
+    outcome = await build(services, None).grade(
+        user, saved_card, typed="вездесущий", duration_seconds=1.0, hint_used=True
+    )
+
+    assert outcome.verdict is Verdict.CORRECT
+    assert outcome.rating is ReviewRating.GOOD
+
+
 async def test_a_model_failure_falls_back_to_wrong(
     services: Services, user: User, saved_card: Card
 ) -> None:

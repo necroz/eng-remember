@@ -45,6 +45,7 @@ __all__ = [
     "discovery_unavailable",
     "explain",
     "global_error",
+    "hint_unavailable",
     "import_cancelled",
     "import_preview",
     "import_result",
@@ -154,12 +155,15 @@ def review_finished(answered: int) -> str:
     return f"Повторение завершено. Повторили {answered} {word}. 👍"
 
 
-def card_front(card: Card) -> str:
+def card_front(card: Card, *, hint: str | None = None) -> str:
     lines = [f"<b>{escape(card.term)}</b>"]
     if card.part_of_speech:
         lines.append(f"<i>{escape(card.part_of_speech)}</i>")
     lines.append("")
     lines.append(f"<i>{card.state.label} · повторений: {card.reps}</i>")
+    if hint:
+        lines.append("")
+        lines.append(f"💡 <i>{escape(hint)}</i>")
     return "\n".join(lines)
 
 
@@ -169,6 +173,7 @@ def answer_accepted(
     *,
     streak: int = 0,
     notes: Sequence[str] = (),
+    hint_used: bool = False,
 ) -> str:
     """The line after a graded card: praise first, then the schedule.
 
@@ -177,6 +182,8 @@ def answer_accepted(
     """
     lines = [praise, ""]
     tail = f"Дальше через <b>{interval_text}</b>"
+    if hint_used:
+        tail += " · 💡 подсказка"
     if streak > 0:
         tail += f" · 🔥 <b>{streak}</b>"
     lines.append(f"<i>{tail}</i>")
@@ -186,15 +193,16 @@ def answer_accepted(
     return "\n".join(lines)
 
 
-def card_back(card: Card) -> str:
+def card_back(card: Card, *, example: str | None = None) -> str:
     lines = [f"<b>{escape(card.term)}</b>"]
     if card.transcription:
         lines.append(f"<code>{escape(card.transcription)}</code>")
     lines.append("")
     lines.append(f"🇷🇺 <b>{escape(card.translation)}</b>")
-    if card.example:
+    shown = example if example is not None else card.example
+    if shown:
         lines.append("")
-        lines.append(f"<i>{escape(card.example)}</i>")
+        lines.append(f"<i>{escape(shown)}</i>")
     if card.notes:
         lines.append("")
         lines.append(f"💡 {escape(card.notes)}")
@@ -210,6 +218,8 @@ def answer_result(
     interval_text: str,
     streak: int = 0,
     notes: Sequence[str] = (),
+    hint_used: bool = False,
+    example: str | None = None,
 ) -> str:
     """The revealed card: how close the answer came, then the answer itself.
 
@@ -221,9 +231,11 @@ def answer_result(
     if typed is not None:
         lines.append(f"<i>Ваш ответ:</i> <code>{escape(_display_answer(typed))}</code>")
     lines.append("")
-    lines.append(card_back(card))
+    lines.append(card_back(card, example=example))
     lines.append("")
-    lines.append(answer_accepted(praise, interval_text, streak=streak, notes=notes))
+    lines.append(
+        answer_accepted(praise, interval_text, streak=streak, notes=notes, hint_used=hint_used)
+    )
     return "\n".join(lines)
 
 
@@ -237,6 +249,10 @@ def already_checking() -> str:
 
 def card_unavailable() -> str:
     return "Карточка больше не доступна."
+
+
+def hint_unavailable() -> str:
+    return "Для этой карточки подсказки нет."
 
 
 def import_preview(

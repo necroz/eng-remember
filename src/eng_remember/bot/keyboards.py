@@ -63,15 +63,22 @@ def clarification(options: list[str]) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def review_prompt(card_id: int) -> InlineKeyboardMarkup:
-    """The only affordance on the front: giving up honestly, in one tap.
+def review_prompt(card_id: int, *, hint: bool = False) -> InlineKeyboardMarkup:
+    """The affordances on the front: context in one tap, giving up honestly in one.
 
-    The answer itself is typed, not tapped, so there is nothing else to offer —
-    a rating button would invite grading without the recall the flow exists for.
+    The answer itself is typed, not tapped, so a rating button would invite
+    grading without the recall the flow exists for. The hint only appears when
+    the card actually has an example to show.
     """
     builder = InlineKeyboardBuilder()
+    if hint:
+        builder.button(
+            text="💡 Подсказка",
+            callback_data=ReviewCB(action="hint", card_id=card_id),
+        )
     builder.button(
         text="🤷 Не знаю",
         callback_data=ReviewCB(action="dont_know", card_id=card_id),
     )
+    builder.adjust(2 if hint else 1)
     return builder.as_markup()

@@ -11,7 +11,9 @@ __all__ = [
     "COUNT_KEY",
     "DRAFT_KEY",
     "ENGINE_KEY",
+    "EXAMPLE_KEY",
     "FRONT_MESSAGE_KEY",
+    "HINT_USED_KEY",
     "OPTIONS_KEY",
     "ORIGINAL_KEY",
     "OWN_KEY",
@@ -52,12 +54,16 @@ ROUND_KEY = "clarify_round"
 # an answer is already being checked (reservation against a double send). The
 # session token identifies one run of the loop: a paused or restarted review
 # replaces or drops it, so a slow model answer cannot land in a new session.
+# The chosen example travels with the card too: the hint and the revealed back
+# must show the same sentence even after the card's review counter moves on.
 SHOWN_AT_KEY = "shown_at"
 SHOWN_CARD_KEY = "shown_card"
 FRONT_MESSAGE_KEY = "front_message"
 ANSWERING_KEY = "answering"
 ANSWERED_KEY = "answered"
 SESSION_KEY = "review_session"
+EXAMPLE_KEY = "review_example"
+HINT_USED_KEY = "hint_used"
 
 
 class AddWords(StatesGroup):

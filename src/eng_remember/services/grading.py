@@ -54,6 +54,7 @@ class AnswerGradingService:
         *,
         typed: str | None,
         duration_seconds: float | None,
+        hint_used: bool = False,
         now: datetime | None = None,
     ) -> GradeOutcome:
         """Grade one answer and write it into the card's schedule."""
@@ -62,6 +63,7 @@ class AnswerGradingService:
             verdict,
             duration_seconds=duration_seconds,
             easy_threshold_seconds=self._easy_threshold_seconds,
+            hint_used=hint_used,
         )
         duration_ms = int(duration_seconds * 1000) if duration_seconds is not None else None
         answer = await self._reviews.answer(user, card, rating, duration_ms=duration_ms, now=now)
