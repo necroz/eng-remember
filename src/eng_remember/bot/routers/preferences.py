@@ -27,9 +27,12 @@ REMIND_USAGE = (
     "<code>/remind on</code> · <code>/remind off</code> — включить или выключить\n"
     "<code>/remind 8:30</code> — время утреннего напоминания\n"
     "<code>/remind evening 20:00</code> — время вечернего напоминания\n"
-    "<code>/remind evening off</code> — выключить вечернее\n\n"
+    "<code>/remind evening off</code> — выключить вечернее\n"
+    "<code>/remind digest on</code> · <code>/remind digest off</code> — недельный дайджест\n\n"
     "<i>Время указывается в вашем часовом поясе.</i>"
 )
+
+WEEKDAY_NAMES = ("пн", "вт", "ср", "чт", "пт", "сб", "вс")
 
 
 def build_router() -> Router:
@@ -122,6 +125,9 @@ def build_router() -> Router:
             lines.append("Вечернее: выключено")
         else:
             lines.append(f"Вечернее: <code>{humanize_clock(evening)}</code>")
+        weekday = WEEKDAY_NAMES[settings.digest_weekday]
+        digest_state = f"включён, {weekday}" if user.digest_enabled else "выключен"
+        lines.append(f"Дайджест: {digest_state}")
         lines += [
             "",
             f"<i>Время в вашем поясе: {escape(user.timezone)}.</i>",
@@ -146,6 +152,16 @@ def build_router() -> Router:
             user.reminders_enabled = argument == "on"
             await services.commit()
             await _show_reminders(message, user, services)
+            return
+
+        if argument.startswith("digest"):
+            rest = argument.removeprefix("digest").strip()
+            if rest in {"on", "off"}:
+                user.digest_enabled = rest == "on"
+                await services.commit()
+                await _show_reminders(message, user, services)
+                return
+            await message.answer(REMIND_USAGE)
             return
 
         if argument.startswith("evening"):

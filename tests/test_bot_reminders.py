@@ -16,7 +16,7 @@ from eng_remember.errors import RecipientUnreachable
 from eng_remember.models.user import User
 from eng_remember.repositories.cards import CardDraft
 from eng_remember.services.container import Services
-from eng_remember.services.reminders import ReminderPlan
+from eng_remember.services.reminders import ReminderPlan, WeeklyDigest
 from eng_remember.utils.time import parse_clock
 from tests.conftest import RecordingSession
 from tests.factories import TEST_USER_ID
@@ -119,6 +119,35 @@ class TestRemindCommand:
             assert not user.reminders_enabled
         assert "выключены" in recording.last_text()
 
+    async def test_the_digest_can_be_switched_off(
+        self,
+        dispatcher: Dispatcher,
+        bot: Bot,
+        recording: RecordingSession,
+        session_factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        await send(dispatcher, bot, "/remind digest off")
+
+        async with session_factory() as check:
+            user = (await check.scalars(select(User))).one()
+            assert not user.digest_enabled
+        assert "Дайджест: выключен" in recording.last_text()
+
+    async def test_the_digest_can_be_switched_back_on(
+        self,
+        dispatcher: Dispatcher,
+        bot: Bot,
+        recording: RecordingSession,
+        session_factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        await send(dispatcher, bot, "/remind digest off", update_id=10)
+        await send(dispatcher, bot, "/remind digest on", update_id=11)
+
+        async with session_factory() as check:
+            user = (await check.scalars(select(User))).one()
+            assert user.digest_enabled
+        assert "Дайджест: включён" in recording.last_text()
+
     async def test_garbage_gets_the_usage_rather_than_a_guess(
         self, dispatcher: Dispatcher, bot: Bot, recording: RecordingSession
     ) -> None:
@@ -189,6 +218,36 @@ class TestNotifier:
         assert "Вечерняя проверка" in sent
         assert "под угрозой" not in sent
         assert "4" in sent
+
+    async def test_a_digest_reads_as_a_week_summary(
+        self, bot: Bot, recording: RecordingSession, user: User
+    ) -> None:
+        digest = WeeklyDigest(
+            days=(0,) * 27 + (3,),
+            total=12,
+            correct=9,
+            new_words=5,
+            weak=(("ubiquitous", 4),),
+            due_now=2,
+            due_week=7,
+        )
+        plan = ReminderPlan(
+            user=user,
+            kind=ReminderKind.DIGEST,
+            local_day=date(2026, 5, 14),
+            due_now=2,
+            new_available=0,
+            streak_days=6,
+            digest=digest,
+        )
+
+        await BotNotifier(bot).send_reminder(plan)
+
+        sent = recording.last_text()
+        assert "Итоги недели" in sent
+        assert "12" in sent
+        assert "ubiquitous" in sent
+        assert "🟨" in sent
 
     async def test_a_blocked_bot_is_reported_as_unreachable(
         self, bot: Bot, recording: RecordingSession, user: User

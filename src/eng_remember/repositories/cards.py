@@ -336,6 +336,42 @@ class CardRepository:
         )
         return int(await self._session.scalar(stmt) or 0)
 
+    async def count_added_since(
+        self,
+        user_id: int,
+        *,
+        since: datetime,
+        until: datetime | None = None,
+    ) -> int:
+        stmt = select(func.count(Card.id)).where(
+            Card.user_id == user_id,
+            Card.created_at >= since,
+        )
+        if until is not None:
+            stmt = stmt.where(Card.created_at < until)
+        return int(await self._session.scalar(stmt) or 0)
+
+    async def weakest(self, user_id: int, *, limit: int = 3) -> list[Card]:
+        """The words that failed most, for the weekly digest."""
+        stmt = (
+            select(Card)
+            .where(Card.user_id == user_id, Card.again_count > 0)
+            .order_by(Card.again_count.desc(), Card.term)
+            .limit(limit)
+        )
+        return list((await self._session.scalars(stmt)).all())
+
+    async def count_due_within(self, user_id: int, *, now: datetime, until: datetime) -> int:
+        """Cards already in rotation that come due in a window after ``now``."""
+        stmt = select(func.count(Card.id)).where(
+            Card.user_id == user_id,
+            Card.is_suspended.is_(False),
+            Card.reps > 0,
+            Card.due_at > now,
+            Card.due_at <= until,
+        )
+        return int(await self._session.scalar(stmt) or 0)
+
     async def set_suspended(self, card: Card, *, suspended: bool) -> None:
         card.is_suspended = suspended
         await self._session.flush()

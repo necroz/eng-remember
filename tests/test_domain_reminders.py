@@ -12,7 +12,12 @@ from datetime import UTC, date, datetime, time
 import pytest
 
 from eng_remember.config import ReminderSettings
-from eng_remember.domain.reminders import ReminderContext, ReminderKind, decide
+from eng_remember.domain.reminders import (
+    ReminderContext,
+    ReminderKind,
+    covers_morning,
+    decide,
+)
 
 
 def at(hour: int, minute: int = 0, *, tz: str = "UTC") -> datetime:
@@ -20,6 +25,13 @@ def at(hour: int, minute: int = 0, *, tz: str = "UTC") -> datetime:
     from zoneinfo import ZoneInfo
 
     return datetime(2026, 5, 14, hour, minute, tzinfo=ZoneInfo(tz)).astimezone(UTC)
+
+
+def monday(hour: int, minute: int = 0, *, tz: str = "UTC") -> datetime:
+    """2026-05-11 is a Monday."""
+    from zoneinfo import ZoneInfo
+
+    return datetime(2026, 5, 11, hour, minute, tzinfo=ZoneInfo(tz)).astimezone(UTC)
 
 
 def context(**overrides: object) -> ReminderContext:
@@ -173,6 +185,58 @@ class TestEvening:
         stale = context(streak_alive=False)
 
         assert decide(stale, now=at(22, 0), settings=settings) is ReminderKind.EVENING
+
+
+class TestDigest:
+    def test_it_takes_the_morning_slot_on_its_day(self, settings: ReminderSettings) -> None:
+        digest = context(digest_enabled=True)
+
+        assert decide(digest, now=monday(9, 0), settings=settings) is ReminderKind.DIGEST
+
+    def test_other_days_keep_the_ordinary_morning(self, settings: ReminderSettings) -> None:
+        digest = context(digest_enabled=True)
+
+        assert decide(digest, now=at(9, 0), settings=settings) is ReminderKind.MORNING
+
+    def test_switched_off_keeps_the_ordinary_morning(self, settings: ReminderSettings) -> None:
+        assert (
+            decide(context(digest_enabled=False), now=monday(9, 0), settings=settings)
+            is ReminderKind.MORNING
+        )
+
+    def test_it_fires_with_an_empty_queue(self, settings: ReminderSettings) -> None:
+        """The digest is worth reading even after a quiet week."""
+        idle = context(digest_enabled=True, due_now=0, new_available=0)
+
+        assert decide(idle, now=monday(9, 0), settings=settings) is ReminderKind.DIGEST
+
+    def test_not_before_the_hour(self, settings: ReminderSettings) -> None:
+        assert decide(context(digest_enabled=True), now=monday(8, 30), settings=settings) is None
+
+    def test_only_once(self, settings: ReminderSettings) -> None:
+        done = context(digest_enabled=True, last_digest_on=date(2026, 5, 11))
+
+        assert decide(done, now=monday(10, 0), settings=settings) is None
+
+    def test_a_custom_weekday(self) -> None:
+        thursday = ReminderSettings(digest_weekday=3)
+
+        assert (
+            decide(context(digest_enabled=True), now=at(9, 0), settings=thursday)
+            is ReminderKind.DIGEST
+        )
+
+    def test_it_covers_the_morning(self) -> None:
+        assert covers_morning(ReminderKind.DIGEST) is True
+
+    def test_the_evening_is_not_taken_over(self, settings: ReminderSettings) -> None:
+        done = context(
+            digest_enabled=True,
+            last_digest_on=date(2026, 5, 11),
+            last_morning_on=date(2026, 5, 11),
+        )
+
+        assert decide(done, now=monday(20, 0), settings=settings) is ReminderKind.EVENING
 
 
 class TestTimezones:

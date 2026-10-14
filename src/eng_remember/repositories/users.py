@@ -117,6 +117,9 @@ class UserRepository:
         if kind is ReminderKind.EVENING:
             user.last_evening_reminder_on = on
             user.last_reminder_on = on
+        elif kind is ReminderKind.DIGEST:
+            user.last_digest_on = on
+            user.last_reminder_on = on
         else:
             user.last_reminder_on = on
         await self._session.flush()

@@ -13,6 +13,8 @@ from datetime import datetime
 from html import escape
 
 from eng_remember.domain.answers import Verdict
+from eng_remember.domain.digest import HEATMAP_DAYS
+from eng_remember.domain.digest import heatmap as digest_heatmap
 from eng_remember.domain.gamification import StreakState, StreakTransition
 from eng_remember.domain.praise import render
 from eng_remember.models.card import Card
@@ -20,6 +22,7 @@ from eng_remember.repositories.cards import CardDraft
 from eng_remember.services.cards import ImportOutcome, UserStats
 from eng_remember.services.csv_io import CsvRow
 from eng_remember.services.discovery import DiscoveryResult
+from eng_remember.services.reminders import WeeklyDigest
 from eng_remember.utils.time import ensure_utc, humanize_interval, utcnow
 
 # How many imported rows the preview shows before it starts counting.
@@ -59,6 +62,7 @@ __all__ = [
     "file_import_too_big",
     "file_import_unreadable",
     "global_error",
+    "heatmap_grid",
     "hint_unavailable",
     "import_cancelled",
     "import_preview",
@@ -97,6 +101,7 @@ __all__ = [
     "streak_notes",
     "streak_summary",
     "unknown_command",
+    "weekly_digest",
     "welcome_back",
     "welcome_new",
 ]
@@ -762,6 +767,33 @@ def queue_reminder(*, due_now: int, new_available: int, streak_days: int) -> str
     return "\n".join(lines)
 
 
+def heatmap_grid(days: Sequence[int]) -> str:
+    """The 28-day heatmap as four rows of seven, oldest first."""
+    cells = digest_heatmap(days)
+    return "\n".join("".join(cells[index : index + 7]) for index in range(0, HEATMAP_DAYS, 7))
+
+
+def weekly_digest(digest: WeeklyDigest, *, streak_days: int) -> str:
+    """The Monday summary: the week's figures, the hard words, the heatmap."""
+    lines = ["📅 <b>Итоги недели</b>", ""]
+    lines.append(f"Отвечено: <b>{digest.total}</b> · верно: <b>{digest.correct}</b>")
+    lines.append(f"Новых слов: <b>{digest.new_words}</b>")
+    if streak_days > 1:
+        lines.append(f"🔥 Серия: <b>{streak_days}</b>")
+    if digest.weak:
+        weak = ", ".join(f"<b>{escape(term)}</b> ({count})" for term, count in digest.weak)
+        lines += ["", f"Трудные слова: {weak}"]
+    lines += [
+        "",
+        f"К повторению сейчас: <b>{digest.due_now}</b> · "
+        f"в ближайшую неделю: <b>{digest.due_week}</b>",
+        "",
+        heatmap_grid(digest.days),
+        "<i>Ответы за последние 4 недели.</i>",
+    ]
+    return "\n".join(lines)
+
+
 def evening_reminder(
     *,
     streak_days: int,
@@ -842,6 +874,7 @@ def stats(
     retention: float,
     *,
     streak: StreakState | None = None,
+    heatmap: Sequence[int] | None = None,
 ) -> str:
     lines = [
         "📊 <b>Статистика</b>",
@@ -854,6 +887,8 @@ def stats(
     ]
     if streak is not None:
         lines += ["", streak_summary(streak)]
+    if heatmap is not None:
+        lines += ["", heatmap_grid(heatmap), "<i>Ответы за последние 4 недели.</i>"]
     lines += [
         "",
         f"<i>Часовой пояс: {escape(timezone_name)} · целевая вероятность "

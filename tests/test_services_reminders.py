@@ -5,13 +5,16 @@ from __future__ import annotations
 from datetime import UTC, datetime, time, timedelta
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eng_remember.config import Settings
 from eng_remember.domain.enums import CardState, ReviewRating
 from eng_remember.domain.gamification import StreakState
+from eng_remember.domain.reminders import ReminderKind
 from eng_remember.errors import RecipientUnreachable
+from eng_remember.models.card import Card
+from eng_remember.models.review import Review
 from eng_remember.models.user import User
 from eng_remember.repositories.cards import CardDraft
 from eng_remember.repositories.users import TelegramProfile
@@ -446,3 +449,68 @@ class TestBatching:
 
         assert second.sent_count == 0
         assert second.candidates == 1
+
+
+class TestDigestPlanning:
+    async def test_a_digest_plan_carries_the_week(
+        self,
+        services: Services,
+        session: AsyncSession,
+        settings: Settings,
+        user: User,
+        notifier: RecordingNotifier,
+    ) -> None:
+        settings.reminders.digest_weekday = TODAY.weekday()
+        service = build_reminder_service(session, settings, notifier)
+        await give_work(services, user, due=2)
+        await give_streak(services, session, user, days=4)
+        card = (await services.cards.list_for_user(user.id, limit=1))[0]
+        card.again_count = 3
+        await services.reviews.add(
+            Review(
+                card_id=card.id,
+                user_id=user.id,
+                rating=ReviewRating.GOOD,
+                reviewed_at=moment(12, 0, days=-1),
+                state_before=CardState.REVIEW,
+                state_after=CardState.REVIEW,
+            )
+        )
+        await session.execute(
+            update(Card).where(Card.id == card.id).values(created_at=moment(12, 0, days=-1))
+        )
+        await session.commit()
+
+        run = await service.run(now=moment(9, 0))
+
+        assert run.sent_count == 1
+        plan = notifier.sent[-1]
+        assert plan.kind is ReminderKind.DIGEST
+        digest = plan.digest
+        assert digest is not None
+        assert digest.total == 1
+        assert digest.correct == 1
+        assert digest.new_words == 1
+        assert len(digest.days) == 28
+        assert digest.weak == ((card.term, 3),)
+        assert digest.due_now == 2
+
+    async def test_the_digest_marks_both_watermarks(
+        self,
+        services: Services,
+        session: AsyncSession,
+        settings: Settings,
+        user: User,
+        notifier: RecordingNotifier,
+    ) -> None:
+        settings.reminders.digest_weekday = TODAY.weekday()
+        service = build_reminder_service(session, settings, notifier)
+        await give_work(services, user)
+
+        await service.run(now=moment(9, 0))
+        await session.commit()
+        session.expire_all()
+
+        reloaded = (await session.scalars(select(User))).one()
+        assert reloaded.last_digest_on == TODAY
+        assert reloaded.last_reminder_on == TODAY

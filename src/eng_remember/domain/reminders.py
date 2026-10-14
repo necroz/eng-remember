@@ -31,6 +31,9 @@ class ReminderKind(StrEnum):
     EVENING = "evening"
     """The rest of the day: whatever is left, plus the streak warning when due."""
 
+    DIGEST = "digest"
+    """The weekly summary: takes the morning slot on its configured day."""
+
 
 @dataclass(frozen=True, slots=True)
 class ReminderContext:
@@ -47,6 +50,8 @@ class ReminderContext:
     answered_today: bool
     streak_alive: bool
     streak_days: int
+    digest_enabled: bool = False
+    last_digest_on: date | None = None
 
     @property
     def has_work(self) -> bool:
@@ -76,6 +81,15 @@ def decide(
     if context.evening_at is not None and local_clock >= context.evening_at:
         return ReminderKind.EVENING if _evening_owed(context, today=today) else None
 
+    # The digest settles the morning slot for the day, whatever else is marked.
+    if context.last_digest_on == today:
+        return None
+
+    # The digest replaces the morning reminder on its day; it is worth sending
+    # even when the queue is empty, because a quiet week is still a week.
+    if _digest_owed(context, today=today, local_clock=local_clock, settings=settings):
+        return ReminderKind.DIGEST
+
     if context.last_morning_on == today:
         return None
     if local_clock < context.morning_at:
@@ -84,6 +98,22 @@ def decide(
         # Nothing to do and nothing to lose: a ping here is pure noise.
         return None
     return ReminderKind.MORNING
+
+
+def _digest_owed(
+    context: ReminderContext,
+    *,
+    today: date,
+    local_clock: time,
+    settings: ReminderSettings,
+) -> bool:
+    return (
+        context.digest_enabled
+        and today.weekday() == settings.digest_weekday
+        and context.last_digest_on != today
+        and context.last_morning_on != today
+        and local_clock >= context.morning_at
+    )
 
 
 def _evening_owed(context: ReminderContext, *, today: date) -> bool:
@@ -97,7 +127,7 @@ def _evening_owed(context: ReminderContext, *, today: date) -> bool:
 def covers_morning(kind: ReminderKind) -> bool:
     """Whether sending this reminder also settles the morning slot.
 
-    The evening reminder already carries the queue, so a learner who gets it
-    must not also get the morning reminder later the same day.
+    The evening and the digest already carry what the morning would say, so a
+    learner who gets one must not also get the morning reminder that day.
     """
-    return kind is ReminderKind.EVENING
+    return kind in (ReminderKind.EVENING, ReminderKind.DIGEST)

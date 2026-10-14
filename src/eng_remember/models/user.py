@@ -50,8 +50,10 @@ class User(Base, TimestampMixin):
     reminder_time: Mapped[time | None] = mapped_column(Time)
     evening_reminder: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
     evening_reminder_time: Mapped[time | None] = mapped_column(Time)
+    digest_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
     last_reminder_on: Mapped[date | None] = mapped_column(Date)
     last_evening_reminder_on: Mapped[date | None] = mapped_column(Date)
+    last_digest_on: Mapped[date | None] = mapped_column(Date)
 
     decks: Mapped[list[Deck]] = relationship(
         back_populates="user",

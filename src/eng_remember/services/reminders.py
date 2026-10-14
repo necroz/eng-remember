@@ -13,13 +13,15 @@ from the in-process loop.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from typing import Protocol
 
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eng_remember.config import ReminderSettings, Settings
+from eng_remember.domain.digest import HEATMAP_DAYS, daily_series
+from eng_remember.domain.enums import ReviewRating
 from eng_remember.domain.gamification import StreakState, roll_forward
 from eng_remember.domain.reminders import ReminderContext, ReminderKind, decide
 from eng_remember.errors import RecipientUnreachable
@@ -36,6 +38,19 @@ log = structlog.get_logger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
+class WeeklyDigest:
+    """The figures behind one weekly summary message."""
+
+    days: tuple[int, ...]
+    total: int
+    correct: int
+    new_words: int
+    weak: tuple[tuple[str, int], ...]
+    due_now: int
+    due_week: int
+
+
+@dataclass(frozen=True, slots=True)
 class ReminderPlan:
     """A reminder that is about to be sent, with everything it needs to read well."""
 
@@ -46,6 +61,7 @@ class ReminderPlan:
     new_available: int
     streak_days: int
     streak_warning: bool = False
+    digest: WeeklyDigest | None = None
 
 
 class Notifier(Protocol):
@@ -174,11 +190,16 @@ class ReminderService:
                 answered_today=answered.get(user.id, 0) > 0,
                 streak_alive=streak.state.is_alive,
                 streak_days=streak.state.current,
+                digest_enabled=user.digest_enabled,
+                last_digest_on=user.last_digest_on,
             )
             kind = decide(context, now=now, settings=self._reminders)
             if kind is None:
                 continue
             at_risk = streak.state.is_alive and not context.answered_today
+            digest = None
+            if kind is ReminderKind.DIGEST:
+                digest = await self._build_digest(user, now=now, due_now=queue.due)
             plans.append(
                 ReminderPlan(
                     user=user,
@@ -188,9 +209,55 @@ class ReminderService:
                     new_available=queue.new,
                     streak_days=streak.state.current,
                     streak_warning=kind is ReminderKind.EVENING and at_risk,
+                    digest=digest,
                 )
             )
         return plans
+
+    async def _build_digest(self, user: User, *, now: datetime, due_now: int) -> WeeklyDigest:
+        """The week's figures for one learner.
+
+        The summary covers the seven *complete* local days before today, so a
+        Monday digest reads Mon–Sun instead of a nearly empty today. The heatmap
+        does include today — it is a rolling picture, not a report.
+        """
+        day_start = local_day_start(user.timezone, now=now)
+        report_start = day_start - timedelta(days=7)
+        history = await self._reviews.history_since(
+            user.id, since=day_start - timedelta(days=HEATMAP_DAYS - 1)
+        )
+
+        by_day: dict[date, int] = {}
+        total = 0
+        correct = 0
+        for review in history:
+            reviewed_at = ensure_utc(review.reviewed_at) or review.reviewed_at
+            day = local_date(user.timezone, now=reviewed_at)
+            by_day[day] = by_day.get(day, 0) + 1
+            if report_start <= reviewed_at < day_start:
+                total += 1
+                if review.rating is not ReviewRating.AGAIN:
+                    correct += 1
+
+        series = daily_series(
+            by_day,
+            end=local_date(user.timezone, now=now),
+            length=HEATMAP_DAYS,
+        )
+        weak = await self._cards.weakest(user.id)
+        return WeeklyDigest(
+            days=tuple(series),
+            total=total,
+            correct=correct,
+            new_words=await self._cards.count_added_since(
+                user.id, since=report_start, until=day_start
+            ),
+            weak=tuple((card.term, card.again_count) for card in weak),
+            due_now=due_now,
+            due_week=await self._cards.count_due_within(
+                user.id, now=now, until=now + timedelta(days=7)
+            ),
+        )
 
     async def _answered_today(self, batch: list[User], *, now: datetime) -> dict[int, int]:
         """Answers per learner since their own midnight.

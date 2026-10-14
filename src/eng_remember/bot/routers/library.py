@@ -10,6 +10,7 @@ from eng_remember.bot import keyboards, rendering, texts
 from eng_remember.bot.callbacks import PauseCB
 from eng_remember.models.user import User
 from eng_remember.services.container import Services
+from eng_remember.services.digest import heatmap_days
 
 
 def build_router() -> Router:
@@ -40,6 +41,7 @@ def build_router() -> Router:
         # must settle the streak — freezes spent, streak broken — before it is
         # shown, or the number contradicts what the user knows.
         streak = await services.streak_service.current(user)
+        heatmap = await heatmap_days(services.reviews, user)
         await services.commit()
         await message.answer(
             texts.stats(
@@ -47,6 +49,7 @@ def build_router() -> Router:
                 user.timezone,
                 services.settings.srs.desired_retention,
                 streak=streak.state,
+                heatmap=heatmap,
             ),
             reply_markup=keyboards.main_menu(),
         )

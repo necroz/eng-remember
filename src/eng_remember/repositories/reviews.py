@@ -89,3 +89,17 @@ class ReviewRepository:
         )
         rows = (await self._session.execute(stmt)).all()
         return [(row[0], int(row[1])) for row in rows]
+
+    async def history_since(self, user_id: int, *, since: datetime) -> list[Review]:
+        """Every answer after a moment, oldest first.
+
+        The digest needs ratings as well as timestamps — an accuracy figure and
+        a per-local-day heatmap cannot be built from grouped counts — and a
+        personal history of a few weeks is small enough to read whole.
+        """
+        stmt = (
+            select(Review)
+            .where(Review.user_id == user_id, Review.reviewed_at >= since)
+            .order_by(Review.reviewed_at)
+        )
+        return list((await self._session.scalars(stmt)).all())

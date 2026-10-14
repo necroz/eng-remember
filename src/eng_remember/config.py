@@ -147,6 +147,12 @@ class ReminderSettings(BaseModel):
     tick_seconds: int = Field(default=600, ge=30, le=3600)
     default_time: time = time(9, 0)
     default_streak_time: time = time(20, 0)
+    digest_weekday: int = Field(
+        default=0,
+        ge=0,
+        le=6,
+        description="Weekday of the weekly digest; 0 is Monday, as date.weekday() counts",
+    )
     # How many learners are fetched and decided at once. A tick always walks the
     # whole candidate list — a ceiling here would mean accounts past it never got
     # looked at, because every tick restarts from the lowest id.
