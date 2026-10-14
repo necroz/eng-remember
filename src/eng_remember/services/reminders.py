@@ -45,6 +45,7 @@ class ReminderPlan:
     due_now: int
     new_available: int
     streak_days: int
+    streak_warning: bool = False
 
 
 class Notifier(Protocol):
@@ -177,6 +178,7 @@ class ReminderService:
             kind = decide(context, now=now, settings=self._reminders)
             if kind is None:
                 continue
+            at_risk = streak.state.is_alive and not context.answered_today
             plans.append(
                 ReminderPlan(
                     user=user,
@@ -185,6 +187,7 @@ class ReminderService:
                     due_now=queue.due,
                     new_available=queue.new,
                     streak_days=streak.state.current,
+                    streak_warning=kind is ReminderKind.EVENING and at_risk,
                 )
             )
         return plans

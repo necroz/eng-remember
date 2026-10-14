@@ -48,6 +48,7 @@ __all__ = [
     "discovery_needs_context",
     "discovery_preview",
     "discovery_unavailable",
+    "evening_reminder",
     "explain",
     "file_export_caption",
     "file_import_cancelled",
@@ -94,7 +95,6 @@ __all__ = [
     "stale_button",
     "stats",
     "streak_notes",
-    "streak_reminder",
     "streak_summary",
     "unknown_command",
     "welcome_back",
@@ -762,14 +762,29 @@ def queue_reminder(*, due_now: int, new_available: int, streak_days: int) -> str
     return "\n".join(lines)
 
 
-def streak_reminder(*, streak_days: int, due_now: int, new_available: int) -> str:
-    """The evening warning, sent only while the streak can still be saved."""
+def evening_reminder(
+    *,
+    streak_days: int,
+    due_now: int,
+    new_available: int,
+    streak_warning: bool,
+) -> str:
+    """The evening slot: the queue remainder and, when due, the streak warning.
+
+    One message for the rest of the day — the warning and the remainder are the
+    same ask, so splitting them would be two notifications for one action.
+    """
     total = due_now + new_available
-    lines = [
-        f"🔥 <b>Серия {streak_days} {_plural(streak_days, 'день', 'дня', 'дней')} под угрозой.</b>",
-        "",
-        "Сегодня ещё ни одной карточки. Пара минут — и день засчитан.",
-    ]
+    if streak_warning:
+        lines = [
+            f"🔥 <b>Серия {streak_days} "
+            f"{_plural(streak_days, 'день', 'дня', 'дней')} под угрозой.</b>",
+            "",
+            "Сегодня ещё ни одной карточки. Пара минут — и день засчитан.",
+        ]
+    else:
+        lines = ["🌙 <b>Вечерняя проверка</b>"]
+
     if total:
         lines.append("")
         lines.append(

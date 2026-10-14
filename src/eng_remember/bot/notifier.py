@@ -26,11 +26,12 @@ class BotNotifier:
         self._bot = bot
 
     async def send_reminder(self, plan: ReminderPlan) -> None:
-        if plan.kind is ReminderKind.STREAK:
-            body = texts.streak_reminder(
+        if plan.kind is ReminderKind.EVENING:
+            body = texts.evening_reminder(
                 streak_days=plan.streak_days,
                 due_now=plan.due_now,
                 new_available=plan.new_available,
+                streak_warning=plan.streak_warning,
             )
         else:
             body = texts.queue_reminder(

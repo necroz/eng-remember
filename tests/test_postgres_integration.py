@@ -310,7 +310,7 @@ async def test_the_reminder_tick_works_against_postgres(
     evening = await service.run(now=moment(20, 0))
     await pg_session.commit()
     assert evening.sent_count == 1
-    assert notifier.sent[-1].kind.value == "streak"
+    assert notifier.sent[-1].kind.value == "evening"
 
     pg_session.expire_all()
     reloaded = (await pg_session.scalars(select(User))).one()

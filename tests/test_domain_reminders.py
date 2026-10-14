@@ -1,4 +1,9 @@
-"""Who gets reminded when — decided with an explicit clock, no database."""
+"""Who gets reminded when — decided with an explicit clock, no database.
+
+Two slots a day: the morning one shows the queue, the evening one owns the rest
+of the day — it carries whatever is left and, when the streak is at risk, says
+so in the same message.
+"""
 
 from __future__ import annotations
 
@@ -45,11 +50,11 @@ class TestMorning:
         assert decide(context(), now=at(8, 59), settings=settings) is None
 
     def test_the_queue_reminder_fires_at_the_hour(self, settings: ReminderSettings) -> None:
-        assert decide(context(), now=at(9, 0), settings=settings) is ReminderKind.QUEUE
+        assert decide(context(), now=at(9, 0), settings=settings) is ReminderKind.MORNING
 
     def test_it_fires_late_if_the_bot_was_down(self, settings: ReminderSettings) -> None:
         """Catch-up, not exact-time scheduling: 10:00 is fine for a 09:00 slot."""
-        assert decide(context(), now=at(10, 30), settings=settings) is ReminderKind.QUEUE
+        assert decide(context(), now=at(10, 30), settings=settings) is ReminderKind.MORNING
 
     def test_only_once_a_day(self, settings: ReminderSettings) -> None:
         already = context(last_morning_on=date(2026, 5, 14))
@@ -59,7 +64,7 @@ class TestMorning:
     def test_yesterday_does_not_block_today(self, settings: ReminderSettings) -> None:
         yesterday = context(last_morning_on=date(2026, 5, 13))
 
-        assert decide(yesterday, now=at(9, 0), settings=settings) is ReminderKind.QUEUE
+        assert decide(yesterday, now=at(9, 0), settings=settings) is ReminderKind.MORNING
 
     def test_nothing_to_do_means_no_message(self, settings: ReminderSettings) -> None:
         """ "You have nothing to review" is a notification about nothing."""
@@ -70,7 +75,7 @@ class TestMorning:
     def test_new_cards_alone_are_reason_enough(self, settings: ReminderSettings) -> None:
         fresh = context(due_now=0, new_available=4)
 
-        assert decide(fresh, now=at(9, 0), settings=settings) is ReminderKind.QUEUE
+        assert decide(fresh, now=at(9, 0), settings=settings) is ReminderKind.MORNING
 
     def test_a_learner_without_cards_is_left_alone(self, settings: ReminderSettings) -> None:
         empty = context(has_cards=False, due_now=0, new_available=0)
@@ -82,29 +87,61 @@ class TestMorning:
 
         assert decide(context(), now=at(9, 0), settings=off) is None
 
+    def test_the_evening_slot_owns_the_rest_of_the_day(self, settings: ReminderSettings) -> None:
+        """A morning that was never sent is not backfilled after the evening."""
+        missed = context(last_evening_on=date(2026, 5, 14))
 
-class TestStreakWarning:
-    def test_it_fires_in_the_evening_when_nothing_was_answered(
+        assert decide(missed, now=at(21, 0), settings=settings) is None
+
+
+class TestEvening:
+    def test_the_remainder_fires_even_after_a_morning_reminder(
         self, settings: ReminderSettings
     ) -> None:
-        assert decide(context(), now=at(20, 0), settings=settings) is ReminderKind.STREAK
+        reminded = context(last_morning_on=date(2026, 5, 14))
 
-    def test_it_stays_quiet_once_the_day_is_counted(self, settings: ReminderSettings) -> None:
-        done = context(answered_today=True, last_morning_on=date(2026, 5, 14))
+        assert decide(reminded, now=at(20, 0), settings=settings) is ReminderKind.EVENING
+
+    def test_the_remainder_fires_when_the_day_is_already_counted(
+        self, settings: ReminderSettings
+    ) -> None:
+        answered_with_work_left = context(
+            due_now=3,
+            answered_today=True,
+            last_morning_on=date(2026, 5, 14),
+        )
+
+        assert (
+            decide(answered_with_work_left, now=at(20, 30), settings=settings)
+            is ReminderKind.EVENING
+        )
+
+    def test_the_streak_warning_fires_with_an_empty_queue(self, settings: ReminderSettings) -> None:
+        no_work = context(due_now=0, new_available=0)
+
+        assert decide(no_work, now=at(20, 0), settings=settings) is ReminderKind.EVENING
+
+    def test_total_quiet_when_nothing_to_do_and_nothing_to_lose(
+        self, settings: ReminderSettings
+    ) -> None:
+        done = context(
+            due_now=0,
+            new_available=0,
+            answered_today=True,
+            last_morning_on=date(2026, 5, 14),
+        )
 
         assert decide(done, now=at(20, 30), settings=settings) is None
 
-    def test_it_stays_quiet_without_a_streak_to_lose(self, settings: ReminderSettings) -> None:
-        """Nothing to protect, so no emotional appeal — the morning one will do."""
-        no_streak = context(streak_alive=False, last_morning_on=date(2026, 5, 14))
+    def test_quiet_without_a_streak_and_without_work(self, settings: ReminderSettings) -> None:
+        no_streak = context(due_now=0, new_available=0, streak_alive=False)
 
         assert decide(no_streak, now=at(20, 30), settings=settings) is None
 
-    def test_it_fires_even_after_a_morning_reminder(self, settings: ReminderSettings) -> None:
-        """Different message: the morning says what to do, this says what is lost."""
-        reminded = context(last_morning_on=date(2026, 5, 14))
+    def test_work_alone_still_rings_without_a_streak(self, settings: ReminderSettings) -> None:
+        no_streak = context(streak_alive=False)
 
-        assert decide(reminded, now=at(20, 0), settings=settings) is ReminderKind.STREAK
+        assert decide(no_streak, now=at(20, 30), settings=settings) is ReminderKind.EVENING
 
     def test_it_fires_only_once(self, settings: ReminderSettings) -> None:
         already = context(
@@ -119,17 +156,23 @@ class TestStreakWarning:
 
         assert decide(without_evening, now=at(21, 0), settings=settings) is None
 
-    def test_a_bot_down_all_day_sends_one_message_not_two(self, settings: ReminderSettings) -> None:
-        """Both slots are pending at 22:00; the streak one carries the queue too."""
-        assert decide(context(), now=at(22, 0), settings=settings) is ReminderKind.STREAK
-
-    def test_after_a_long_outage_the_queue_reminder_still_goes(
+    def test_without_the_evening_slot_the_morning_owns_the_whole_day(
         self, settings: ReminderSettings
     ) -> None:
-        """With no streak left, the morning slot is the only thing worth sending."""
+        without_evening = context(evening_at=None)
+
+        assert decide(without_evening, now=at(21, 0), settings=settings) is ReminderKind.MORNING
+
+    def test_a_bot_down_all_day_sends_one_message_not_two(self, settings: ReminderSettings) -> None:
+        """Both slots are pending at 22:00; the evening one carries the queue too."""
+        assert decide(context(), now=at(22, 0), settings=settings) is ReminderKind.EVENING
+
+    def test_after_a_long_outage_without_a_streak_the_remainder_still_goes(
+        self, settings: ReminderSettings
+    ) -> None:
         stale = context(streak_alive=False)
 
-        assert decide(stale, now=at(22, 0), settings=settings) is ReminderKind.QUEUE
+        assert decide(stale, now=at(22, 0), settings=settings) is ReminderKind.EVENING
 
 
 class TestTimezones:
@@ -150,13 +193,13 @@ class TestTimezones:
         auckland = context(timezone="Pacific/Auckland", **marked)
         utc_learner = context(timezone="UTC", **marked)
 
-        assert decide(auckland, now=at(21, 30), settings=settings) is ReminderKind.QUEUE
+        assert decide(auckland, now=at(21, 30), settings=settings) is ReminderKind.MORNING
         assert decide(utc_learner, now=at(21, 30), settings=settings) is None
 
     def test_an_unknown_timezone_falls_back_to_utc(self, settings: ReminderSettings) -> None:
         broken = context(timezone="Mars/Olympus")
 
-        assert decide(broken, now=at(9, 0), settings=settings) is ReminderKind.QUEUE
+        assert decide(broken, now=at(9, 0), settings=settings) is ReminderKind.MORNING
 
 
 class TestAroundMidnight:
@@ -164,17 +207,17 @@ class TestAroundMidnight:
         early = ReminderSettings(default_time=time(0, 30))
         context_at_midnight = context(morning_at=time(0, 30), evening_at=None)
 
-        assert decide(context_at_midnight, now=at(0, 30), settings=early) is ReminderKind.QUEUE
+        assert decide(context_at_midnight, now=at(0, 30), settings=early) is ReminderKind.MORNING
 
     def test_a_reminder_set_for_later_today_is_not_early(self, settings: ReminderSettings) -> None:
         late = context(morning_at=time(23, 0), evening_at=None)
 
         assert decide(late, now=at(22, 59), settings=settings) is None
-        assert decide(late, now=at(23, 0), settings=settings) is ReminderKind.QUEUE
+        assert decide(late, now=at(23, 0), settings=settings) is ReminderKind.MORNING
 
     def test_ordering_of_the_two_slots_does_not_matter(self, settings: ReminderSettings) -> None:
-        """Someone who sets the evening warning before the morning ping gets one
-        message, not two — the streak one wins because it is the actionable one."""
+        """Someone who sets the evening before the morning ping gets one
+        message, not two — the evening slot owns everything after its hour."""
         odd = context(morning_at=time(21, 0), evening_at=time(8, 0))
 
-        assert decide(odd, now=at(21, 0), settings=settings) is ReminderKind.STREAK
+        assert decide(odd, now=at(21, 0), settings=settings) is ReminderKind.EVENING

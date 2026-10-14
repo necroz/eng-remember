@@ -33,7 +33,7 @@ async def with_card(services: Services, user: User) -> None:
 def plan_for(user: User) -> ReminderPlan:
     return ReminderPlan(
         user=user,
-        kind=ReminderKind.QUEUE,
+        kind=ReminderKind.MORNING,
         local_day=date(2026, 5, 14),
         due_now=12,
         new_available=3,
@@ -156,11 +156,12 @@ class TestNotifier:
     ) -> None:
         plan = ReminderPlan(
             user=user,
-            kind=ReminderKind.STREAK,
+            kind=ReminderKind.EVENING,
             local_day=date(2026, 5, 14),
             due_now=0,
             new_available=5,
             streak_days=9,
+            streak_warning=True,
         )
 
         await BotNotifier(bot).send_reminder(plan)
@@ -168,6 +169,26 @@ class TestNotifier:
         sent = recording.last_text()
         assert "под угрозой" in sent
         assert "9" in sent
+
+    async def test_an_evening_without_risk_is_a_plain_check(
+        self, bot: Bot, recording: RecordingSession, user: User
+    ) -> None:
+        plan = ReminderPlan(
+            user=user,
+            kind=ReminderKind.EVENING,
+            local_day=date(2026, 5, 14),
+            due_now=4,
+            new_available=0,
+            streak_days=9,
+            streak_warning=False,
+        )
+
+        await BotNotifier(bot).send_reminder(plan)
+
+        sent = recording.last_text()
+        assert "Вечерняя проверка" in sent
+        assert "под угрозой" not in sent
+        assert "4" in sent
 
     async def test_a_blocked_bot_is_reported_as_unreachable(
         self, bot: Bot, recording: RecordingSession, user: User
@@ -194,14 +215,18 @@ class TestMessageTexts:
         assert "Серия" not in only_new
 
     def test_the_streak_warning_names_the_stake(self) -> None:
-        sent = texts.streak_reminder(streak_days=14, due_now=5, new_available=0)
+        sent = texts.evening_reminder(
+            streak_days=14, due_now=5, new_available=0, streak_warning=True
+        )
 
         assert "14" in sent
         assert "под угрозой" in sent
         assert "5" in sent
 
     def test_it_stays_calm_when_there_is_nothing_queued(self) -> None:
-        sent = texts.streak_reminder(streak_days=3, due_now=0, new_available=0)
+        sent = texts.evening_reminder(
+            streak_days=3, due_now=0, new_available=0, streak_warning=True
+        )
 
         assert "под угрозой" in sent
         assert "Ждут" not in sent

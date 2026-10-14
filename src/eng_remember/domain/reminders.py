@@ -25,11 +25,11 @@ __all__ = ["ReminderContext", "ReminderKind", "decide"]
 class ReminderKind(StrEnum):
     """What the reminder is for. Also the key for the daily "already sent" marks."""
 
-    QUEUE = "queue"
-    """There is something to review."""
+    MORNING = "morning"
+    """The queue, sent in the morning slot unless the evening hour has arrived."""
 
-    STREAK = "streak"
-    """The streak is alive and today has not been counted yet."""
+    EVENING = "evening"
+    """The rest of the day: whatever is left, plus the streak warning when due."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,11 +61,11 @@ def decide(
 ) -> ReminderKind | None:
     """Which reminder, if any, this learner is owed right now.
 
-    Order matters. The streak warning is checked first and is allowed to fire
-    after a morning reminder, because it carries different information — the
-    morning one says what to do, the evening one says what is about to be lost.
-    It is also checked first so that a bot that was down all day sends one
-    message in the evening rather than both at once.
+    Two slots a day. In the morning the queue is shown; from the evening hour
+    on, one slot owns the rest of the day — it carries what is left and, when
+    the streak is at risk, says so in the same message. A morning missed while
+    the bot was down is not backfilled after the evening: two messages minutes
+    apart would say the same thing twice.
     """
     if not settings.enabled or not context.has_cards:
         return None
@@ -73,8 +73,8 @@ def decide(
     today = local_date(context.timezone, now=now)
     local_clock = now.astimezone(resolve_timezone(context.timezone)).time()
 
-    if _streak_is_at_risk(context, today=today, clock=local_clock):
-        return ReminderKind.STREAK
+    if context.evening_at is not None and local_clock >= context.evening_at:
+        return ReminderKind.EVENING if _evening_owed(context, today=today) else None
 
     if context.last_morning_on == today:
         return None
@@ -83,28 +83,21 @@ def decide(
     if not context.has_work:
         # Nothing to do and nothing to lose: a ping here is pure noise.
         return None
-    return ReminderKind.QUEUE
+    return ReminderKind.MORNING
 
 
-def _streak_is_at_risk(
-    context: ReminderContext,
-    *,
-    today: date,
-    clock: time,
-) -> bool:
-    return (
-        context.evening_at is not None
-        and context.last_evening_on != today
-        and clock >= context.evening_at
-        and context.streak_alive
-        and not context.answered_today
-    )
+def _evening_owed(context: ReminderContext, *, today: date) -> bool:
+    if context.last_evening_on == today:
+        return False
+    if context.has_work:
+        return True
+    return context.streak_alive and not context.answered_today
 
 
 def covers_morning(kind: ReminderKind) -> bool:
     """Whether sending this reminder also settles the morning slot.
 
-    The streak warning already carries the queue, so a learner who gets it must
-    not also get the queue reminder later the same day.
+    The evening reminder already carries the queue, so a learner who gets it
+    must not also get the morning reminder later the same day.
     """
-    return kind is ReminderKind.STREAK
+    return kind is ReminderKind.EVENING

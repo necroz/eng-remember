@@ -117,7 +117,7 @@ class TestWhoGetsReminded:
 
         assert run.sent_count == 1
         assert notifier.sent[0].due_now == 3
-        assert notifier.sent[0].kind.value == "queue"
+        assert notifier.sent[0].kind.value == "morning"
         assert notifier.sent[0].local_day == TEST_DAY
 
     async def test_before_the_hour_nothing_is_sent(
@@ -177,27 +177,29 @@ class TestWhoGetsReminded:
         run = await reminders.run(now=moment(20, 0))
 
         assert run.sent_count == 1
-        assert notifier.sent[-1].kind.value == "streak"
+        assert notifier.sent[-1].kind.value == "evening"
         assert notifier.sent[-1].streak_days == 5
+        assert notifier.sent[-1].streak_warning is True
 
-    async def test_without_a_streak_there_is_nothing_to_warn_about(
+    async def test_without_a_streak_the_remainder_goes_without_a_warning(
         self,
         reminders: ReminderService,
         services: Services,
         user: User,
         notifier: RecordingNotifier,
     ) -> None:
-        """A learner who never answered has no streak to lose, and a warning
-        about a streak that does not exist would be a lie dressed up as
-        motivation."""
+        """A learner who never answered has no streak to lose — but the
+        evening slot still carries whatever is left in the queue."""
         await give_work(services, user)
         await reminders.run(now=moment(9, 0))
 
         run = await reminders.run(now=moment(20, 0))
 
-        assert run.sent_count == 0
+        assert run.sent_count == 1
+        assert notifier.sent[-1].kind.value == "evening"
+        assert notifier.sent[-1].streak_warning is False
 
-    async def test_answering_a_card_silences_the_evening_warning(
+    async def test_answering_the_last_card_silences_the_evening(
         self,
         reminders: ReminderService,
         services: Services,
@@ -205,7 +207,7 @@ class TestWhoGetsReminded:
         user: User,
         notifier: RecordingNotifier,
     ) -> None:
-        await give_work(services, user, due=2)
+        await give_work(services, user, due=1)
         await reminders.run(now=moment(9, 0))
         queue = await services.review_service.build_queue(user)
         await services.review_service.answer(user, queue.cards[0], ReviewRating.GOOD)

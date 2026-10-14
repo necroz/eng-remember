@@ -26,7 +26,7 @@ REMIND_USAGE = (
     "<code>/remind</code> — показать настройки\n"
     "<code>/remind on</code> · <code>/remind off</code> — включить или выключить\n"
     "<code>/remind 8:30</code> — время утреннего напоминания\n"
-    "<code>/remind evening 20:00</code> — время вечернего предупреждения\n"
+    "<code>/remind evening 20:00</code> — время вечернего напоминания\n"
     "<code>/remind evening off</code> — выключить вечернее\n\n"
     "<i>Время указывается в вашем часовом поясе.</i>"
 )

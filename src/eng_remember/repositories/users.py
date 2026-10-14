@@ -110,11 +110,11 @@ class UserRepository:
     ) -> None:
         """Mark the slot as used for that local day.
 
-        A streak warning also settles the morning slot: it already carries the
-        queue, so following it with "you have cards to review" an hour later
-        would be nagging.
+        The evening message also settles the morning slot: it already carries
+        the queue, so following it with "you have cards to review" would be
+        nagging.
         """
-        if kind is ReminderKind.STREAK:
+        if kind is ReminderKind.EVENING:
             user.last_evening_reminder_on = on
             user.last_reminder_on = on
         else:
