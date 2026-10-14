@@ -7,10 +7,12 @@ assert is what the user would actually receive.
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 from aiogram import Bot, Dispatcher
 from aiogram.methods import AnswerCallbackQuery
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from eng_remember.bot import texts
@@ -37,6 +39,13 @@ def button_with(recording: RecordingSession, needle: str) -> str:
     matches = [data for data in recording.last_button_data() if needle in data]
     assert matches, f"no button matching {needle!r} among {recording.last_button_data()}"
     return matches[0]
+
+
+def result_text(recording: RecordingSession) -> str:
+    """The text of the graded card among the sends and edits."""
+    matches = [text for text in recording.sent_texts() if "Дальше через" in text]
+    assert matches, recording.sent_texts()
+    return matches[-1]
 
 
 @pytest.fixture
@@ -254,34 +263,18 @@ class TestReview:
         assert "всё повторено" in sent
         assert "Следующая карточка" in sent
 
-    async def test_review_shows_the_front_of_a_card(
+    async def test_review_shows_the_front_with_a_single_button(
         self, dispatcher: Dispatcher, bot: Bot, recording: RecordingSession, card_id: int
     ) -> None:
         await send(dispatcher, bot, "/review")
 
         assert "ubiquitous" in recording.last_text()
         assert "вездесущий" not in recording.last_text()
-        assert ReviewCB(action="show", card_id=card_id).pack() in recording.last_button_data()
-
-    async def test_showing_the_answer_offers_four_grades(
-        self, dispatcher: Dispatcher, bot: Bot, recording: RecordingSession, card_id: int
-    ) -> None:
-        await send(dispatcher, bot, "/review", update_id=10)
-
-        await tap(dispatcher, bot, ReviewCB(action="show", card_id=card_id).pack(), update_id=11)
-
-        grades = [data for data in recording.last_button_data() if "rv:grade" in data]
-        labels = [
-            button.text
-            for button in recording.last_buttons()
-            if "rv:grade" in (button.callback_data or "")
+        assert recording.last_button_data() == [
+            ReviewCB(action="dont_know", card_id=card_id).pack()
         ]
-        assert len(grades) == 4
-        assert "вездесущий" in recording.last_text()
-        # Each grade advertises the interval it would produce.
-        assert all("мин" in label or "дн" in label for label in labels)
 
-    async def test_grading_records_a_review_and_finishes_the_session(
+    async def test_a_fast_correct_answer_is_graded_easy(
         self,
         dispatcher: Dispatcher,
         bot: Bot,
@@ -290,35 +283,21 @@ class TestReview:
         card_id: int,
     ) -> None:
         await send(dispatcher, bot, "/review", update_id=20)
-        await tap(dispatcher, bot, ReviewCB(action="show", card_id=card_id).pack(), update_id=21)
-
-        await tap(
-            dispatcher,
-            bot,
-            ReviewCB(action="grade", card_id=card_id, rating=int(ReviewRating.GOOD)).pack(),
-            update_id=22,
-        )
+        await send(dispatcher, bot, "Вездесущий!", update_id=21, date=utcnow())
 
         async with session_factory() as check:
             review = (await check.scalars(select(Review))).one()
-            assert review.rating is ReviewRating.GOOD
+            assert review.rating is ReviewRating.EASY
             assert review.duration_ms is not None
             card = (await check.scalars(select(Card))).one()
             assert card.reps == 1
-            assert card.last_review_at is not None
 
+        assert "✅ Верно" in result_text(recording)
+        assert "Ваш ответ:" in result_text(recording)
+        assert "вездесущий" in result_text(recording)
         assert "Повторение завершено" in recording.last_text()
 
-    async def test_a_missing_card_is_reported_not_crashed(
-        self, dispatcher: Dispatcher, bot: Bot, recording: RecordingSession
-    ) -> None:
-        await tap(dispatcher, bot, ReviewCB(action="show", card_id=4242).pack())
-
-        answers = [m for m in recording.requests if isinstance(m, AnswerCallbackQuery)]
-        assert answers[-1].show_alert
-        assert "не доступна" in (answers[-1].text or "")
-
-    async def test_later_postpones_without_grading(
+    async def test_a_slow_correct_answer_is_graded_good(
         self,
         dispatcher: Dispatcher,
         bot: Bot,
@@ -326,24 +305,186 @@ class TestReview:
         session_factory: async_sessionmaker[AsyncSession],
         card_id: int,
     ) -> None:
-        await send(dispatcher, bot, "/review", update_id=30)
+        await send(dispatcher, bot, "/review", update_id=20)
+        await send(
+            dispatcher, bot, "вездесущий", update_id=21, date=utcnow() + timedelta(seconds=10)
+        )
 
-        await tap(dispatcher, bot, ReviewCB(action="later", card_id=card_id).pack(), update_id=31)
+        async with session_factory() as check:
+            review = (await check.scalars(select(Review))).one()
+            assert review.rating is ReviewRating.GOOD
+
+    async def test_a_wrong_answer_without_a_model_is_again(
+        self,
+        dispatcher: Dispatcher,
+        bot: Bot,
+        recording: RecordingSession,
+        session_factory: async_sessionmaker[AsyncSession],
+        card_id: int,
+    ) -> None:
+        await send(dispatcher, bot, "/review", update_id=20)
+        await send(dispatcher, bot, "неправильно", update_id=21, date=utcnow())
+
+        async with session_factory() as check:
+            review = (await check.scalars(select(Review))).one()
+            assert review.rating is ReviewRating.AGAIN
+
+        assert "❌ Неверно" in result_text(recording)
+        assert "Ваш ответ:" in result_text(recording)
+
+    async def test_a_command_does_not_cancel_the_card(
+        self,
+        dispatcher: Dispatcher,
+        bot: Bot,
+        recording: RecordingSession,
+        session_factory: async_sessionmaker[AsyncSession],
+        card_id: int,
+    ) -> None:
+        await send(dispatcher, bot, "/review", update_id=20)
+        await send(dispatcher, bot, "/stats", update_id=21)
+        await send(dispatcher, bot, "вездесущий", update_id=22, date=utcnow())
+
+        async with session_factory() as check:
+            assert await check.scalar(select(func.count(Review.id))) == 1
+
+    async def test_the_model_may_confirm_a_synonym(
+        self,
+        llm_dispatcher: Dispatcher,
+        llm: ScriptedClient,
+        bot: Bot,
+        session_factory: async_sessionmaker[AsyncSession],
+        saved_card: Card,
+    ) -> None:
+        """The card is seeded through the service: with the scripted model
+        patched in globally, the capture flow would need its own scripted
+        parse and the test is about the check, not about parsing."""
+        llm.push_check({"verdict": "correct"})
+        await make_due(session_factory)
+
+        await send(llm_dispatcher, bot, "/review", update_id=20)
+        await send(llm_dispatcher, bot, "жуткий", update_id=21, date=utcnow())
+
+        async with session_factory() as check:
+            review = (await check.scalars(select(Review))).one()
+            assert review.rating is ReviewRating.EASY
+        assert llm.calls[-1]["purpose"] == "check_answer"
+
+    async def test_the_dont_know_button_is_again(
+        self,
+        dispatcher: Dispatcher,
+        bot: Bot,
+        recording: RecordingSession,
+        session_factory: async_sessionmaker[AsyncSession],
+        card_id: int,
+    ) -> None:
+        await send(dispatcher, bot, "/review", update_id=20)
+        await tap(
+            dispatcher,
+            bot,
+            ReviewCB(action="dont_know", card_id=card_id).pack(),
+            update_id=21,
+        )
+
+        async with session_factory() as check:
+            review = (await check.scalars(select(Review))).one()
+            assert review.rating is ReviewRating.AGAIN
+
+        assert "🤷 Не помню" in result_text(recording)
+        assert "Ваш ответ" not in result_text(recording)
+
+    async def test_a_message_sent_before_the_card_is_shown_is_ignored(
+        self,
+        dispatcher: Dispatcher,
+        bot: Bot,
+        recording: RecordingSession,
+        session_factory: async_sessionmaker[AsyncSession],
+        card_id: int,
+    ) -> None:
+        await send(dispatcher, bot, "/review", update_id=20)
+        await send(
+            dispatcher,
+            bot,
+            "вездесущий",
+            update_id=21,
+            date=utcnow() - timedelta(minutes=1),
+        )
 
         async with session_factory() as check:
             assert await check.scalar(select(func.count(Review.id))) == 0
-            card = (await check.scalars(select(Card))).one()
-            assert card.reps == 0
-            assert card.due_at > utcnow()
 
-    async def test_stopping_the_session_reports_the_count(
-        self, dispatcher: Dispatcher, bot: Bot, recording: RecordingSession, card_id: int
+        await send(dispatcher, bot, "вездесущий", update_id=22, date=utcnow())
+
+        async with session_factory() as check:
+            assert await check.scalar(select(func.count(Review.id))) == 1
+
+    async def test_a_stale_tap_is_rejected(
+        self,
+        dispatcher: Dispatcher,
+        bot: Bot,
+        recording: RecordingSession,
+        card_id: int,
     ) -> None:
-        await send(dispatcher, bot, "/review", update_id=40)
+        await tap(dispatcher, bot, ReviewCB(action="dont_know", card_id=card_id).pack())
 
-        await tap(dispatcher, bot, ReviewCB(action="stop").pack(), update_id=41)
+        answers = [m for m in recording.requests if isinstance(m, AnswerCallbackQuery)]
+        assert answers[-1].show_alert
+        assert "устарела" in (answers[-1].text or "")
 
-        assert "Повторение завершено" in recording.last_text()
+    async def test_a_legacy_button_from_history_is_rejected(
+        self, dispatcher: Dispatcher, bot: Bot, recording: RecordingSession
+    ) -> None:
+        await tap(dispatcher, bot, "rv:grade:5:3", update_id=99)
+
+        answers = [m for m in recording.requests if isinstance(m, AnswerCallbackQuery)]
+        assert answers[-1].show_alert
+        assert "устарела" in (answers[-1].text or "")
+
+    async def test_adding_words_pauses_review(
+        self,
+        dispatcher: Dispatcher,
+        bot: Bot,
+        recording: RecordingSession,
+        session_factory: async_sessionmaker[AsyncSession],
+        card_id: int,
+    ) -> None:
+        await send(dispatcher, bot, "/review", update_id=20)
+
+        await send(dispatcher, bot, texts.BTN_ADD, update_id=21)
+        assert "Напишите слово" in recording.last_text()
+
+        await send(dispatcher, bot, "run - бежать", update_id=22)
+        assert any("im:confirm" in data for data in recording.last_button_data())
+
+        async with session_factory() as check:
+            assert await check.scalar(select(func.count(Review.id))) == 0
+
+        await send(dispatcher, bot, "/review", update_id=23)
+        assert "ubiquitous" in recording.last_text()
+
+    async def test_a_missing_card_is_reported(
+        self,
+        dispatcher: Dispatcher,
+        bot: Bot,
+        recording: RecordingSession,
+        session_factory: async_sessionmaker[AsyncSession],
+        card_id: int,
+    ) -> None:
+        await send(dispatcher, bot, "/review", update_id=20)
+
+        async with session_factory() as session:
+            await session.execute(delete(Card).where(Card.id == card_id))
+            await session.commit()
+
+        await tap(
+            dispatcher,
+            bot,
+            ReviewCB(action="dont_know", card_id=card_id).pack(),
+            update_id=21,
+        )
+
+        answers = [m for m in recording.requests if isinstance(m, AnswerCallbackQuery)]
+        assert answers[-1].show_alert
+        assert "не доступна" in (answers[-1].text or "")
 
 
 class TestEscaping:
@@ -364,6 +505,20 @@ class TestEscaping:
         sent = recording.last_text()
         assert "&lt;b&gt;bold&lt;/b&gt;" in sent
         assert "<b>bold</b>" not in sent
+
+    async def test_markup_in_the_answer_is_escaped(
+        self,
+        dispatcher: Dispatcher,
+        bot: Bot,
+        recording: RecordingSession,
+        session_factory: async_sessionmaker[AsyncSession],
+        card_id: int,
+    ) -> None:
+        await send(dispatcher, bot, "/review", update_id=60)
+        await send(dispatcher, bot, "<b>bold</b>", update_id=61, date=utcnow())
+
+        assert "&lt;b&gt;bold&lt;/b&gt;" in result_text(recording)
+        assert "<b>bold</b>" not in result_text(recording)
 
 
 class TestOtherCommands:

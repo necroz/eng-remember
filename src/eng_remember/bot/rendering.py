@@ -7,9 +7,34 @@ from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
-__all__ = ["callback_chat_id", "edit_or_send"]
+__all__ = ["callback_chat_id", "edit_message_or_send", "edit_or_send"]
 
 log = structlog.get_logger(__name__)
+
+
+async def edit_message_or_send(
+    bot: Bot,
+    *,
+    chat_id: int,
+    message_id: int | None,
+    text: str,
+) -> None:
+    """Replace a message by id, falling back to a new one.
+
+    The front is remembered by id, not by an open callback, and it can be too
+    old to edit by the time the answer is graded — then the result is simply
+    sent as a new message instead of being lost.
+    """
+    if message_id is not None:
+        try:
+            await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text)
+            return
+        except TelegramBadRequest as exc:
+            if "message is not modified" in str(exc):
+                return
+            log.warning("edit_failed", error=str(exc), message_id=message_id)
+
+    await bot.send_message(chat_id, text)
 
 
 async def edit_or_send(

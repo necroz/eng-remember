@@ -56,10 +56,11 @@ def message_from(
     *,
     message_id: int = 1,
     user_id: int = TEST_USER_ID,
+    date: datetime | None = None,
 ) -> Message:
     return Message(
         message_id=message_id,
-        date=_FIXED_DATE,
+        date=date if date is not None else _FIXED_DATE,
         chat=Chat(id=user_id, type="private"),
         from_user=telegram_user(user_id),
         text=text,
@@ -72,10 +73,11 @@ def make_message_update(
     update_id: int = 1,
     message_id: int = 1,
     user_id: int = TEST_USER_ID,
+    date: datetime | None = None,
 ) -> Update:
     return Update(
         update_id=update_id,
-        message=message_from(text, message_id=message_id, user_id=user_id),
+        message=message_from(text, message_id=message_id, user_id=user_id, date=date),
     )
 
 

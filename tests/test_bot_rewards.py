@@ -20,7 +20,8 @@ from eng_remember.domain.praise import BANKS, PraiseCategory
 from eng_remember.models.card import Card
 from eng_remember.models.streak import Streak
 from eng_remember.models.user import User
-from tests.conftest import RecordingSession
+from eng_remember.utils.time import utcnow
+from tests.conftest import RecordingSession, make_due
 from tests.test_bot_flow import send, tap
 
 
@@ -41,22 +42,34 @@ async def grade(
     dispatcher: Dispatcher,
     bot: Bot,
     card_id: int,
+    session_factory: async_sessionmaker[AsyncSession],
     rating: ReviewRating,
     *,
     update_id: int = 200,
 ) -> None:
+    """Answer the card the way the new flow asks for.
+
+    A correct answer typed immediately is Easy; the same answer "typed" ten
+    seconds later is Good — that delay is how the speed rule is exercised
+    without sleeping. «Не знаю» is the Again path.
+    """
+    await make_due(session_factory)
     await send(dispatcher, bot, "/review", update_id=update_id)
-    await tap(
+    if rating is ReviewRating.AGAIN:
+        await tap(
+            dispatcher,
+            bot,
+            ReviewCB(action="dont_know", card_id=card_id).pack(),
+            update_id=update_id + 1,
+        )
+        return
+    delay = 10 if rating is ReviewRating.GOOD else 0
+    await send(
         dispatcher,
         bot,
-        ReviewCB(action="show", card_id=card_id).pack(),
+        "вездесущий",
         update_id=update_id + 1,
-    )
-    await tap(
-        dispatcher,
-        bot,
-        ReviewCB(action="grade", card_id=card_id, rating=int(rating)).pack(),
-        update_id=update_id + 2,
+        date=utcnow() + timedelta(seconds=delay),
     )
 
 
@@ -76,7 +89,7 @@ class TestPraise:
     ) -> None:
         card_id = saved_card.id
 
-        await grade(dispatcher, bot, card_id, ReviewRating.GOOD)
+        await grade(dispatcher, bot, card_id, session_factory, ReviewRating.GOOD)
 
         user = await fresh_user(session_factory)
         used = user.praise_history["good"]
@@ -96,7 +109,7 @@ class TestPraise:
         saved_card: Card,
         session_factory: async_sessionmaker[AsyncSession],
     ) -> None:
-        await grade(dispatcher, bot, saved_card.id, ReviewRating.EASY)
+        await grade(dispatcher, bot, saved_card.id, session_factory, ReviewRating.EASY)
 
         user = await fresh_user(session_factory)
         assert set(user.praise_history) == {"easy"}
@@ -111,7 +124,7 @@ class TestPraise:
         saved_card: Card,
         session_factory: async_sessionmaker[AsyncSession],
     ) -> None:
-        await grade(dispatcher, bot, saved_card.id, ReviewRating.AGAIN)
+        await grade(dispatcher, bot, saved_card.id, session_factory, ReviewRating.AGAIN)
 
         user = await fresh_user(session_factory)
         assert "again" in user.praise_history
@@ -129,8 +142,8 @@ class TestPraise:
     ) -> None:
         """Same card, answered twice: the template must change."""
         card_id = saved_card.id
-        await grade(dispatcher, bot, card_id, ReviewRating.GOOD, update_id=300)
-        await grade(dispatcher, bot, card_id, ReviewRating.GOOD, update_id=310)
+        await grade(dispatcher, bot, card_id, session_factory, ReviewRating.GOOD, update_id=300)
+        await grade(dispatcher, bot, card_id, session_factory, ReviewRating.GOOD, update_id=310)
 
         owner = await fresh_user(session_factory)
         used = owner.praise_history["good"]
@@ -148,7 +161,12 @@ class TestPraise:
         card_id = saved_card.id
         for round_number in range(3):
             await grade(
-                dispatcher, bot, card_id, ReviewRating.GOOD, update_id=400 + round_number * 10
+                dispatcher,
+                bot,
+                card_id,
+                session_factory,
+                ReviewRating.GOOD,
+                update_id=400 + round_number * 10,
             )
 
         owner = await fresh_user(session_factory)
@@ -165,7 +183,7 @@ class TestStreakInTheBot:
         saved_card: Card,
         session_factory: async_sessionmaker[AsyncSession],
     ) -> None:
-        await grade(dispatcher, bot, saved_card.id, ReviewRating.GOOD)
+        await grade(dispatcher, bot, saved_card.id, session_factory, ReviewRating.GOOD)
 
         async with session_factory() as session:
             streak = (await session.scalars(select(Streak))).one()
@@ -181,8 +199,8 @@ class TestStreakInTheBot:
         session_factory: async_sessionmaker[AsyncSession],
     ) -> None:
         card_id = saved_card.id
-        await grade(dispatcher, bot, card_id, ReviewRating.GOOD, update_id=500)
-        await grade(dispatcher, bot, card_id, ReviewRating.GOOD, update_id=510)
+        await grade(dispatcher, bot, card_id, session_factory, ReviewRating.GOOD, update_id=500)
+        await grade(dispatcher, bot, card_id, session_factory, ReviewRating.GOOD, update_id=510)
 
         async with session_factory() as session:
             streak = (await session.scalars(select(Streak))).one()
@@ -195,7 +213,7 @@ class TestStreakInTheBot:
         saved_card: Card,
         session_factory: async_sessionmaker[AsyncSession],
     ) -> None:
-        await grade(dispatcher, bot, saved_card.id, ReviewRating.GOOD)
+        await grade(dispatcher, bot, saved_card.id, session_factory, ReviewRating.GOOD)
 
         async with session_factory() as session:
             assert (await session.scalars(select(Streak))).one().freezes == 1
@@ -208,11 +226,15 @@ class TestStreakInTheBot:
         saved_card: Card,
         session_factory: async_sessionmaker[AsyncSession],
     ) -> None:
-        await grade(dispatcher, bot, saved_card.id, ReviewRating.GOOD, update_id=600)
+        await grade(
+            dispatcher, bot, saved_card.id, session_factory, ReviewRating.GOOD, update_id=600
+        )
         await _rewind_streak(session_factory, days=2, freezes=1, current=4)
         recording.clear()
 
-        await grade(dispatcher, bot, saved_card.id, ReviewRating.GOOD, update_id=610)
+        await grade(
+            dispatcher, bot, saved_card.id, session_factory, ReviewRating.GOOD, update_id=610
+        )
 
         text = answer_message(recording)
         assert "Заморозка сохранила серию" in text
@@ -229,11 +251,15 @@ class TestStreakInTheBot:
         saved_card: Card,
         session_factory: async_sessionmaker[AsyncSession],
     ) -> None:
-        await grade(dispatcher, bot, saved_card.id, ReviewRating.GOOD, update_id=700)
+        await grade(
+            dispatcher, bot, saved_card.id, session_factory, ReviewRating.GOOD, update_id=700
+        )
         await _rewind_streak(session_factory, days=2, freezes=0, current=9)
         recording.clear()
 
-        await grade(dispatcher, bot, saved_card.id, ReviewRating.GOOD, update_id=710)
+        await grade(
+            dispatcher, bot, saved_card.id, session_factory, ReviewRating.GOOD, update_id=710
+        )
 
         assert "Серия прервалась" in answer_message(recording)
         async with session_factory() as session:
@@ -249,11 +275,15 @@ class TestStreakInTheBot:
         saved_card: Card,
         session_factory: async_sessionmaker[AsyncSession],
     ) -> None:
-        await grade(dispatcher, bot, saved_card.id, ReviewRating.GOOD, update_id=800)
+        await grade(
+            dispatcher, bot, saved_card.id, session_factory, ReviewRating.GOOD, update_id=800
+        )
         await _rewind_streak(session_factory, days=1, freezes=1, current=2)
         recording.clear()
 
-        await grade(dispatcher, bot, saved_card.id, ReviewRating.GOOD, update_id=810)
+        await grade(
+            dispatcher, bot, saved_card.id, session_factory, ReviewRating.GOOD, update_id=810
+        )
 
         owner = await fresh_user(session_factory)
         assert "milestone" in owner.praise_history
@@ -270,11 +300,15 @@ class TestStreakInTheBot:
         saved_card: Card,
         session_factory: async_sessionmaker[AsyncSession],
     ) -> None:
-        await grade(dispatcher, bot, saved_card.id, ReviewRating.GOOD, update_id=900)
+        await grade(
+            dispatcher, bot, saved_card.id, session_factory, ReviewRating.GOOD, update_id=900
+        )
         await _rewind_streak(session_factory, days=1, freezes=0, current=6)
         recording.clear()
 
-        await grade(dispatcher, bot, saved_card.id, ReviewRating.GOOD, update_id=910)
+        await grade(
+            dispatcher, bot, saved_card.id, session_factory, ReviewRating.GOOD, update_id=910
+        )
 
         assert "Новая заморозка" in answer_message(recording)
 
@@ -286,8 +320,11 @@ class TestStatsShowTheStreak:
         bot: Bot,
         recording: RecordingSession,
         saved_card: Card,
+        session_factory: async_sessionmaker[AsyncSession],
     ) -> None:
-        await grade(dispatcher, bot, saved_card.id, ReviewRating.GOOD, update_id=1000)
+        await grade(
+            dispatcher, bot, saved_card.id, session_factory, ReviewRating.GOOD, update_id=1000
+        )
         recording.clear()
 
         await send(dispatcher, bot, "/stats", update_id=1010)
@@ -305,7 +342,9 @@ class TestStatsShowTheStreak:
         session_factory: async_sessionmaker[AsyncSession],
     ) -> None:
         """Opening statistics after a gap must not show a stale number."""
-        await grade(dispatcher, bot, saved_card.id, ReviewRating.GOOD, update_id=1100)
+        await grade(
+            dispatcher, bot, saved_card.id, session_factory, ReviewRating.GOOD, update_id=1100
+        )
         await _rewind_streak(session_factory, days=5, freezes=0, current=7)
         recording.clear()
 
@@ -321,8 +360,11 @@ class TestStatsShowTheStreak:
         bot: Bot,
         recording: RecordingSession,
         saved_card: Card,
+        session_factory: async_sessionmaker[AsyncSession],
     ) -> None:
-        await grade(dispatcher, bot, saved_card.id, ReviewRating.GOOD, update_id=1200)
+        await grade(
+            dispatcher, bot, saved_card.id, session_factory, ReviewRating.GOOD, update_id=1200
+        )
         recording.clear()
 
         await send(dispatcher, bot, "/start", update_id=1210)

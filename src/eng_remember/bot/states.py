@@ -5,10 +5,13 @@ from __future__ import annotations
 from aiogram.fsm.state import State, StatesGroup
 
 __all__ = [
+    "ANSWERED_KEY",
+    "ANSWERING_KEY",
     "CONTEXT_KEY",
     "COUNT_KEY",
     "DRAFT_KEY",
     "ENGINE_KEY",
+    "FRONT_MESSAGE_KEY",
     "OPTIONS_KEY",
     "ORIGINAL_KEY",
     "OWN_KEY",
@@ -18,6 +21,7 @@ __all__ = [
     "SHOWN_CARD_KEY",
     "TOPIC_KEY",
     "AddWords",
+    "Review",
 ]
 
 # Keys inside FSM storage. Named constants instead of scattered string literals
@@ -42,9 +46,14 @@ QUESTION_KEY = "clarify_question"
 OPTIONS_KEY = "clarify_options"
 ROUND_KEY = "clarify_round"
 
-# When the answer was shown, for measuring how long the learner took.
+# The review dialogue: which card is waiting, when its front was shown (the
+# speed signal), which message carries it (edited into the result), and whether
+# an answer is already being checked (reservation against a double send).
 SHOWN_AT_KEY = "shown_at"
 SHOWN_CARD_KEY = "shown_card"
+FRONT_MESSAGE_KEY = "front_message"
+ANSWERING_KEY = "answering"
+ANSWERED_KEY = "answered"
 
 
 class AddWords(StatesGroup):
@@ -54,3 +63,9 @@ class AddWords(StatesGroup):
     """Waiting for an answer to the clarification the bot asked for."""
 
     clarifying = State()
+
+
+class Review(StatesGroup):
+    """Waiting for the learner to type the translation of the shown card."""
+
+    awaiting_answer = State()

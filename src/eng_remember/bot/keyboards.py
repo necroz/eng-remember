@@ -8,7 +8,6 @@ linger as a sticky button.
 from __future__ import annotations
 
 from aiogram.types import (
-    InlineKeyboardButton,
     InlineKeyboardMarkup,
     KeyboardButton,
     ReplyKeyboardMarkup,
@@ -17,19 +16,13 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from eng_remember.bot import texts
 from eng_remember.bot.callbacks import ClarifyCB, ImportCB, ReviewCB
-from eng_remember.domain.enums import ReviewRating
-from eng_remember.domain.srs import SchedulePreview
-from eng_remember.utils.time import humanize_interval
 
 __all__ = [
     "clarification",
     "import_confirm",
     "main_menu",
     "review_prompt",
-    "review_rating",
 ]
-
-_RATING_ORDER = (ReviewRating.AGAIN, ReviewRating.HARD, ReviewRating.GOOD, ReviewRating.EASY)
 
 
 def main_menu() -> ReplyKeyboardMarkup:
@@ -71,38 +64,14 @@ def clarification(options: list[str]) -> InlineKeyboardMarkup:
 
 
 def review_prompt(card_id: int) -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    builder.button(text="👀 Показать ответ", callback_data=ReviewCB(action="show", card_id=card_id))
-    return builder.as_markup()
+    """The only affordance on the front: giving up honestly, in one tap.
 
-
-def review_rating(card_id: int, previews: list[SchedulePreview]) -> InlineKeyboardMarkup:
-    """Four grades with the interval each one would produce.
-
-    Showing the interval before the answer is what makes the buttons
-    comprehensible: "Трудно" is abstract, "Трудно · 2 дн" is a decision.
+    The answer itself is typed, not tapped, so there is nothing else to offer —
+    a rating button would invite grading without the recall the flow exists for.
     """
-    by_rating = {preview.rating: preview for preview in previews}
-    buttons: list[InlineKeyboardButton] = []
-    for rating in _RATING_ORDER:
-        preview = by_rating.get(rating)
-        label = f"{rating.emoji} {rating.label}"
-        if preview is not None:
-            label += f" · {humanize_interval(preview.interval_seconds)}"
-        buttons.append(
-            InlineKeyboardButton(
-                text=label,
-                callback_data=ReviewCB(action="grade", card_id=card_id, rating=int(rating)).pack(),
-            )
-        )
-
     builder = InlineKeyboardBuilder()
-    builder.row(*buttons[:2])
-    builder.row(*buttons[2:])
-    builder.row(
-        InlineKeyboardButton(
-            text="⏭ Позже", callback_data=ReviewCB(action="later", card_id=card_id).pack()
-        ),
-        InlineKeyboardButton(text="⏹ Закончить", callback_data=ReviewCB(action="stop").pack()),
+    builder.button(
+        text="🤷 Не знаю",
+        callback_data=ReviewCB(action="dont_know", card_id=card_id),
     )
     return builder.as_markup()

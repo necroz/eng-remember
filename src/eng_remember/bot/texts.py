@@ -12,9 +12,9 @@ from collections.abc import Sequence
 from datetime import datetime
 from html import escape
 
+from eng_remember.domain.answers import Verdict
 from eng_remember.domain.gamification import StreakState, StreakTransition
 from eng_remember.domain.praise import render
-from eng_remember.domain.srs import SchedulePreview
 from eng_remember.models.card import Card
 from eng_remember.repositories.cards import CardDraft
 from eng_remember.services.cards import ImportOutcome, UserStats
@@ -28,10 +28,13 @@ __all__ = [
     "BTN_REVIEW",
     "BTN_STATS",
     "MAIN_MENU_BUTTONS",
+    "already_checking",
     "answer_accepted",
+    "answer_result",
     "cannot_parse",
     "card_back",
     "card_front",
+    "card_unavailable",
     "clarification",
     "clarification_answered",
     "clarification_skipped",
@@ -55,8 +58,8 @@ __all__ = [
     "nothing_to_save",
     "praise_line",
     "queue_reminder",
-    "rating_buttons_hint",
     "review_finished",
+    "stale_button",
     "stats",
     "streak_notes",
     "streak_reminder",
@@ -178,7 +181,7 @@ def answer_accepted(
     return "\n".join(lines)
 
 
-def card_back(card: Card, previews: list[SchedulePreview]) -> str:
+def card_back(card: Card) -> str:
     lines = [f"<b>{escape(card.term)}</b>"]
     if card.transcription:
         lines.append(f"<code>{escape(card.transcription)}</code>")
@@ -190,14 +193,45 @@ def card_back(card: Card, previews: list[SchedulePreview]) -> str:
     if card.notes:
         lines.append("")
         lines.append(f"💡 {escape(card.notes)}")
-    if previews:
-        lines.append("")
-        lines.append("<i>Насколько помните?</i>")
     return "\n".join(lines)
 
 
-def rating_buttons_hint() -> str:
-    return "Выберите вариант — покажу, через сколько слово вернётся."
+def answer_result(
+    card: Card,
+    *,
+    verdict: Verdict,
+    typed: str | None,
+    praise: str,
+    interval_text: str,
+    streak: int = 0,
+    notes: Sequence[str] = (),
+) -> str:
+    """The revealed card: how close the answer came, then the answer itself.
+
+    The verdict leads on purpose — the correction is what the learner is here
+    for, and it must not be harder to find than the word. ``typed is None``
+    means the «Не знаю» button, which gets its own first line instead.
+    """
+    lines = ["🤷 Не помню" if typed is None else f"{verdict.emoji} {verdict.label}"]
+    if typed is not None:
+        lines.append(f"<i>Ваш ответ:</i> <code>{escape(typed)}</code>")
+    lines.append("")
+    lines.append(card_back(card))
+    lines.append("")
+    lines.append(answer_accepted(praise, interval_text, streak=streak, notes=notes))
+    return "\n".join(lines)
+
+
+def stale_button() -> str:
+    return "Кнопка устарела — начните повторение заново."
+
+
+def already_checking() -> str:
+    return "Секунду — уже проверяю предыдущий ответ."
+
+
+def card_unavailable() -> str:
+    return "Карточка больше не доступна."
 
 
 def import_preview(
