@@ -25,6 +25,7 @@ def make_card(
     tags: list[str] | None = None,
     deck_id: int = 1,
 ) -> Card:
+    first_example = examples[0] if examples else None
     return Card(
         user_id=1,
         deck_id=deck_id,
@@ -32,7 +33,7 @@ def make_card(
         translation=translation,
         transcription=transcription,
         part_of_speech=part_of_speech,
-        example=(examples or [None])[0],
+        example=first_example,
         examples=examples or [],
         notes=notes,
         tags=tags or [],
