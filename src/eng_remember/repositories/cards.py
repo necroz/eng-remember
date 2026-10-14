@@ -366,9 +366,14 @@ class CardRepository:
         await self._session.flush()
 
     async def list_suspended(self, user_id: int, *, limit: int = 20) -> list[Card]:
+        """Paused words once each — the forward card stands for its pair."""
         stmt = (
             select(Card)
-            .where(Card.user_id == user_id, Card.is_suspended.is_(True))
+            .where(
+                Card.user_id == user_id,
+                Card.is_suspended.is_(True),
+                Card.direction == CardDirection.FORWARD,
+            )
             .order_by(Card.term)
             .limit(limit)
         )
@@ -378,6 +383,7 @@ class CardRepository:
         stmt = select(func.count(Card.id)).where(
             Card.user_id == user_id,
             Card.is_suspended.is_(True),
+            Card.direction == CardDirection.FORWARD,
         )
         return int(await self._session.scalar(stmt) or 0)
 

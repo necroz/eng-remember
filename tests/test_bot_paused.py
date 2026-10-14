@@ -55,6 +55,26 @@ async def test_paused_lists_suspended_words(
     assert any("ps:resume" in data for data in recording.last_button_data())
 
 
+async def test_paused_lists_a_word_once(
+    dispatcher: Dispatcher,
+    bot: Bot,
+    recording: RecordingSession,
+    services: Services,
+    user: User,
+) -> None:
+    forward = await services.card_service.add_draft(
+        user, CardDraft(term="run", translation="бежать")
+    )
+    await services.card_service.suspend(user, forward.id)
+    await services.commit()
+
+    await send(dispatcher, bot, "/paused", update_id=100)
+
+    text = recording.last_text()
+    assert text.count("run") == 1
+    assert "На паузе 1 слово" in text
+
+
 async def test_paused_with_nothing_says_so(
     dispatcher: Dispatcher,
     bot: Bot,

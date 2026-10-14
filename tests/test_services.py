@@ -415,6 +415,27 @@ class TestCardPairs:
         await services.card_service.delete(user, forward.id)
         assert await services.cards.get(twin.id, user_id=user.id) is None
 
+    async def test_a_session_walks_every_new_word(self, services: Services, user: User) -> None:
+        """Burying twins must not starve the one-card queue of get_next."""
+        forwards = []
+        for index in range(3):
+            forwards.append(
+                await services.card_service.add_draft(
+                    user, CardDraft(term=f"w{index}", translation=f"с{index}")
+                )
+            )
+        await services.commit()
+        due_at = forwards[0].due_at
+
+        queue = await services.review_service.build_queue(user, now=due_at)
+        assert [card.id for card in queue.cards] == [card.id for card in forwards]
+
+        await services.review_service.answer(user, forwards[0], ReviewRating.GOOD, now=due_at)
+        second = await services.review_service.get_next(user, now=due_at)
+
+        assert second is not None
+        assert second.term == "w1"
+
     async def test_the_reverse_twin_waits_for_the_next_day(
         self, services: Services, user: User, draft: CardDraft
     ) -> None:
