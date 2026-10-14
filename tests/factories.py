@@ -21,7 +21,11 @@ from openai.types.chat import ChatCompletion
 
 from eng_remember.domain.enums import CardState
 from eng_remember.domain.srs import CardSchedule
-from eng_remember.services.llm.schema import ParseResponse
+from eng_remember.services.llm.schema import (
+    AnswerCheckResponse,
+    ExpansionResponse,
+    ParseResponse,
+)
 from eng_remember.utils.time import utcnow
 
 __all__ = [
@@ -208,6 +212,7 @@ class ScriptedClient:
     def __init__(self) -> None:
         self.parse_queue: list[Any] = []
         self.expand_queue: list[Any] = []
+        self.check_queue: list[Any] = []
         self.calls: list[dict[str, Any]] = []
 
     @property
@@ -226,6 +231,10 @@ class ScriptedClient:
         self.expand_queue.extend(responses)
         return self
 
+    def push_check(self, *responses: Any) -> ScriptedClient:
+        self.check_queue.extend(responses)
+        return self
+
     async def complete_json(
         self,
         *,
@@ -236,7 +245,14 @@ class ScriptedClient:
         user_id: int | None = None,
     ) -> Any:
         self.calls.append({"purpose": purpose, "system": system, "user": user, "schema": schema})
-        queue = self.parse_queue if schema is ParseResponse else self.expand_queue
+        if schema is ParseResponse:
+            queue = self.parse_queue
+        elif schema is ExpansionResponse:
+            queue = self.expand_queue
+        elif schema is AnswerCheckResponse:
+            queue = self.check_queue
+        else:
+            raise AssertionError(f"no scripted queue for {schema.__name__}")
         if not queue:
             raise AssertionError(f"no scripted answer left for {schema.__name__}")
         outcome = queue.pop(0)

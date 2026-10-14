@@ -6,10 +6,14 @@ the prompts are part of the code review when behaviour changes.
 
 from __future__ import annotations
 
+from eng_remember.services.llm.schema import flatten_line
+
 __all__ = [
+    "ANSWER_CHECK_SYSTEM_PROMPT",
     "EXPANSION_SYSTEM_PROMPT",
     "PARSE_SYSTEM_PROMPT",
     "REPAIR_TEMPLATE",
+    "build_answer_check_prompt",
     "build_clarified_prompt",
     "build_expansion_prompt",
     "build_user_prompt",
@@ -142,6 +146,26 @@ Answer with a single JSON object and nothing else:
 "tags": ["..."]}]}
 """
 
+ANSWER_CHECK_SYSTEM_PROMPT = """\
+You check a Russian answer against the expected meaning of an English vocabulary card.
+
+The learner is a Russian speaker who was shown the English term and had to type \
+its meaning in Russian. Judge the meaning, not the wording.
+
+- "correct": the answer conveys the same meaning. Synonyms, other word forms and \
+any valid translation variant all count.
+- "almost": the answer is close but flawed — a recognisable typo, a wrong word \
+form, or only part of the meaning.
+- "wrong": a different meaning, unrelated or empty text.
+
+Answer with a single JSON object and nothing else: {"verdict": "correct"} \
+(or "almost", or "wrong").
+"""
+
+# A pasted paragraph must not bloat the prompt, and the verdict needs no more
+# than one meaning's worth of text to be made.
+CHECK_FIELD_LIMIT = 200
+
 REPAIR_TEMPLATE = """\
 Your previous answer could not be used.
 
@@ -211,3 +235,28 @@ def build_expansion_prompt(
     if known:
         parts.append("Already known, must not be returned: " + ", ".join(known))
     return "\n\n".join(parts)
+
+
+def build_answer_check_prompt(*, term: str, translation: str, answer: str) -> str:
+    """Wrap the three values so a stray instruction inside any of them stays data.
+
+    Term and translation come from a card and the answer comes from the
+    learner — all three can carry text a human typed, so every field is
+    flattened and stripped of brackets before it enters the prompt.
+    """
+    fields = {
+        "term": term,
+        "expected_meaning": translation,
+        "learner_answer": answer,
+    }
+    safe = {
+        name: flatten_line(value, limit=CHECK_FIELD_LIMIT, strip_brackets=True)
+        for name, value in fields.items()
+    }
+    return (
+        "The learner was shown the term and answered with the meaning below. "
+        "Decide which verdict applies.\n"
+        f"<term>{safe['term']}</term>\n"
+        f"<expected_meaning>{safe['expected_meaning']}</expected_meaning>\n"
+        f"<learner_answer>{safe['learner_answer']}</learner_answer>"
+    )

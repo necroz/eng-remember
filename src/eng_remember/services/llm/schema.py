@@ -29,9 +29,11 @@ from pydantic import (
     model_validator,
 )
 
+from eng_remember.domain.answers import Verdict
 from eng_remember.repositories.cards import CardDraft
 
 __all__ = [
+    "AnswerCheckResponse",
     "Clarification",
     "ExpansionResponse",
     "Intent",
@@ -346,6 +348,52 @@ class ExpansionResponse(BaseModel):
 
     def to_drafts(self) -> list[CardDraft]:
         return [card.to_draft() for card in self.cards]
+
+
+# Near-misses seen from smaller models, mapped onto the three verdicts.
+_VERDICT_ALIASES: dict[str, Verdict] = {
+    "correct": Verdict.CORRECT,
+    "верно": Verdict.CORRECT,
+    "верный": Verdict.CORRECT,
+    "правильно": Verdict.CORRECT,
+    "yes": Verdict.CORRECT,
+    "exact": Verdict.CORRECT,
+    "almost": Verdict.ALMOST,
+    "частично": Verdict.ALMOST,
+    "почти": Verdict.ALMOST,
+    "почти_верно": Verdict.ALMOST,
+    "partial": Verdict.ALMOST,
+    "close": Verdict.ALMOST,
+    "wrong": Verdict.WRONG,
+    "неверно": Verdict.WRONG,
+    "неправильно": Verdict.WRONG,
+    "нет": Verdict.WRONG,
+    "no": Verdict.WRONG,
+    "incorrect": Verdict.WRONG,
+    "different": Verdict.WRONG,
+}
+
+
+class AnswerCheckResponse(BaseModel):
+    """The model's judgement of one typed answer."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    verdict: Verdict
+
+    @field_validator("verdict", mode="before")
+    @classmethod
+    def _coerce_verdict(cls, value: object) -> object:
+        """Accept near-misses instead of discarding the answer.
+
+        A model that replies "верно" or "Almost" has made exactly the judgement
+        this call exists for; rejecting the payload over its spelling would turn
+        a usable verdict into the fallback "wrong" for no reason.
+        """
+        if not isinstance(value, str):
+            return value
+        normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
+        return _VERDICT_ALIASES.get(normalized, normalized)
 
 
 _FENCE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
