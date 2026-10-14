@@ -7,6 +7,8 @@ linger as a sticky button.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from aiogram.types import (
     InlineKeyboardMarkup,
     KeyboardButton,
@@ -15,13 +17,15 @@ from aiogram.types import (
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from eng_remember.bot import texts
-from eng_remember.bot.callbacks import ClarifyCB, ImportCB, LeechCB, ReviewCB
+from eng_remember.bot.callbacks import ClarifyCB, ImportCB, LeechCB, PauseCB, ReviewCB
+from eng_remember.models.card import Card
 
 __all__ = [
     "clarification",
     "import_confirm",
     "leech_menu",
     "main_menu",
+    "paused_cards",
     "review_prompt",
 ]
 
@@ -109,4 +113,16 @@ def leech_menu(card_id: int) -> InlineKeyboardMarkup:
         callback_data=LeechCB(action="leave", card_id=card_id),
     )
     builder.adjust(2, 2)
+    return builder.as_markup()
+
+
+def paused_cards(cards: Sequence[Card]) -> InlineKeyboardMarkup:
+    """One button per paused word, labelled with the word itself."""
+    builder = InlineKeyboardBuilder()
+    for card in cards:
+        builder.button(
+            text=f"▶️ {card.term[:26]}",
+            callback_data=PauseCB(action="resume", card_id=card.id),
+        )
+    builder.adjust(1)
     return builder.as_markup()

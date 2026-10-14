@@ -28,6 +28,7 @@ COMMANDS = [
     BotCommand(command="add", description="Добавить слова"),
     BotCommand(command="decks", description="Колоды"),
     BotCommand(command="stats", description="Статистика"),
+    BotCommand(command="paused", description="Слова на паузе"),
     BotCommand(command="limit", description="Сколько новых слов в день"),
     BotCommand(command="tz", description="Часовой пояс"),
     BotCommand(command="remind", description="Напоминания"),

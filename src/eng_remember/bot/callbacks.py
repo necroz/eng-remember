@@ -18,6 +18,8 @@ __all__ = [
     "ImportCB",
     "LeechAction",
     "LeechCB",
+    "PauseAction",
+    "PauseCB",
     "ReviewAction",
     "ReviewCB",
 ]
@@ -26,6 +28,7 @@ ReviewAction = Literal["dont_know", "hint"]
 ImportAction = Literal["confirm", "cancel", "more"]
 ClarifyAction = Literal["option", "skip"]
 LeechAction = Literal["mnemonic", "example", "pause", "leave"]
+PauseAction = Literal["resume"]
 
 
 class ReviewCB(CallbackData, prefix="rv"):
@@ -71,4 +74,11 @@ class LeechCB(CallbackData, prefix="lc"):
     """
 
     action: LeechAction
+    card_id: int = 0
+
+
+class PauseCB(CallbackData, prefix="ps"):
+    """Returning a paused word to rotation from the /paused list."""
+
+    action: PauseAction
     card_id: int = 0

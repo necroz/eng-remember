@@ -1,12 +1,13 @@
-"""Read-only views: decks and statistics."""
+"""Read-only views: decks and statistics, plus the paused-words list."""
 
 from __future__ import annotations
 
-from aiogram import F, Router
+from aiogram import Bot, F, Router
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import CallbackQuery, Message
 
-from eng_remember.bot import keyboards, texts
+from eng_remember.bot import keyboards, rendering, texts
+from eng_remember.bot.callbacks import PauseCB
 from eng_remember.models.user import User
 from eng_remember.services.container import Services
 
@@ -48,6 +49,45 @@ def build_router() -> Router:
                 streak=streak.state,
             ),
             reply_markup=keyboards.main_menu(),
+        )
+
+    @router.message(Command("paused"))
+    async def list_paused(message: Message, user: User, services: Services) -> None:
+        cards = await services.cards.list_suspended(user.id)
+        total = await services.cards.count_suspended(user.id)
+        if not cards:
+            await message.answer(texts.paused_empty(), reply_markup=keyboards.main_menu())
+            return
+        await message.answer(
+            texts.paused_list(cards, total),
+            reply_markup=keyboards.paused_cards(cards),
+        )
+
+    @router.callback_query(PauseCB.filter(F.action == "resume"))
+    async def resume_paused(
+        query: CallbackQuery,
+        callback_data: PauseCB,
+        bot: Bot,
+        user: User,
+        services: Services,
+    ) -> None:
+        card = await services.card_service.suspend(user, callback_data.card_id, suspended=False)
+        if card is None:
+            await query.answer(texts.card_unavailable(), show_alert=True)
+            return
+
+        await services.commit()
+        await query.answer()
+        cards = await services.cards.list_suspended(user.id)
+        total = await services.cards.count_suspended(user.id)
+        if not cards:
+            await rendering.edit_or_send(query, texts.paused_empty(), bot=bot)
+            return
+        await rendering.edit_or_send(
+            query,
+            texts.paused_list(cards, total),
+            bot=bot,
+            reply_markup=keyboards.paused_cards(cards),
         )
 
     return router

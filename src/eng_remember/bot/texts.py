@@ -64,6 +64,8 @@ __all__ = [
     "no_cards_yet",
     "nothing_due",
     "nothing_to_save",
+    "paused_empty",
+    "paused_list",
     "praise_line",
     "queue_reminder",
     "review_finished",
@@ -103,7 +105,9 @@ def welcome_new(first_name: str | None, deck_name: str) -> str:
         "• <code>ubiquitous — вездесущий</code>\n"
         "• <code>добавь слова resilient и thorough</code>\n"
         "• <code>to run, to jump, to swim</code>\n\n"
-        f"Дальше — «{BTN_REVIEW}», и я буду показывать то, что пора повторить."
+        f"Дальше — «{BTN_REVIEW}», и я буду показывать то, что пора повторить.\n\n"
+        "Если слово никак не даётся, я сам предложу помощь, а приостановленные "
+        "слова ждут в /paused."
     )
 
 
@@ -295,6 +299,21 @@ def llm_required() -> str:
 
 def llm_failed() -> str:
     return "Модель не ответила — попробуйте ещё раз позже."
+
+
+def paused_list(cards: Sequence[Card], total: int) -> str:
+    header = f"⏸ На паузе {total} {_plural(total, 'слово', 'слова', 'слов')}"
+    if total > len(cards):
+        header += f" (первые {len(cards)})"
+    lines = [header, ""]
+    lines.extend(f"• <b>{escape(card.term)}</b> — {escape(card.translation)}" for card in cards)
+    lines.append("")
+    lines.append("<i>Нажмите на слово, чтобы вернуть его в повторения.</i>")
+    return "\n".join(lines)
+
+
+def paused_empty() -> str:
+    return "На паузе ничего нет."
 
 
 def import_preview(
