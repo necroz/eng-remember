@@ -316,31 +316,6 @@ class TestReviewService:
 
         assert result.card.lapses == 0
 
-    async def test_postponing_writes_no_history(
-        self, services: Services, session: AsyncSession, user: User, deck_id: int
-    ) -> None:
-        await self.queue_cards(services, session, user, deck_id, new=1)
-        card = (await services.review_service.build_queue(user)).cards[0]
-        before = card.due_at
-
-        await services.review_service.postpone(card, minutes=10)
-        await session.commit()
-
-        assert card.due_at > before
-        assert card.reps == 0
-        assert await session.scalar(select(func.count(Review.id))) == 0
-        assert await services.review_service.get_next(user) is None
-
-    async def test_preview_lists_four_grades(
-        self, services: Services, session: AsyncSession, user: User, deck_id: int
-    ) -> None:
-        await self.queue_cards(services, session, user, deck_id, new=1)
-        card = (await services.review_service.build_queue(user)).cards[0]
-
-        previews = await services.review_service.preview(card)
-
-        assert [preview.rating for preview in previews] == list(ReviewRating)
-
     async def test_an_empty_collection_yields_an_empty_queue(
         self, services: Services, user: User
     ) -> None:

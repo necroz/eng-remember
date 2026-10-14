@@ -8,7 +8,7 @@ and scheduling tests never need a database.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from fsrs import Card, Rating, Scheduler, State
@@ -17,7 +17,7 @@ from eng_remember.config import SrsSettings
 from eng_remember.domain.enums import CardState, ReviewRating
 from eng_remember.utils.time import ensure_utc, utcnow
 
-__all__ = ["CardSchedule", "SchedulePreview", "SrsScheduler"]
+__all__ = ["CardSchedule", "SrsScheduler"]
 
 _RATING_TO_FSRS: dict[ReviewRating, Rating] = {
     ReviewRating.AGAIN: Rating.Again,
@@ -65,15 +65,6 @@ class CardSchedule:
     @property
     def is_new(self) -> bool:
         return self.reps == 0
-
-
-@dataclass(frozen=True, slots=True)
-class SchedulePreview:
-    """What each answer button would do, for the UI."""
-
-    rating: ReviewRating
-    due_at: datetime
-    interval_seconds: float
 
 
 class SrsScheduler:
@@ -133,26 +124,6 @@ class SrsScheduler:
             lapses=schedule.lapses + (1 if was_lapse else 0),
         )
 
-    def preview(
-        self,
-        schedule: CardSchedule,
-        *,
-        now: datetime | None = None,
-    ) -> list[SchedulePreview]:
-        """Interval each of the four answers would produce, for button hints."""
-        moment = ensure_utc(now) or utcnow()
-        previews: list[SchedulePreview] = []
-        for rating in ReviewRating:
-            next_schedule = self.review(schedule, rating, now=moment)
-            previews.append(
-                SchedulePreview(
-                    rating=rating,
-                    due_at=next_schedule.due_at,
-                    interval_seconds=(next_schedule.due_at - moment).total_seconds(),
-                )
-            )
-        return previews
-
     def retrievability(
         self,
         schedule: CardSchedule,
@@ -175,8 +146,3 @@ class SrsScheduler:
             due=schedule.due_at,
             last_review=schedule.last_review_at,
         )
-
-    @staticmethod
-    def with_due(schedule: CardSchedule, due_at: datetime) -> CardSchedule:
-        """Postpone a card without recording an answer (used by 'later')."""
-        return replace(schedule, due_at=due_at)

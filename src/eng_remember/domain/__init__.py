@@ -12,7 +12,7 @@ from eng_remember.domain.gamification import (
     roll_forward,
 )
 from eng_remember.domain.praise import PraiseCategory, PraisePick, select
-from eng_remember.domain.srs import CardSchedule, SchedulePreview, SrsScheduler
+from eng_remember.domain.srs import CardSchedule, SrsScheduler
 
 __all__ = [
     "CardSchedule",
@@ -20,7 +20,6 @@ __all__ = [
     "PraiseCategory",
     "PraisePick",
     "ReviewRating",
-    "SchedulePreview",
     "SrsScheduler",
     "StreakState",
     "StreakTransition",

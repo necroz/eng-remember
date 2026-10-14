@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from eng_remember.domain.enums import CardState, ReviewRating
 from eng_remember.domain.gamification import StreakTransition
-from eng_remember.domain.srs import SchedulePreview, SrsScheduler
+from eng_remember.domain.srs import SrsScheduler
 from eng_remember.models.card import Card
 from eng_remember.models.review import Review
 from eng_remember.models.user import User
@@ -166,26 +166,3 @@ class ReviewService:
             interval_seconds=(updated.due_at - moment).total_seconds(),
             streak=streak,
         )
-
-    async def preview(
-        self,
-        card: Card,
-        *,
-        now: datetime | None = None,
-    ) -> list[SchedulePreview]:
-        """Interval each answer button would give, for keyboard hints."""
-        return self._scheduler.preview(card.schedule, now=now)
-
-    async def postpone(
-        self,
-        card: Card,
-        *,
-        minutes: int = 10,
-        now: datetime | None = None,
-    ) -> Card:
-        """Push a card out without grading it — nothing is written to the log."""
-        moment = ensure_utc(now) or utcnow()
-        await self._cards.update_schedule(
-            card, self._scheduler.with_due(card.schedule, moment + timedelta(minutes=minutes))
-        )
-        return card

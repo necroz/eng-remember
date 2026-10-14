@@ -112,26 +112,6 @@ def test_retention_setting_changes_the_interval() -> None:
     assert eager_card.due_at < relaxed_card.due_at
 
 
-def test_preview_covers_every_rating_in_order(scheduler: SrsScheduler) -> None:
-    now = utcnow()
-    previews = scheduler.preview(scheduler.fresh_schedule(now), now=now)
-
-    assert [preview.rating for preview in previews] == list(ReviewRating)
-    assert all(preview.interval_seconds > 0 for preview in previews)
-    # Easy must never promise a shorter interval than Again.
-    assert previews[0].interval_seconds <= previews[-1].interval_seconds
-
-
-def test_preview_does_not_change_the_card(scheduler: SrsScheduler) -> None:
-    now = utcnow()
-    schedule = scheduler.review(scheduler.fresh_schedule(now), ReviewRating.GOOD, now=now)
-    before = schedule
-
-    scheduler.preview(schedule, now=now)
-
-    assert schedule == before
-
-
 def test_schedule_round_trips_through_its_fields(scheduler: SrsScheduler) -> None:
     now = utcnow()
     original = scheduler.review(scheduler.fresh_schedule(now), ReviewRating.EASY, now=now)
