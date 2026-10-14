@@ -8,6 +8,7 @@ from typing import Any, cast
 from sqlalchemy import CursorResult, Select, and_, case, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from eng_remember.domain.enums import CardDirection
 from eng_remember.domain.examples import merge_examples
 from eng_remember.domain.srs import CardSchedule
 from eng_remember.models.card import Card
@@ -89,6 +90,7 @@ class CardRepository:
         draft: CardDraft,
         schedule: CardSchedule,
         source: str = "manual",
+        direction: CardDirection = CardDirection.FORWARD,
     ) -> Card:
         # Normalised here as well as in the service: this is the last point
         # before persistence, so no caller can store an untrimmed term and
@@ -108,6 +110,7 @@ class CardRepository:
             cefr=cleaned.cefr,
             frequency=cleaned.frequency,
             source=source,
+            direction=direction,
             due_at=schedule.due_at,
         )
         card.apply_schedule(schedule)
@@ -123,6 +126,16 @@ class CardRepository:
         stmt = select(Card).where(
             Card.user_id == user_id,
             func.lower(Card.term) == term.strip().lower(),
+        )
+        return await self._session.scalar(stmt)
+
+    async def find_twin(self, card: Card) -> Card | None:
+        """The same word in the other direction, if it exists."""
+        stmt = select(Card).where(
+            Card.user_id == card.user_id,
+            Card.deck_id == card.deck_id,
+            Card.term == card.term,
+            Card.direction == card.direction.flipped,
         )
         return await self._session.scalar(stmt)
 
@@ -143,6 +156,31 @@ class CardRepository:
         lowered = [term.strip().lower() for term in terms]
         stmt = select(func.lower(Card.term)).where(
             Card.user_id == user_id,
+            func.lower(Card.term).in_(lowered),
+        )
+        return set((await self._session.scalars(stmt)).all())
+
+    async def terms_reviewed_since(
+        self,
+        user_id: int,
+        terms: Sequence[str],
+        *,
+        since: datetime,
+    ) -> set[str]:
+        """Lower-cased terms among ``terms`` with an answer since a moment.
+
+        Used to bury a new twin whose sibling was already answered today: the
+        second direction of a word answered this morning must not arrive this
+        evening as if it were new material.
+        """
+        if not terms:
+            return set()
+        lowered = [term.strip().lower() for term in terms]
+        stmt = select(func.lower(Card.term)).where(
+            Card.user_id == user_id,
+            Card.reps > 0,
+            Card.last_review_at.is_not(None),
+            Card.last_review_at >= since,
             func.lower(Card.term).in_(lowered),
         )
         return set((await self._session.scalars(stmt)).all())
@@ -272,28 +310,35 @@ class CardRepository:
         user_id: int,
         *,
         deck_id: int | None = None,
+        direction: CardDirection | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[Card]:
         stmt = select(Card).where(Card.user_id == user_id)
         if deck_id is not None:
             stmt = stmt.where(Card.deck_id == deck_id)
+        if direction is not None:
+            stmt = stmt.where(Card.direction == direction)
         stmt = stmt.order_by(Card.term).offset(offset).limit(limit)
         return list((await self._session.scalars(stmt)).all())
 
-    async def list_seen(self, user_id: int, *, limit: int = 500) -> list[Card]:
+    async def list_seen(
+        self,
+        user_id: int,
+        *,
+        limit: int = 500,
+        direction: CardDirection | None = CardDirection.FORWARD,
+    ) -> list[Card]:
         """Cards already in rotation. Order is deliberately whatever the
         database returns; the practice service does its own sampling."""
-        stmt = (
-            select(Card)
-            .where(
-                Card.user_id == user_id,
-                Card.is_suspended.is_(False),
-                Card.reps > 0,
-            )
-            .limit(limit)
+        stmt = select(Card).where(
+            Card.user_id == user_id,
+            Card.is_suspended.is_(False),
+            Card.reps > 0,
         )
-        return list((await self._session.scalars(stmt)).all())
+        if direction is not None:
+            stmt = stmt.where(Card.direction == direction)
+        return list((await self._session.scalars(stmt.limit(limit))).all())
 
     async def update_schedule(self, card: Card, schedule: CardSchedule) -> None:
         card.apply_schedule(schedule)

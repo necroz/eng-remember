@@ -22,7 +22,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from eng_remember.db.base import Base, TimestampMixin, UtcDateTime
-from eng_remember.domain.enums import CardState
+from eng_remember.domain.enums import CardDirection, CardState
 from eng_remember.domain.srs import CardSchedule
 from eng_remember.utils.time import ensure_utc
 
@@ -42,13 +42,27 @@ _CARD_STATE_TYPE = Enum(
     values_callable=lambda enum: [member.name.lower() for member in enum],
 )
 
+_CARD_DIRECTION_TYPE = Enum(
+    CardDirection,
+    name="card_direction",
+    native_enum=False,
+    length=8,
+    values_callable=lambda enum: [member.name.lower() for member in enum],
+)
+
 
 class Card(Base, TimestampMixin):
     """A vocabulary item plus the memory state FSRS needs to schedule it."""
 
     __tablename__ = "cards"
     __table_args__ = (
-        UniqueConstraint("user_id", "deck_id", "term", name="uq_cards_user_id_deck_id_term"),
+        UniqueConstraint(
+            "user_id",
+            "deck_id",
+            "term",
+            "direction",
+            name="uq_cards_user_id_deck_id_term_direction",
+        ),
         Index("ix_cards_user_id_due_at", "user_id", "due_at"),
         Index("ix_cards_deck_id_due_at", "deck_id", "due_at"),
     )
@@ -75,6 +89,11 @@ class Card(Base, TimestampMixin):
     cefr: Mapped[str | None] = mapped_column(String(2))
     frequency: Mapped[str | None] = mapped_column(String(8))
     source: Mapped[str] = mapped_column(String(32), default="manual", server_default="manual")
+    direction: Mapped[CardDirection] = mapped_column(
+        _CARD_DIRECTION_TYPE,
+        default=CardDirection.FORWARD,
+        server_default=CardDirection.FORWARD.name.lower(),
+    )
 
     # --- FSRS memory state -------------------------------------------------
     due_at: Mapped[datetime] = mapped_column(UtcDateTime, index=True)

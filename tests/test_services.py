@@ -8,7 +8,7 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from eng_remember.domain.enums import CardState, ReviewRating
+from eng_remember.domain.enums import CardDirection, CardState, ReviewRating
 from eng_remember.errors import DuplicateCardError
 from eng_remember.models.card import Card
 from eng_remember.models.review import Review
@@ -167,14 +167,15 @@ class TestCardService:
         await session.commit()
 
         # Added today: in the collection, but not in today's queue.
+        # Counts are per card — every word is a pair.
         today = await services.card_service.stats(user)
-        assert today.total_cards == 3
+        assert today.total_cards == 6
         assert today.new_cards == 0
         assert today.due_now == 0
         assert today.reviews_today == 0
 
         tomorrow = await services.card_service.stats(user, now=outcome.added[0].due_at)
-        assert tomorrow.new_cards == 3
+        assert tomorrow.new_cards == 6
 
 
 class TestReviewService:
@@ -366,6 +367,76 @@ class TestCardExamples:
 
         assert card.cefr == "B1"
         assert card.frequency == "rare"
+
+
+class TestCardPairs:
+    async def test_add_draft_creates_both_directions(
+        self, services: Services, user: User, draft: CardDraft
+    ) -> None:
+        forward = await services.card_service.add_draft(user, draft)
+
+        assert forward.direction is CardDirection.FORWARD
+        twin = await services.cards.find_twin(forward)
+        assert twin is not None
+        assert twin.direction is CardDirection.REVERSE
+        assert twin.term == forward.term
+        assert twin.translation == forward.translation
+
+    async def test_add_drafts_counts_words_not_cards(self, services: Services, user: User) -> None:
+        outcome = await services.card_service.add_drafts(
+            user,
+            [
+                CardDraft(term="run", translation="бежать"),
+                CardDraft(term="swim", translation="плавать"),
+            ],
+        )
+
+        assert len(outcome.added) == 2
+        assert await services.cards.count_for_user(user.id) == 4
+
+    async def test_a_duplicate_is_still_rejected_per_word(
+        self, services: Services, user: User, draft: CardDraft
+    ) -> None:
+        await services.card_service.add_draft(user, draft)
+
+        with pytest.raises(DuplicateCardError):
+            await services.card_service.add_draft(user, draft)
+
+    async def test_suspend_and_delete_mirror_the_twin(
+        self, services: Services, user: User, draft: CardDraft
+    ) -> None:
+        forward = await services.card_service.add_draft(user, draft)
+        twin = await services.cards.find_twin(forward)
+        assert twin is not None
+
+        await services.card_service.suspend(user, forward.id)
+        assert twin.is_suspended is True
+
+        await services.card_service.delete(user, forward.id)
+        assert await services.cards.get(twin.id, user_id=user.id) is None
+
+    async def test_the_reverse_twin_waits_for_the_next_day(
+        self, services: Services, user: User, draft: CardDraft
+    ) -> None:
+        forward = await services.card_service.add_draft(user, draft)
+        twin = await services.cards.find_twin(forward)
+        assert twin is not None
+
+        first = await services.review_service.build_queue(user, now=forward.due_at)
+        assert [card.id for card in first.cards] == [forward.id]
+
+        await services.review_service.answer(user, forward, ReviewRating.GOOD)
+        await services.commit()
+
+        later_today = await services.review_service.build_queue(
+            user, now=forward.due_at + timedelta(minutes=5)
+        )
+        assert twin.id not in [card.id for card in later_today.cards]
+
+        next_day = await services.review_service.build_queue(
+            user, now=forward.due_at + timedelta(days=1)
+        )
+        assert twin.id in [card.id for card in next_day.cards]
 
 
 class TestAgainCount:

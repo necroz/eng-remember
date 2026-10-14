@@ -19,6 +19,25 @@ from eng_remember.utils.time import ensure_utc, humanize_interval, local_day_sta
 __all__ = ["AnswerResult", "ReviewQueue", "ReviewService"]
 
 
+def _one_per_term(cards: list[Card]) -> list[Card]:
+    """At most one new card per word per queue.
+
+    Every word is a pair; showing both directions back to back in one session
+    would make the second answer a trivial echo. ``list_new`` orders by id, and
+    the forward card is always created first, so the pair is introduced from
+    the English side and the reverse twin waits for the next day.
+    """
+    seen: set[str] = set()
+    kept: list[Card] = []
+    for card in cards:
+        key = card.term.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        kept.append(card)
+    return kept
+
+
 @dataclass(slots=True)
 class ReviewQueue:
     """Cards to show now, plus the numbers behind that choice."""
@@ -97,9 +116,22 @@ class ReviewService:
 
         new_cards: list[Card] = []
         if remaining > 0 and allowance > 0:
-            new_cards = await self._cards.list_new(
+            fetched = await self._cards.list_new(
                 user.id, now=moment, limit=min(remaining, allowance), deck_id=deck_id
             )
+            # New twins are buried: one direction per word per queue, and none
+            # whose sibling was already answered today — the reverse side of a
+            # word practised this morning is not new material.
+            answered_today = await self._cards.terms_reviewed_since(
+                user.id,
+                [card.term for card in fetched],
+                since=local_day_start(user.timezone, now=moment),
+            )
+            new_cards = [
+                card
+                for card in _one_per_term(fetched)
+                if card.term.casefold() not in answered_today
+            ]
 
         return ReviewQueue(
             cards=[*due_cards, *new_cards],

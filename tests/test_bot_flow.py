@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from eng_remember.bot import texts
 from eng_remember.bot.callbacks import ReviewCB
-from eng_remember.domain.enums import ReviewRating
+from eng_remember.domain.enums import CardDirection, ReviewRating
 from eng_remember.models.card import Card
 from eng_remember.models.deck import Deck
 from eng_remember.models.review import Review
@@ -298,7 +298,9 @@ class TestReview:
             review = (await check.scalars(select(Review))).one()
             assert review.rating is ReviewRating.EASY
             assert review.duration_ms is not None
-            card = (await check.scalars(select(Card))).one()
+            card = (
+                await check.scalars(select(Card).where(Card.direction == CardDirection.FORWARD))
+            ).one()
             assert card.reps == 1
 
         assert "✅ Верно" in result_text(recording)
@@ -615,7 +617,8 @@ class TestOtherCommands:
     ) -> None:
         await send(dispatcher, bot, "/stats")
 
-        assert "Всего слов: <b>1</b>" in recording.last_text()
+        # Counts are per card; a word is a pair of cards.
+        assert "Всего слов: <b>2</b>" in recording.last_text()
 
     async def test_decks_lists_the_default_deck(
         self, dispatcher: Dispatcher, bot: Bot, recording: RecordingSession

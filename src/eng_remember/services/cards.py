@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from eng_remember.domain.enums import CardDirection
 from eng_remember.domain.srs import CardSchedule, SrsScheduler
 from eng_remember.errors import DuplicateCardError
 from eng_remember.models.card import Card
@@ -84,7 +85,11 @@ class CardService:
         source: str = "manual",
         now: datetime | None = None,
     ) -> Card:
-        """Save one card, or raise if the user already has this term."""
+        """Save one word as a pair, or raise if the user already has it.
+
+        The forward card is returned — it is the one the callers report in
+        counts and confirmations; the reverse twin comes with it.
+        """
         cleaned = draft.normalized()
         if not cleaned.term or not cleaned.translation:
             raise DuplicateCardError(cleaned.term or "<empty>")
@@ -93,13 +98,24 @@ class CardService:
         if await self._cards.find_by_term(user.id, cleaned.term) is not None:
             raise DuplicateCardError(cleaned.term)
 
-        return await self._cards.add(
+        schedule = self._first_schedule(user, now=now)
+        forward = await self._cards.add(
             user_id=user.id,
             deck_id=target.id,
             draft=cleaned,
-            schedule=self._first_schedule(user, now=now),
+            schedule=schedule,
             source=source,
+            direction=CardDirection.FORWARD,
         )
+        await self._cards.add(
+            user_id=user.id,
+            deck_id=target.id,
+            draft=cleaned,
+            schedule=schedule,
+            source=source,
+            direction=CardDirection.REVERSE,
+        )
+        return forward
 
     async def add_drafts(
         self,
@@ -110,7 +126,12 @@ class CardService:
         source: str = "llm",
         now: datetime | None = None,
     ) -> ImportOutcome:
-        """Save a batch, reporting rather than raising on duplicates."""
+        """Save a batch as pairs, reporting rather than raising on duplicates.
+
+        ``outcome.added`` holds the forward cards only: a batch of ten words
+        creates twenty cards, but the learner added ten words, and every count
+        they read is about words.
+        """
         target = deck or await self.default_deck(user)
         outcome = ImportOutcome()
         seen: set[str] = set()
@@ -130,14 +151,24 @@ class CardService:
                 continue
 
             seen.add(key)
-            card = await self._cards.add(
+            schedule = self._first_schedule(user, now=now)
+            forward = await self._cards.add(
                 user_id=user.id,
                 deck_id=target.id,
                 draft=cleaned,
-                schedule=self._first_schedule(user, now=now),
+                schedule=schedule,
                 source=source,
+                direction=CardDirection.FORWARD,
             )
-            outcome.added.append(card)
+            await self._cards.add(
+                user_id=user.id,
+                deck_id=target.id,
+                draft=cleaned,
+                schedule=schedule,
+                source=source,
+                direction=CardDirection.REVERSE,
+            )
+            outcome.added.append(forward)
 
         return outcome
 
@@ -168,14 +199,21 @@ class CardService:
         card = await self._cards.get(card_id, user_id=user.id)
         if card is None:
             return None
+        twin = await self._cards.find_twin(card)
+        if twin is not None:
+            await self._cards.delete(twin)
         await self._cards.delete(card)
         return card
 
     async def suspend(self, user: User, card_id: int, *, suspended: bool = True) -> Card | None:
+        """Pause or resume the whole word: the twin follows its sibling."""
         card = await self._cards.get(card_id, user_id=user.id)
         if card is None:
             return None
         await self._cards.set_suspended(card, suspended=suspended)
+        twin = await self._cards.find_twin(card)
+        if twin is not None:
+            await self._cards.set_suspended(twin, suspended=suspended)
         return card
 
     async def stats(self, user: User, *, now: datetime | None = None) -> UserStats:

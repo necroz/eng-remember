@@ -87,6 +87,7 @@ async def test_export_sends_a_csv_file(
     content = document.data.decode("utf-8-sig")
     assert content.splitlines()[0].startswith("term;translation;")
     assert "run;бежать" in content
+    assert content.count("run;бежать") == 1  # one row per word, not per card
     assert "Бег" in content
 
 
@@ -119,6 +120,7 @@ async def test_preview_then_confirm_saves_cards_and_decks(
     async with session_factory() as check:
         cards = {card.term: card for card in (await check.scalars(select(Card))).all()}
         assert set(cards) == {"run", "swim"}
+        assert len((await check.scalars(select(Card))).all()) == 4  # a pair per word
         assert cards["run"].tags == ["sport", "basic"]
         decks = {deck.name: deck for deck in (await check.scalars(select(Deck))).all()}
         assert "Бег" in decks
@@ -146,7 +148,7 @@ async def test_existing_words_are_counted_and_not_duplicated(
 
     async with session_factory() as check:
         cards = (await check.scalars(select(Card))).all()
-        assert sorted(card.term for card in cards) == ["run", "swim"]
+        assert sorted(card.term for card in cards) == ["run", "run", "swim", "swim"]
 
 
 async def test_rows_without_translation_are_skipped_without_a_model(
@@ -166,7 +168,7 @@ async def test_rows_without_translation_are_skipped_without_a_model(
 
     async with session_factory() as check:
         cards = (await check.scalars(select(Card))).all()
-        assert [card.term for card in cards] == ["run"]
+        assert [card.term for card in cards] == ["run", "run"]
 
 
 async def test_the_model_translates_missing_meanings(
@@ -186,9 +188,9 @@ async def test_the_model_translates_missing_meanings(
     await tap(llm_dispatcher, bot, button_data(recording, "fi:confirm"), update_id=10)
 
     async with session_factory() as check:
-        card = (await check.scalars(select(Card))).one()
-        assert card.term == "hike"
-        assert card.translation == "ходить в походы"
+        cards = (await check.scalars(select(Card))).all()
+        assert {card.term for card in cards} == {"hike"}
+        assert {card.translation for card in cards} == {"ходить в походы"}
 
 
 async def test_cancelling_imports_nothing(
@@ -266,8 +268,8 @@ async def test_cp1251_files_are_read(
     await tap(dispatcher, bot, button_data(recording, "fi:confirm"), update_id=10)
 
     async with session_factory() as check:
-        card = (await check.scalars(select(Card))).one()
-        assert card.translation == "бежать"
+        cards = (await check.scalars(select(Card))).all()
+        assert {card.translation for card in cards} == {"бежать"}
 
 
 async def test_other_documents_get_the_format_hint(

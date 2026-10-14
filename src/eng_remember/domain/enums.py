@@ -8,9 +8,26 @@ of the library.
 
 from __future__ import annotations
 
-from enum import IntEnum
+from enum import IntEnum, StrEnum
 
-__all__ = ["CardState", "ReviewRating"]
+__all__ = ["CardDirection", "CardState", "ReviewRating"]
+
+
+class CardDirection(StrEnum):
+    """Which side of a word a card asks about.
+
+    Every word is a pair: the forward card shows the English term and asks for
+    the meaning, the reverse one shows the meaning and asks for the term. Each
+    has its own FSRS state — recognition and recall are different memories and
+    must not share one schedule.
+    """
+
+    FORWARD = "forward"
+    REVERSE = "reverse"
+
+    @property
+    def flipped(self) -> CardDirection:
+        return CardDirection.REVERSE if self is CardDirection.FORWARD else CardDirection.FORWARD
 
 
 class ReviewRating(IntEnum):
