@@ -66,6 +66,11 @@ __all__ = [
     "nothing_to_save",
     "paused_empty",
     "paused_list",
+    "practice_correct",
+    "practice_finished",
+    "practice_question",
+    "practice_unavailable",
+    "practice_wrong",
     "praise_line",
     "queue_reminder",
     "review_finished",
@@ -81,11 +86,12 @@ __all__ = [
 
 BTN_ADD = "➕ Добавить слова"
 BTN_REVIEW = "🎯 Повторять"
+BTN_PRACTICE = "🏋️ Тренировка"
 BTN_DECKS = "📚 Колоды"
 BTN_STATS = "📊 Статистика"
 BTN_HELP = "❓ Помощь"
 
-MAIN_MENU_BUTTONS = (BTN_ADD, BTN_REVIEW, BTN_DECKS, BTN_STATS, BTN_HELP)
+MAIN_MENU_BUTTONS = (BTN_ADD, BTN_REVIEW, BTN_PRACTICE, BTN_DECKS, BTN_STATS, BTN_HELP)
 
 # A translation is a few words; anything longer is a paste, and showing a
 # paragraph of it helps nobody. The whole text still goes to grading — only
@@ -107,7 +113,7 @@ def welcome_new(first_name: str | None, deck_name: str) -> str:
         "• <code>to run, to jump, to swim</code>\n\n"
         f"Дальше — «{BTN_REVIEW}», и я буду показывать то, что пора повторить.\n\n"
         "Если слово никак не даётся, я сам предложу помощь, а приостановленные "
-        "слова ждут в /paused."
+        "слова ждут в /paused. Хочется просто погонять слова — /practice."
     )
 
 
@@ -314,6 +320,26 @@ def paused_list(cards: Sequence[Card], total: int) -> str:
 
 def paused_empty() -> str:
     return "На паузе ничего нет."
+
+
+def practice_question(term: str) -> str:
+    return f"<b>{escape(term)}</b>\n\nВыберите перевод:"
+
+
+def practice_correct(translation: str) -> str:
+    return f"✅ Верно: <b>{escape(translation)}</b>"
+
+
+def practice_wrong(translation: str) -> str:
+    return f"❌ Правильно: <b>{escape(translation)}</b>"
+
+
+def practice_finished(correct: int, total: int) -> str:
+    return f"Тренировка завершена: <b>{correct}</b> из <b>{total}</b> верно. 👍"
+
+
+def practice_unavailable() -> str:
+    return "Для тренировки нужно хотя бы 4 слова в повторениях."
 
 
 def import_preview(

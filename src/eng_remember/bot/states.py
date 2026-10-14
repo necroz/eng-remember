@@ -8,6 +8,7 @@ __all__ = [
     "ANSWERED_KEY",
     "ANSWERING_KEY",
     "CONTEXT_KEY",
+    "CORRECT_COUNT_KEY",
     "COUNT_KEY",
     "DRAFT_KEY",
     "ENGINE_KEY",
@@ -17,6 +18,10 @@ __all__ = [
     "OPTIONS_KEY",
     "ORIGINAL_KEY",
     "OWN_KEY",
+    "PRACTICE_ANSWER_KEY",
+    "PRACTICE_TOKEN_KEY",
+    "QUESTIONS_KEY",
+    "QUESTION_INDEX_KEY",
     "QUESTION_KEY",
     "ROUND_KEY",
     "SESSION_KEY",
@@ -24,6 +29,7 @@ __all__ = [
     "SHOWN_CARD_KEY",
     "TOPIC_KEY",
     "AddWords",
+    "Practice",
     "Review",
 ]
 
@@ -65,6 +71,16 @@ SESSION_KEY = "review_session"
 EXAMPLE_KEY = "review_example"
 HINT_USED_KEY = "hint_used"
 
+# The practice quiz: the questions built once at start (plain dicts, so a Redis
+# FSM storage swap stays possible), which one is on screen, the session token
+# every button carries, the running score, and the in-flight reservation that
+# keeps a double tap from counting twice.
+QUESTIONS_KEY = "practice_questions"
+QUESTION_INDEX_KEY = "practice_index"
+CORRECT_COUNT_KEY = "practice_correct"
+PRACTICE_TOKEN_KEY = "practice_token"
+PRACTICE_ANSWER_KEY = "practice_answering"
+
 
 class AddWords(StatesGroup):
     """Waiting for the user to confirm a parsed batch of cards."""
@@ -77,5 +93,11 @@ class AddWords(StatesGroup):
 
 class Review(StatesGroup):
     """Waiting for the learner to type the translation of the shown card."""
+
+    awaiting_answer = State()
+
+
+class Practice(StatesGroup):
+    """Waiting for the learner to pick one of the quiz options."""
 
     awaiting_answer = State()

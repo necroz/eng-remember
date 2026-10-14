@@ -17,7 +17,14 @@ from aiogram.types import (
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from eng_remember.bot import texts
-from eng_remember.bot.callbacks import ClarifyCB, ImportCB, LeechCB, PauseCB, ReviewCB
+from eng_remember.bot.callbacks import (
+    ClarifyCB,
+    ImportCB,
+    LeechCB,
+    PauseCB,
+    PracticeCB,
+    ReviewCB,
+)
 from eng_remember.models.card import Card
 
 __all__ = [
@@ -26,6 +33,8 @@ __all__ = [
     "leech_menu",
     "main_menu",
     "paused_cards",
+    "practice_offer",
+    "practice_options",
     "review_prompt",
 ]
 
@@ -33,8 +42,8 @@ __all__ = [
 def main_menu() -> ReplyKeyboardMarkup:
     rows = [
         [KeyboardButton(text=texts.BTN_ADD), KeyboardButton(text=texts.BTN_REVIEW)],
-        [KeyboardButton(text=texts.BTN_DECKS), KeyboardButton(text=texts.BTN_STATS)],
-        [KeyboardButton(text=texts.BTN_HELP)],
+        [KeyboardButton(text=texts.BTN_PRACTICE), KeyboardButton(text=texts.BTN_DECKS)],
+        [KeyboardButton(text=texts.BTN_STATS), KeyboardButton(text=texts.BTN_HELP)],
     ]
     return ReplyKeyboardMarkup(
         keyboard=rows,
@@ -123,6 +132,25 @@ def paused_cards(cards: Sequence[Card]) -> InlineKeyboardMarkup:
         builder.button(
             text=f"▶️ {card.term[:26]}",
             callback_data=PauseCB(action="resume", card_id=card.id),
+        )
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def practice_offer() -> InlineKeyboardMarkup:
+    """The invitation on a review screen with nothing to do."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🏋️ Потренироваться", callback_data=PracticeCB(action="start"))
+    return builder.as_markup()
+
+
+def practice_options(options: Sequence[str], *, token: int, question: int) -> InlineKeyboardMarkup:
+    """One button per translation; the payload carries indices, not text."""
+    builder = InlineKeyboardBuilder()
+    for index, option in enumerate(options):
+        builder.button(
+            text=option[:40],
+            callback_data=PracticeCB(action="answer", token=token, question=question, option=index),
         )
     builder.adjust(1)
     return builder.as_markup()

@@ -15,7 +15,12 @@ from aiogram import Bot, F, Router
 from aiogram.dispatcher.event.bases import SkipHandler
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardMarkup,
+    Message,
+    ReplyKeyboardMarkup,
+)
 
 from eng_remember.bot import keyboards, rendering, texts
 from eng_remember.bot.callbacks import LeechCB, ReviewCB
@@ -74,7 +79,14 @@ def build_router() -> Router:
         queue = await services.review_service.build_queue(user)
         if not queue.cards:
             next_due = await services.cards.next_due_at(user.id, now=utcnow())
-            await message.answer(texts.nothing_due(next_due), reply_markup=keyboards.main_menu())
+            # An empty queue is the moment practice exists for; it is only
+            # offered when a quiz can actually be built.
+            markup: ReplyKeyboardMarkup | InlineKeyboardMarkup
+            if await services.practice.available(user):
+                markup = keyboards.practice_offer()
+            else:
+                markup = keyboards.main_menu()
+            await message.answer(texts.nothing_due(next_due), reply_markup=markup)
             return
 
         await _send_front(bot, message.chat.id, queue.cards[0], state, services)

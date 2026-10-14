@@ -20,6 +20,8 @@ __all__ = [
     "LeechCB",
     "PauseAction",
     "PauseCB",
+    "PracticeAction",
+    "PracticeCB",
     "ReviewAction",
     "ReviewCB",
 ]
@@ -29,6 +31,7 @@ ImportAction = Literal["confirm", "cancel", "more"]
 ClarifyAction = Literal["option", "skip"]
 LeechAction = Literal["mnemonic", "example", "pause", "leave"]
 PauseAction = Literal["resume"]
+PracticeAction = Literal["start", "answer"]
 
 
 class ReviewCB(CallbackData, prefix="rv"):
@@ -82,3 +85,17 @@ class PauseCB(CallbackData, prefix="ps"):
 
     action: PauseAction
     card_id: int = 0
+
+
+class PracticeCB(CallbackData, prefix="pr"):
+    """A quiz answer, or the start offer on an empty review screen.
+
+    The session token is what makes stale buttons safe: two sessions number
+    their questions identically, so without it an old question-2 button would
+    be accepted as the current question 2.
+    """
+
+    action: PracticeAction
+    token: int = 0
+    question: int = 0
+    option: int = 0

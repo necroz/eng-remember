@@ -25,6 +25,7 @@ log = structlog.get_logger(__name__)
 
 COMMANDS = [
     BotCommand(command="review", description="Повторить слова"),
+    BotCommand(command="practice", description="Тренировка"),
     BotCommand(command="add", description="Добавить слова"),
     BotCommand(command="decks", description="Колоды"),
     BotCommand(command="stats", description="Статистика"),

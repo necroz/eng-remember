@@ -7,7 +7,15 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 from eng_remember.bot.middlewares.db import DbSessionMiddleware
 from eng_remember.bot.middlewares.user import UserMiddleware
-from eng_remember.bot.routers import capture, errors, library, preferences, review, start
+from eng_remember.bot.routers import (
+    capture,
+    errors,
+    library,
+    practice,
+    preferences,
+    review,
+    start,
+)
 from eng_remember.config import Settings
 from eng_remember.db.engine import SessionFactory
 
@@ -36,6 +44,7 @@ def build_dispatcher(settings: Settings, session_factory: SessionFactory) -> Dis
     dispatcher.include_router(errors.build_router())
     dispatcher.include_router(start.build_router())
     dispatcher.include_router(review.build_router())
+    dispatcher.include_router(practice.build_router())
     dispatcher.include_router(library.build_router())
     dispatcher.include_router(preferences.build_router())
     # Last: claims any plain text no other router wanted.
