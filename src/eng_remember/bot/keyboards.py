@@ -22,6 +22,7 @@ from eng_remember.bot.callbacks import (
     FileImportCB,
     ImportCB,
     LeechCB,
+    LevelCB,
     PauseCB,
     PracticeCB,
     ReviewCB,
@@ -34,6 +35,7 @@ __all__ = [
     "file_import_confirm",
     "import_confirm",
     "leech_menu",
+    "level_menu",
     "main_menu",
     "paused_cards",
     "practice_offer",
@@ -92,6 +94,17 @@ def file_import_confirm() -> InlineKeyboardMarkup:
 def empty_keyboard() -> InlineKeyboardMarkup:
     """An explicit empty markup: an edit without one keeps the old buttons."""
     return InlineKeyboardMarkup(inline_keyboard=[])
+
+
+def level_menu(current: str | None) -> InlineKeyboardMarkup:
+    """All six CEFR levels, with the current one marked, plus a reset."""
+    builder = InlineKeyboardBuilder()
+    for level in texts.CEFR_LEVELS:
+        mark = "• " if level == current else ""
+        builder.button(text=f"{mark}{level}", callback_data=LevelCB(action="set", level=level))
+    builder.button(text="Сбросить", callback_data=LevelCB(action="reset"))
+    builder.adjust(3, 3, 1)
+    return builder.as_markup()
 
 
 def review_prompt(card_id: int, *, hint: bool = False) -> InlineKeyboardMarkup:

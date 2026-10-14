@@ -10,11 +10,12 @@ from datetime import time
 from html import escape
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from aiogram import F, Router
+from aiogram import Bot, F, Router
 from aiogram.filters import Command, CommandObject
-from aiogram.types import Message
+from aiogram.types import CallbackQuery, Message
 
-from eng_remember.bot import keyboards, texts
+from eng_remember.bot import keyboards, rendering, texts
+from eng_remember.bot.callbacks import LevelCB
 from eng_remember.config import ReminderSettings
 from eng_remember.models.user import User
 from eng_remember.services.container import Services
@@ -172,6 +173,71 @@ def build_router() -> Router:
         await services.commit()
         await _show_reminders(message, user, services)
 
+    @router.message(Command("level"))
+    async def set_level(
+        message: Message,
+        command: CommandObject,
+        user: User,
+        services: Services,
+    ) -> None:
+        argument = (command.args or "").strip().upper()
+        if not argument:
+            await message.answer(
+                texts.level_menu(user.level),
+                reply_markup=keyboards.level_menu(user.level),
+            )
+            return
+        if argument not in texts.CEFR_LEVELS:
+            await message.answer(
+                texts.level_invalid(argument),
+                reply_markup=keyboards.level_menu(user.level),
+            )
+            return
+        user.level = argument
+        await services.commit()
+        await message.answer(
+            texts.level_set(argument),
+            reply_markup=keyboards.level_menu(argument),
+        )
+
+    @router.callback_query(LevelCB.filter(F.action == "set"))
+    async def set_level_from_button(
+        query: CallbackQuery,
+        callback_data: LevelCB,
+        bot: Bot,
+        user: User,
+        services: Services,
+    ) -> None:
+        if callback_data.level not in texts.CEFR_LEVELS:
+            await query.answer(texts.stale_button(), show_alert=True)
+            return
+        user.level = callback_data.level
+        await services.commit()
+        await query.answer()
+        await rendering.edit_or_send(
+            query,
+            texts.level_set(callback_data.level),
+            bot=bot,
+            reply_markup=keyboards.level_menu(callback_data.level),
+        )
+
+    @router.callback_query(LevelCB.filter(F.action == "reset"))
+    async def reset_level(
+        query: CallbackQuery,
+        bot: Bot,
+        user: User,
+        services: Services,
+    ) -> None:
+        user.level = None
+        await services.commit()
+        await query.answer()
+        await rendering.edit_or_send(
+            query,
+            texts.level_reset(),
+            bot=bot,
+            reply_markup=keyboards.level_menu(None),
+        )
+
     @router.message(Command("settings"))
     @router.message(F.text == texts.BTN_HELP)
     async def show_settings(message: Message, user: User, services: Services) -> None:
@@ -190,6 +256,7 @@ def build_router() -> Router:
             "/add — добавить слова\n"
             "/decks — колоды\n"
             "/stats — статистика\n"
+            "/level — уровень английского\n"
             "/remind — напоминания\n"
             "/cancel — отменить текущее действие",
             reply_markup=keyboards.main_menu(),

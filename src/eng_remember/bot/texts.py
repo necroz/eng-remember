@@ -35,6 +35,7 @@ __all__ = [
     "already_checking",
     "answer_accepted",
     "answer_result",
+    "badge",
     "cannot_parse",
     "card_back",
     "card_front",
@@ -66,6 +67,10 @@ __all__ = [
     "leech_mnemonic_done",
     "leech_offer",
     "leech_paused",
+    "level_invalid",
+    "level_menu",
+    "level_reset",
+    "level_set",
     "llm_failed",
     "llm_required",
     "looking_for_more",
@@ -227,6 +232,9 @@ def card_back(card: Card, *, example: str | None = None) -> str:
     lines = [f"<b>{escape(card.term)}</b>"]
     if card.transcription:
         lines.append(f"<code>{escape(card.transcription)}</code>")
+    level = badge(card.cefr, card.frequency)
+    if level:
+        lines.append(f"<i>{level}</i>")
     lines.append("")
     lines.append(f"🇷🇺 <b>{escape(card.translation)}</b>")
     shown = example if example is not None else card.example
@@ -333,6 +341,40 @@ def paused_list(cards: Sequence[Card], total: int) -> str:
 
 def paused_empty() -> str:
     return "На паузе ничего нет."
+
+
+CEFR_LEVELS = ("A1", "A2", "B1", "B2", "C1", "C2")
+
+FREQUENCY_LABELS = {"common": "частое", "uncommon": "обычное", "rare": "редкое"}
+
+
+def badge(cefr: str | None, frequency: str | None) -> str | None:
+    """The level/rarity line, when the model estimated at least one."""
+    parts = [part for part in (cefr, FREQUENCY_LABELS.get(frequency or "")) if part]
+    return " · ".join(parts) or None
+
+
+def level_menu(current: str | None) -> str:
+    shown = current or "не указан"
+    return (
+        f"🎚 Ваш уровень: <b>{shown}</b>\n\n"
+        "Выберите кнопкой или напишите, например <code>/level B1</code>."
+    )
+
+
+def level_set(level: str) -> str:
+    return f"🎚 Уровень сохранён: <b>{level}</b>. Подбор слов будет держаться около него."
+
+
+def level_reset() -> str:
+    return "🎚 Уровень сброшен — подбираю слова как раньше."
+
+
+def level_invalid(argument: str) -> str:
+    return (
+        f"Не знаю такого уровня: <code>{escape(argument)}</code>\n"
+        "Напишите от A1 до C2, например <code>/level B1</code>."
+    )
 
 
 def practice_question(term: str) -> str:
@@ -499,6 +541,9 @@ def cards_listing(drafts: Sequence[CardDraft]) -> list[str]:
         head = f"• <b>{escape(draft.term)}</b>"
         if draft.transcription:
             head += f" <code>{escape(draft.transcription)}</code>"
+        level = badge(draft.cefr, draft.frequency)
+        if level:
+            head += f" · <i>{level}</i>"
         lines.append(head)
         lines.append(f"   {escape(draft.translation)}")
         if draft.example:

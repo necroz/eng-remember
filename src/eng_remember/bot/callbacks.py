@@ -20,6 +20,8 @@ __all__ = [
     "ImportCB",
     "LeechAction",
     "LeechCB",
+    "LevelAction",
+    "LevelCB",
     "PauseAction",
     "PauseCB",
     "PracticeAction",
@@ -35,6 +37,7 @@ LeechAction = Literal["mnemonic", "example", "pause", "leave"]
 PauseAction = Literal["resume"]
 PracticeAction = Literal["start", "answer"]
 FileImportAction = Literal["confirm", "cancel"]
+LevelAction = Literal["set", "reset"]
 
 
 class ReviewCB(CallbackData, prefix="rv"):
@@ -108,3 +111,10 @@ class FileImportCB(CallbackData, prefix="fi"):
     """Confirmation of a CSV import waiting in FSM storage."""
 
     action: FileImportAction
+
+
+class LevelCB(CallbackData, prefix="lv"):
+    """Choosing the learner's CEFR level from the /level menu."""
+
+    action: LevelAction
+    level: str = ""
