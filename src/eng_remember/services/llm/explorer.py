@@ -48,6 +48,7 @@ class WordExplorer:
         context_text: str | None = None,
         seeds: list[str] | None = None,
         known: list[str] | None = None,
+        level: str | None = None,
         user_id: int | None = None,
     ) -> ExpansionResponse:
         """Ask for words. Raises :class:`LlmNotConfiguredError` without a model.
@@ -69,6 +70,7 @@ class WordExplorer:
                 seeds=list(seeds or []),
                 count=count,
                 known=list(known or [])[:KNOWN_TERMS_IN_PROMPT],
+                level=level,
             ),
             schema=ExpansionResponse,
             user_id=user_id,

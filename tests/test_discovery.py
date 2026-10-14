@@ -11,6 +11,7 @@ from eng_remember.repositories.cards import CardDraft
 from eng_remember.services.container import Services
 from eng_remember.services.discovery import DiscoveryService, appears_in_text
 from eng_remember.services.llm.explorer import WordExplorer
+from eng_remember.services.llm.prompts import build_expansion_prompt
 from tests.factories import ScriptedClient, card_payload, expansion_payload
 
 PARAGRAPH = (
@@ -252,3 +253,52 @@ class TestDiscovery:
         assert service.resolve_count(-5) == 1
         assert service.resolve_count(30) == 30
         assert service.resolve_count(500) == 30
+
+
+class TestLevelGuidance:
+    def test_the_topic_prompt_names_the_learners_level(self) -> None:
+        prompt = build_expansion_prompt(
+            topic="медицина",
+            context_text=None,
+            seeds=[],
+            count=5,
+            known=[],
+            level="A2",
+        )
+
+        assert "Learner level: A2" in prompt
+        assert "far above" in prompt
+
+    def test_the_default_level_keeps_the_previous_behaviour(self) -> None:
+        prompt = build_expansion_prompt(
+            topic="медицина",
+            context_text=None,
+            seeds=[],
+            count=5,
+            known=[],
+        )
+
+        assert "Learner level: B1-B2" in prompt
+
+    def test_a_source_text_does_not_get_level_guidance(self) -> None:
+        prompt = build_expansion_prompt(
+            topic="",
+            context_text=PARAGRAPH,
+            seeds=[],
+            count=5,
+            known=[],
+            level="A2",
+        )
+
+        assert "Learner level" not in prompt
+
+    async def test_the_learners_level_reaches_the_model(
+        self, llm_services: Services, llm: ScriptedClient, user: User
+    ) -> None:
+        user.level = "B1"
+        await llm_services.commit()
+        llm.push_expand(expansion_payload([card_payload("run", "бежать")], topic="движение"))
+
+        await llm_services.discovery_service.expand(user, topic="движение", count=1)
+
+        assert "Learner level: B1" in llm.calls[-1]["user"]

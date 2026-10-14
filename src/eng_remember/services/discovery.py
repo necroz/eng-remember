@@ -127,6 +127,7 @@ class DiscoveryService:
             context_text=context,
             seeds=seed_terms,
             known=sorted(existing)[:_KNOWN_HINTS],
+            level=user.level,
             user_id=user_id if user_id is not None else user.id,
         )
 

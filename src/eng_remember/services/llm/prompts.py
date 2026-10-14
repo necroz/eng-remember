@@ -75,6 +75,8 @@ one.
 - "transcription": IPA in slashes, e.g. /juːˈbɪkwɪtəs/. Always fill it in.
 - "part_of_speech": noun, verb, adjective, adverb, phrase, preposition, \
 conjunction, pronoun, numeral or interjection.
+- "cefr": the word's CEFR level for a learner: one of A1, A2, B1, B2, C1, C2.
+- "frequency": how common the word is: "common", "uncommon" or "rare".
 - "examples": up to three short natural English sentences using the term. When \
 the user supplied a phrase or sentence with the word, the first example must be \
 exactly that phrase.
@@ -96,8 +98,8 @@ to find words in it: intent "expand" and a short "topic" describing the text.
 Answer with a single JSON object and nothing else, in this exact shape:
 {"intent": "add_cards", "cards": [{"term": "...", "translation": "...", \
 "transcription": "...", "part_of_speech": "...", "examples": ["..."], "notes": "...", \
-"tags": ["..."]}], "topic": null, "count": null, "more_words": false, \
-"answer": null, "clarification": null}
+"tags": ["..."], "cefr": "B2", "frequency": "common"}], "topic": null, "count": null, \
+"more_words": false, "answer": null, "clarification": null}
 
 Example of the combined request:
 message: "arrangement как во фразе The graded evaluation criteria is an \
@@ -127,8 +129,9 @@ all, do not return it.
 shortened to one line if needed.
 
 When a topic is given:
-- Choose words a B1-B2 learner would actually meet in that domain — not the \
-rarest ones, and not the trivial ones.
+- Choose words the learner would actually meet in that domain — not the \
+rarest ones, and not the trivial ones. Respect the learner's level when the \
+request names one.
 - "examples" are up to three of your own short natural sentences using the term.
 - Vary the part of speech: mostly nouns and verbs, some adjectives and phrases.
 
@@ -143,6 +146,8 @@ Always:
 - "transcription" is IPA in slashes.
 - "part_of_speech" is lowercase: noun, verb, adjective, adverb, phrase, \
 preposition, conjunction, pronoun, numeral or interjection.
+- "cefr" is the word's level for a learner: one of A1, A2, B1, B2, C1, C2.
+- "frequency" is "common", "uncommon" or "rare".
 - Return no word from the "already known" list.
 - Return no two forms of the same word.
 - Return exactly as many cards as were asked for. If the source text cannot \
@@ -152,7 +157,7 @@ pad the list with words that are not in it.
 Answer with a single JSON object and nothing else:
 {"topic": "...", "cards": [{"term": "...", "translation": "...", \
 "transcription": "...", "part_of_speech": "...", "examples": ["..."], "notes": "...", \
-"tags": ["..."]}]}
+"tags": ["..."], "cefr": "B2", "frequency": "common"}]}
 """
 
 ANSWER_CHECK_SYSTEM_PROMPT = """\
@@ -255,11 +260,14 @@ def build_expansion_prompt(
     seeds: list[str],
     count: int,
     known: list[str],
+    level: str | None = None,
 ) -> str:
     """Assemble the expansion request.
 
     ``known`` is capped by the caller: the learner's whole collection would
-    dominate the prompt, and duplicates are dropped in code anyway.
+    dominate the prompt, and duplicates are dropped in code anyway. Level
+    guidance is absent in source-text mode: there the only rule that matters is
+    "words from this text", and a level would argue with it.
     """
     parts: list[str] = [f"Find {count} English words."]
 
@@ -276,6 +284,13 @@ def build_expansion_prompt(
             "The learner is working with these words — pick others from the same "
             f"domain or situation: {', '.join(seeds)}"
         )
+    if context_text is None:
+        parts.append(f"Learner level: {level or 'B1-B2'}.")
+        if level:
+            parts.append(
+                f"Prefer words at {level} and one step around it; do not offer "
+                f"words far above {level} unless they are very frequent."
+            )
     if known:
         parts.append("Already known, must not be returned: " + ", ".join(known))
     return "\n\n".join(parts)

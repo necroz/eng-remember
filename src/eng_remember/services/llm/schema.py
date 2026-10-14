@@ -70,6 +70,23 @@ OPTION_LIMIT = 48
 # generous model is not rejected, and everything past it is dropped in code.
 EXAMPLES_LIMIT = 5
 
+# A CEFR level is exactly one letter and one digit; anything else (ranges,
+# other frameworks, prose) is treated as "no estimate" rather than guessed at.
+_CEFR = re.compile(r"^[ABC][12]$")
+
+# What models actually say for frequency, mapped onto the one vocabulary.
+_FREQUENCY_ALIASES: dict[str, str] = {
+    "common": "common",
+    "частое": "common",
+    "частотное": "common",
+    "uncommon": "uncommon",
+    "обычное": "uncommon",
+    "среднее": "uncommon",
+    "rare": "rare",
+    "редкое": "rare",
+    "редкостное": "rare",
+}
+
 
 def flatten_line(value: str, *, limit: int, strip_brackets: bool = False) -> str:
     """One line, whitespace collapsed, capped at ``limit``.
@@ -155,6 +172,8 @@ class ParsedCard(BaseModel):
     )
     notes: str | None = Field(default=None, description="Usage hint, false friend, register")
     tags: list[str] = Field(default_factory=list)
+    cefr: str | None = Field(default=None, description="CEFR level, A1 to C2")
+    frequency: str | None = Field(default=None, description="common, uncommon or rare")
 
     @field_validator("term")
     @classmethod
@@ -230,6 +249,22 @@ class ParsedCard(BaseModel):
     def _clean_examples(cls, examples: list[str]) -> list[str]:
         return _clean_example_list(examples)
 
+    @field_validator("cefr", mode="before")
+    @classmethod
+    def _clean_cefr(cls, value: object) -> str | None:
+        if not isinstance(value, str):
+            return None
+        cleaned = flatten_line(value, limit=8, strip_brackets=True).upper()
+        return cleaned if _CEFR.fullmatch(cleaned) else None
+
+    @field_validator("frequency", mode="before")
+    @classmethod
+    def _clean_frequency(cls, value: object) -> str | None:
+        if not isinstance(value, str):
+            return None
+        cleaned = flatten_line(value, limit=16, strip_brackets=True).casefold()
+        return _FREQUENCY_ALIASES.get(cleaned)
+
     @model_validator(mode="after")
     def _sync_example_forms(self) -> ParsedCard:
         """Keep ``example`` and ``examples`` telling the same story.
@@ -257,6 +292,8 @@ class ParsedCard(BaseModel):
             examples=tuple(self.examples),
             notes=self.notes,
             tags=tuple(self.tags),
+            cefr=self.cefr,
+            frequency=self.frequency,
         ).normalized()
 
 

@@ -25,6 +25,7 @@ class User(Base, TimestampMixin):
 
     timezone: Mapped[str] = mapped_column(String(64), default="UTC", server_default="UTC")
     new_cards_per_day: Mapped[int] = mapped_column(Integer, default=20, server_default="20")
+    level: Mapped[str | None] = mapped_column(String(2), doc="CEFR level the learner reports")
     is_blocked: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     last_seen_at: Mapped[datetime | None] = mapped_column(UtcDateTime)
 

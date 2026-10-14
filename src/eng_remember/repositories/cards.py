@@ -45,6 +45,8 @@ class CardDraft:
     examples: tuple[str, ...] = field(default_factory=tuple)
     notes: str | None = None
     tags: tuple[str, ...] = field(default_factory=tuple)
+    cefr: str | None = None
+    frequency: str | None = None
 
     def normalized(self) -> CardDraft:
         """Trim whitespace; a trailing space must not create a duplicate card.
@@ -63,6 +65,8 @@ class CardDraft:
             examples=examples,
             notes=_clean(self.notes),
             tags=tuple(tag.strip() for tag in self.tags if tag.strip()),
+            cefr=_clean(self.cefr),
+            frequency=_clean(self.frequency),
         )
 
 
@@ -101,6 +105,8 @@ class CardRepository:
             examples=list(cleaned.examples),
             notes=cleaned.notes,
             tags=list(cleaned.tags),
+            cefr=cleaned.cefr,
+            frequency=cleaned.frequency,
             source=source,
             due_at=schedule.due_at,
         )
@@ -301,6 +307,8 @@ class CardRepository:
         card.examples = list(draft.examples)
         card.notes = draft.notes
         card.tags = list(draft.tags)
+        card.cefr = draft.cefr
+        card.frequency = draft.frequency
         await self._session.flush()
 
     async def update_examples(self, card: Card, examples: list[str]) -> None:

@@ -140,3 +140,26 @@ def test_examples_response_dedupes_and_caps_at_five() -> None:
 def test_mnemonic_response_rejects_blank() -> None:
     with pytest.raises(ValidationError):
         MnemonicResponse.model_validate({"mnemonic": "   "})
+
+
+def test_cefr_is_normalised_and_malformed_values_become_none() -> None:
+    assert ParsedCard(term="run", translation="бежать", cefr="b2").cefr == "B2"
+    assert ParsedCard(term="run", translation="бежать", cefr="Z9").cefr is None
+    assert ParsedCard(term="run", translation="бежать", cefr="B2/C1").cefr is None
+    assert ParsedCard(term="run", translation="бежать", cefr="  ").cefr is None
+
+
+def test_frequency_accepts_english_and_russian_names() -> None:
+    assert ParsedCard(term="run", translation="бежать", frequency="common").frequency == "common"
+    assert ParsedCard(term="run", translation="бежать", frequency="частое").frequency == "common"
+    assert ParsedCard(term="run", translation="бежать", frequency="RARE").frequency == "rare"
+    assert ParsedCard(term="run", translation="бежать", frequency="нечто").frequency is None
+
+
+def test_draft_carries_the_level_fields() -> None:
+    card = ParsedCard(term="run", translation="бежать", cefr="b1", frequency="Common")
+
+    draft = card.to_draft()
+
+    assert draft.cefr == "B1"
+    assert draft.frequency == "common"

@@ -358,6 +358,15 @@ class TestCardExamples:
         assert card.examples == ["He runs.", "A run."]
         assert card.example == "He runs."
 
+    async def test_add_draft_keeps_the_level_fields(self, services: Services, user: User) -> None:
+        card = await services.card_service.add_draft(
+            user,
+            CardDraft(term="run", translation="бежать", cefr="B1", frequency="rare"),
+        )
+
+        assert card.cefr == "B1"
+        assert card.frequency == "rare"
+
 
 class TestAgainCount:
     async def test_again_counts_even_while_learning(

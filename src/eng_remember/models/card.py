@@ -72,6 +72,8 @@ class Card(Base, TimestampMixin):
     )
     notes: Mapped[str | None] = mapped_column(Text)
     tags: Mapped[list[str]] = mapped_column(JSON, default=list)
+    cefr: Mapped[str | None] = mapped_column(String(2))
+    frequency: Mapped[str | None] = mapped_column(String(8))
     source: Mapped[str] = mapped_column(String(32), default="manual", server_default="manual")
 
     # --- FSRS memory state -------------------------------------------------
