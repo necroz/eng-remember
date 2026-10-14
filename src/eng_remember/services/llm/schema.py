@@ -41,6 +41,8 @@ __all__ = [
     "MnemonicResponse",
     "ParseResponse",
     "ParsedCard",
+    "TermTranslation",
+    "TranslationsResponse",
     "extract_json_object",
     "flatten_line",
 ]
@@ -442,6 +444,38 @@ class MnemonicResponse(BaseModel):
         if not cleaned:
             raise ValueError("mnemonic is empty")
         return cleaned
+
+
+class TermTranslation(BaseModel):
+    """One term and its Russian meaning, as the translator returns it."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    term: str = Field(description="English term")
+    translation: str = Field(description="Russian meaning")
+
+    @field_validator("term")
+    @classmethod
+    def _clean_term(cls, value: str) -> str:
+        return flatten_line(value, limit=TERM_LIMIT)
+
+    @field_validator("translation")
+    @classmethod
+    def _clean_translation(cls, value: str) -> str:
+        return flatten_line(value, limit=TRANSLATION_LIMIT)
+
+
+class TranslationsResponse(BaseModel):
+    """Batch translation of bare terms, for CSV imports."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    translations: list[TermTranslation] = Field(default_factory=list)
+
+    @field_validator("translations")
+    @classmethod
+    def _drop_incomplete(cls, entries: list[TermTranslation]) -> list[TermTranslation]:
+        return [entry for entry in entries if entry.term and entry.translation]
 
 
 # Near-misses seen from smaller models, mapped onto the three verdicts.

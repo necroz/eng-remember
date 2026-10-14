@@ -27,6 +27,7 @@ from eng_remember.services.llm.schema import (
     ExpansionResponse,
     MnemonicResponse,
     ParseResponse,
+    TranslationsResponse,
 )
 from eng_remember.utils.time import utcnow
 
@@ -219,6 +220,7 @@ class ScriptedClient:
         self.check_queue: list[Any] = []
         self.examples_queue: list[Any] = []
         self.mnemonic_queue: list[Any] = []
+        self.translations_queue: list[Any] = []
         self.calls: list[dict[str, Any]] = []
 
     @property
@@ -249,6 +251,10 @@ class ScriptedClient:
         self.mnemonic_queue.extend(responses)
         return self
 
+    def push_translations(self, *responses: Any) -> ScriptedClient:
+        self.translations_queue.extend(responses)
+        return self
+
     async def complete_json(
         self,
         *,
@@ -277,6 +283,8 @@ class ScriptedClient:
             queue = self.examples_queue
         elif schema is MnemonicResponse:
             queue = self.mnemonic_queue
+        elif schema is TranslationsResponse:
+            queue = self.translations_queue
         else:
             raise AssertionError(f"no scripted queue for {schema.__name__}")
         if not queue:

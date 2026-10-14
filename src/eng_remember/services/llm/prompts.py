@@ -17,11 +17,13 @@ __all__ = [
     "MNEMONIC_SYSTEM_PROMPT",
     "PARSE_SYSTEM_PROMPT",
     "REPAIR_TEMPLATE",
+    "TRANSLATION_SYSTEM_PROMPT",
     "build_answer_check_prompt",
     "build_clarified_prompt",
     "build_enrich_examples_prompt",
     "build_expansion_prompt",
     "build_mnemonic_prompt",
+    "build_translation_prompt",
     "build_user_prompt",
 ]
 
@@ -197,6 +199,17 @@ in Russian, one or two short sentences, under 200 characters.
 Answer with a single JSON object and nothing else: {"mnemonic": "..."}
 """
 
+TRANSLATION_SYSTEM_PROMPT = """\
+You translate English vocabulary into Russian for a Russian-speaking learner.
+
+Every term is given on its own. Return the most common meaning as one concise \
+Russian phrase; when the term is a collocation, translate its meaning as a \
+whole. Keep the same term spelling in your answer.
+
+Answer with a single JSON object and nothing else:
+{"translations": [{"term": "...", "translation": "..."}]}
+"""
+
 REPAIR_TEMPLATE = """\
 Your previous answer could not be used.
 
@@ -326,3 +339,11 @@ def build_mnemonic_prompt(*, term: str, translation: str) -> str:
         f"<term>{safe_term}</term>\n"
         f"<translation>{safe_translation}</translation>"
     )
+
+
+def build_translation_prompt(terms: Sequence[str]) -> str:
+    safe_terms = [
+        flatten_line(term, limit=CHECK_FIELD_LIMIT, strip_brackets=True) for term in terms
+    ]
+    safe_terms = [term for term in safe_terms if term]
+    return "Translate these terms:\n<terms>\n" + "\n".join(safe_terms) + "\n</terms>"
