@@ -28,6 +28,7 @@ class BotSettings(BaseModel):
     default_timezone: str = "UTC"
     new_cards_per_day: int = Field(default=20, ge=0)
     reviews_per_session: int = Field(default=50, ge=1)
+    practice_size: int = Field(default=10, ge=4, le=50, description="Questions per practice quiz")
     request_timeout_seconds: float = Field(default=10.0, gt=0)
     drop_pending_updates: bool = False
 

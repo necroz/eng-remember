@@ -275,6 +275,20 @@ class CardRepository:
         stmt = stmt.order_by(Card.term).offset(offset).limit(limit)
         return list((await self._session.scalars(stmt)).all())
 
+    async def list_seen(self, user_id: int, *, limit: int = 500) -> list[Card]:
+        """Cards already in rotation. Order is deliberately whatever the
+        database returns; the practice service does its own sampling."""
+        stmt = (
+            select(Card)
+            .where(
+                Card.user_id == user_id,
+                Card.is_suspended.is_(False),
+                Card.reps > 0,
+            )
+            .limit(limit)
+        )
+        return list((await self._session.scalars(stmt)).all())
+
     async def update_schedule(self, card: Card, schedule: CardSchedule) -> None:
         card.apply_schedule(schedule)
         await self._session.flush()

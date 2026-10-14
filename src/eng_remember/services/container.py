@@ -29,6 +29,7 @@ from eng_remember.services.llm.enricher import CardEnricher
 from eng_remember.services.llm.explorer import WordExplorer
 from eng_remember.services.llm.factory import build_llm_client
 from eng_remember.services.llm.parser import MessageParser
+from eng_remember.services.practice import PracticeService
 from eng_remember.services.praise import PraiseService
 from eng_remember.services.review import ReviewService
 from eng_remember.services.streak import StreakService
@@ -57,6 +58,7 @@ class Services:
     praise_service: PraiseService
     discovery_service: DiscoveryService
     enrichment: EnrichmentService
+    practice: PracticeService
 
     parser: MessageParser
     explorer: WordExplorer
@@ -133,6 +135,7 @@ def build_services(session: AsyncSession, settings: Settings) -> Services:
             enricher=CardEnricher(llm),
             settings=settings,
         ),
+        practice=PracticeService(cards=cards, settings=settings),
         parser=parser,
         explorer=explorer,
     )
