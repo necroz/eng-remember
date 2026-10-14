@@ -9,20 +9,42 @@ the days the queue is empty, not for moving intervals.
 from __future__ import annotations
 
 import random
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 from eng_remember.config import Settings
-from eng_remember.domain.answers import normalize
+from eng_remember.domain.answers import translation_variants
 from eng_remember.models.card import Card
 from eng_remember.models.user import User
 from eng_remember.repositories.cards import CardRepository
 
 __all__ = ["MIN_PRACTICE_CARDS", "PracticeService", "QuizQuestion"]
 
-# Four options are four distinct translations, so a quiz needs at least that
-# many distinct meanings in the collection.
+# Four options are four distinct meanings, so a quiz needs at least that many
+# distinct meanings in the collection.
 MIN_PRACTICE_CARDS = 4
 DISTRACTORS = 3
+
+
+def _variant_families(translations: Iterable[str]) -> list[set[str]]:
+    """Translations grouped by shared meaning.
+
+    "ужасный" and "ужасный, кошмарный" are one meaning family: grading accepts
+    either wording, so the quiz must not offer one as a wrong option for the
+    other.
+    """
+    families: list[set[str]] = []
+    for translation in translations:
+        variants = set(translation_variants(translation))
+        if not variants:
+            continue
+        for family in families:
+            if family & variants:
+                family |= variants
+                break
+        else:
+            families.append(variants)
+    return families
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,11 +72,11 @@ class PracticeService:
     async def available(self, user: User) -> bool:
         """Whether a quiz can be built at all, for offering one on an empty queue."""
         pool = await self._cards.list_seen(user.id)
-        return len({normalize(card.translation) for card in pool}) >= MIN_PRACTICE_CARDS
+        return len(_variant_families(card.translation for card in pool)) >= MIN_PRACTICE_CARDS
 
     async def build_session(self, user: User) -> list[QuizQuestion]:
         pool = await self._cards.list_seen(user.id)
-        if len({normalize(card.translation) for card in pool}) < MIN_PRACTICE_CARDS:
+        if len(_variant_families(card.translation for card in pool)) < MIN_PRACTICE_CARDS:
             return []
 
         size = self._settings.bot.practice_size
@@ -69,22 +91,22 @@ class PracticeService:
 
     def _question_for(self, card: Card, pool: list[Card]) -> QuizQuestion | None:
         """One question, or ``None`` when the card cannot fill four options."""
-        correct = normalize(card.translation)
+        correct = set(translation_variants(card.translation))
+        used: list[set[str]] = [correct]
         same_pos: list[str] = []
         others: list[str] = []
-        seen = {correct}
 
         for other in pool:
             if other.id == card.id:
                 continue
-            key = normalize(other.translation)
-            if key in seen:
+            variants = set(translation_variants(other.translation))
+            if not variants or any(variants & family for family in used):
                 continue
+            used.append(variants)
             if card.part_of_speech and other.part_of_speech == card.part_of_speech:
                 same_pos.append(other.translation)
             else:
                 others.append(other.translation)
-            seen.add(key)
 
         self._rng.shuffle(same_pos)
         self._rng.shuffle(others)

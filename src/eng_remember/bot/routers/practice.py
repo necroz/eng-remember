@@ -72,25 +72,29 @@ def build_router() -> Router:
             await query.answer(texts.stale_button(), show_alert=True)
             return
 
+        # Reserve before any Telegram call: with the in-memory storage the
+        # check-and-reserve pair does not yield, and the re-read below catches
+        # a restart that slipped in anyway. (A yielding storage such as Redis
+        # would additionally need event isolation.)
+        await state.update_data({PRACTICE_ANSWER_KEY: True})
+        data = await state.get_data()
+
         questions = _restore_questions(data.get(QUESTIONS_KEY))
         index = data.get(QUESTION_INDEX_KEY)
         if (
-            not isinstance(index, int)
+            data.get(PRACTICE_TOKEN_KEY) != callback_data.token
+            or not isinstance(index, int)
             or index != callback_data.question
             or not 0 <= index < len(questions)
+            or not 0 <= callback_data.option < len(questions[index].options)
         ):
+            # Release the reservation: it belongs to this tap, and a tap that
+            # turned out stale must not block the session it landed in.
+            await state.update_data({PRACTICE_ANSWER_KEY: False})
             await query.answer(texts.stale_button(), show_alert=True)
             return
 
         question = questions[index]
-        if not 0 <= callback_data.option < len(question.options):
-            await query.answer(texts.stale_button(), show_alert=True)
-            return
-
-        # Set before the first await: a second tap arriving concurrently must
-        # not count the same answer twice.
-        await state.update_data({PRACTICE_ANSWER_KEY: True})
-
         correct = callback_data.option == question.correct_index
         count = int(data.get(CORRECT_COUNT_KEY, 0)) + int(correct)
         await state.update_data({CORRECT_COUNT_KEY: count})
@@ -102,6 +106,17 @@ def build_router() -> Router:
         )
         await query.answer()
         await rendering.edit_or_send(query, verdict, bot=bot)
+
+        # The verdict edit is a Telegram round-trip; a restart may have happened
+        # while it was in flight, and the new session must not inherit this
+        # one's question counter.
+        fresh = await state.get_data()
+        if (
+            await state.get_state() != Practice.awaiting_answer.state
+            or fresh.get(PRACTICE_TOKEN_KEY) != callback_data.token
+        ):
+            log.warning("practice_answer_abandoned", question=index)
+            return
 
         next_index = index + 1
         if next_index >= len(questions):

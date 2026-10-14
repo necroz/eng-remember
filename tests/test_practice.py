@@ -119,6 +119,33 @@ async def test_same_part_of_speech_is_preferred(
             assert set(question.options) <= verb_translations
 
 
+async def test_variant_listings_are_excluded_from_distractors(
+    services: Services, user: User, settings: Settings
+) -> None:
+    """The quiz answer key must agree with what grading accepts.
+
+    «ужасный» is a valid answer for «ужасный, кошмарный» in review, so it must
+    never sit next to it as a distractor in practice.
+    """
+    cards = await seed_cards(
+        services,
+        user,
+        ("awful", "ужасный, кошмарный", "adjective"),
+        ("terrible", "ужасный", "adjective"),
+        ("great", "отличный", "adjective"),
+        ("good", "хороший", "adjective"),
+        ("fine", "прекрасный", "adjective"),
+    )
+    card_by_id = {card.id: card for card in cards}
+
+    questions = await build(services, settings).build_session(user)
+
+    awful = next(q for q in questions if card_by_id[q.card_id].term == "awful")
+    assert "ужасный" not in awful.options
+    terrible = next(q for q in questions if card_by_id[q.card_id].term == "terrible")
+    assert "ужасный, кошмарный" not in terrible.options
+
+
 async def test_duplicate_translations_never_appear_twice(
     services: Services, user: User, settings: Settings
 ) -> None:
