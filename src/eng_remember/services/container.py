@@ -22,6 +22,8 @@ from eng_remember.repositories.streaks import StreakRepository
 from eng_remember.repositories.users import UserRepository
 from eng_remember.services.cards import CardService
 from eng_remember.services.discovery import DiscoveryService
+from eng_remember.services.grading import AnswerGradingService
+from eng_remember.services.llm.checker import AnswerChecker
 from eng_remember.services.llm.explorer import WordExplorer
 from eng_remember.services.llm.factory import build_llm_client
 from eng_remember.services.llm.parser import MessageParser
@@ -47,6 +49,8 @@ class Services:
     scheduler: SrsScheduler
     card_service: CardService
     review_service: ReviewService
+    answer_checker: AnswerChecker
+    grading_service: AnswerGradingService
     streak_service: StreakService
     praise_service: PraiseService
     discovery_service: DiscoveryService
@@ -80,6 +84,15 @@ def build_services(session: AsyncSession, settings: Settings) -> Services:
     explorer = WordExplorer(llm)
 
     streak_service = StreakService(streaks=streaks, settings=settings.streak)
+    review_service = ReviewService(
+        cards=cards,
+        reviews=reviews,
+        scheduler=scheduler,
+        streak=streak_service,
+        reviews_per_session=settings.bot.reviews_per_session,
+        new_cards_per_day=settings.bot.new_cards_per_day,
+    )
+    answer_checker = AnswerChecker(llm)
 
     return Services(
         settings=settings,
@@ -98,13 +111,12 @@ def build_services(session: AsyncSession, settings: Settings) -> Services:
             scheduler=scheduler,
             default_deck_name=settings.bot.default_deck_name,
         ),
-        review_service=ReviewService(
-            cards=cards,
-            reviews=reviews,
-            scheduler=scheduler,
-            streak=streak_service,
-            reviews_per_session=settings.bot.reviews_per_session,
-            new_cards_per_day=settings.bot.new_cards_per_day,
+        review_service=review_service,
+        answer_checker=answer_checker,
+        grading_service=AnswerGradingService(
+            reviews=review_service,
+            checker=answer_checker,
+            easy_threshold_seconds=settings.review.easy_threshold_seconds,
         ),
         streak_service=streak_service,
         praise_service=PraiseService(),

@@ -82,6 +82,16 @@ class SrsSettings(BaseModel):
     relearning_steps_minutes: tuple[int, ...] = (10,)
 
 
+class ReviewSettings(BaseModel):
+    """How a typed answer turns into a grade."""
+
+    easy_threshold_seconds: float = Field(
+        default=5.0,
+        gt=0,
+        description="A correct answer faster than this earns the easy grade",
+    )
+
+
 class StreakSettings(BaseModel):
     """Rules of the daily streak and its freezes.
 
@@ -156,6 +166,7 @@ class Settings(BaseSettings):
     bot: BotSettings = BotSettings()
     llm: LlmSettings = LlmSettings()
     srs: SrsSettings = SrsSettings()
+    review: ReviewSettings = ReviewSettings()
     streak: StreakSettings = StreakSettings()
     discovery: DiscoverySettings = DiscoverySettings()
     reminders: ReminderSettings = ReminderSettings()
