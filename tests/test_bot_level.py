@@ -146,3 +146,35 @@ async def test_a_card_without_levels_shows_no_badge(
     await send(dispatcher, bot, "бежать", update_id=101, date=utcnow())
 
     assert not any(" · " in text and "B2" in text for text in recording.sent_texts())
+
+
+def test_junk_stored_in_the_level_columns_never_reaches_the_message_raw() -> None:
+    """The render contract: data is escaped or dropped at interpolation."""
+    from datetime import UTC, datetime
+
+    from eng_remember.bot import texts
+    from eng_remember.models.card import Card
+
+    card = Card(
+        user_id=1,
+        deck_id=1,
+        term="run",
+        translation="бежать",
+        due_at=datetime(2026, 1, 1, tzinfo=UTC),
+        cefr="<b",
+        frequency="rare",
+        tags=[],
+        examples=[],
+    )
+
+    text = texts.card_back(card)
+
+    # The junk level is dropped; only the known frequency renders.
+    assert text == "<b>run</b>\n<i>редкое</i>\n\n🇷🇺 <b>бежать</b>"
+
+
+def test_level_texts_escape_their_input() -> None:
+    from eng_remember.bot import texts
+
+    assert "<x" not in texts.level_menu("<x")
+    assert "<x" not in texts.level_set("<x")

@@ -285,11 +285,12 @@ def build_expansion_prompt(
             f"domain or situation: {', '.join(seeds)}"
         )
     if context_text is None:
-        parts.append(f"Learner level: {level or 'B1-B2'}.")
-        if level:
+        safe_level = flatten_line(level or "", limit=8, strip_brackets=True)
+        parts.append(f"Learner level: {safe_level or 'B1-B2'}.")
+        if safe_level:
             parts.append(
-                f"Prefer words at {level} and one step around it; do not offer "
-                f"words far above {level} unless they are very frequent."
+                f"Prefer words at {safe_level} and one step around it; do not offer "
+                f"words far above {safe_level} unless they are very frequent."
             )
     if known:
         parts.append("Already known, must not be returned: " + ", ".join(known))

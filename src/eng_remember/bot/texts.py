@@ -349,13 +349,19 @@ FREQUENCY_LABELS = {"common": "частое", "uncommon": "обычное", "rar
 
 
 def badge(cefr: str | None, frequency: str | None) -> str | None:
-    """The level/rarity line, when the model estimated at least one."""
-    parts = [part for part in (cefr, FREQUENCY_LABELS.get(frequency or "")) if part]
+    """The level/rarity line, when at least one known value is present.
+
+    Only known values render: a junk string written past the validators must
+    degrade to "no badge", never to markup or noise.
+    """
+    safe_cefr = cefr if cefr in CEFR_LEVELS else None
+    safe_frequency = FREQUENCY_LABELS.get(frequency or "")
+    parts = [escape(part) for part in (safe_cefr, safe_frequency) if part]
     return " · ".join(parts) or None
 
 
 def level_menu(current: str | None) -> str:
-    shown = current or "не указан"
+    shown = escape(current) if current else "не указан"
     return (
         f"🎚 Ваш уровень: <b>{shown}</b>\n\n"
         "Выберите кнопкой или напишите, например <code>/level B1</code>."
@@ -363,7 +369,7 @@ def level_menu(current: str | None) -> str:
 
 
 def level_set(level: str) -> str:
-    return f"🎚 Уровень сохранён: <b>{level}</b>. Подбор слов будет держаться около него."
+    return f"🎚 Уровень сохранён: <b>{escape(level)}</b>. Подбор слов будет держаться около него."
 
 
 def level_reset() -> str:
