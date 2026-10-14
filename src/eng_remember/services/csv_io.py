@@ -41,9 +41,10 @@ _HEADER = (
 
 # First cells that mean "this first row is a header", paired with the second
 # cell: a genuine card whose term happens to be "term" has a translation there,
-# not the word "translation".
+# not the word "translation". Both cells must match — a bare "term;" row is a
+# real word waiting for its meaning, not a header.
 _HEADER_TERMS = {"term", "слово"}
-_HEADER_TRANSLATIONS = {"translation", "перевод", ""}
+_HEADER_TRANSLATIONS = {"translation", "перевод"}
 
 
 @dataclass(frozen=True, slots=True)

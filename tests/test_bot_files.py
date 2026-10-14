@@ -16,11 +16,20 @@ from eng_remember.models.user import User
 from eng_remember.repositories.cards import CardDraft
 from eng_remember.services.container import Services
 from eng_remember.services.csv_io import MAX_FILE_BYTES
-from tests.conftest import RecordingSession
+from eng_remember.utils.time import utcnow
+from tests.conftest import RecordingSession, make_due
 from tests.factories import ScriptedClient, make_document_update
 from tests.test_bot_flow import send, tap
 
 CSV_TEXT = "run;бежать;;;;;sport|basic;Бег\nswim;плавать;;\n"
+
+
+async def seed_due_card(
+    services: Services, user: User, session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    await services.card_service.add_draft(user, CardDraft(term="run", translation="бежать"))
+    await services.commit()
+    await make_due(session_factory, "run")
 
 
 def patch_file(monkeypatch: pytest.MonkeyPatch, payload: bytes) -> None:
@@ -269,6 +278,54 @@ async def test_other_documents_get_the_format_hint(
     await send_file(dispatcher, bot, file_name="notes.pdf")
 
     assert "CSV" in recording.last_text()
+
+
+async def test_a_stale_cancel_does_not_break_another_flow(
+    dispatcher: Dispatcher,
+    bot: Bot,
+    recording: RecordingSession,
+    services: Services,
+    user: User,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await seed_due_card(services, user, session_factory)
+    await send(dispatcher, bot, "/review", update_id=100)
+    assert "run" in recording.last_text()
+
+    await tap(dispatcher, bot, FileImportCB(action="cancel").pack(), update_id=101)
+
+    assert last_callback_answer(recording).show_alert
+
+    # The review must still be alive: the answer is graded, not swallowed by a
+    # capture parser that took over the cleared state.
+    await send(dispatcher, bot, "бежать", update_id=102, date=utcnow())
+    assert any("Дальше через" in text for text in recording.sent_texts())
+
+
+async def test_a_giant_csv_field_is_refused(
+    dispatcher: Dispatcher,
+    bot: Bot,
+    recording: RecordingSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    patch_file(monkeypatch, b'run;"' + b"x" * 131_073 + b'"\n')
+
+    await send_file(dispatcher, bot)
+
+    assert "прочитать" in recording.last_text()
+
+
+async def test_a_utf16_file_is_refused(
+    dispatcher: Dispatcher,
+    bot: Bot,
+    recording: RecordingSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    patch_file(monkeypatch, "run;бежать\n".encode("utf-16"))
+
+    await send_file(dispatcher, bot)
+
+    assert "прочитать" in recording.last_text()
 
 
 def test_confirm_callback_shape() -> None:

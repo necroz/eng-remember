@@ -98,6 +98,14 @@ def test_a_word_named_term_is_not_swallowed_as_a_header() -> None:
     assert parsed.rows[0].translation == "значение"
 
 
+def test_a_word_named_term_without_translation_is_kept() -> None:
+    """A header needs both cells; a bare ``term;`` row is a real word."""
+    parsed = parse_cards_csv("term;\nrun;бежать\n")
+
+    assert [row.term for row in parsed.rows] == ["term", "run"]
+    assert parsed.empty_translations == 1
+
+
 def test_rows_without_term_are_skipped_and_missing_translations_counted() -> None:
     parsed = parse_cards_csv("run;бежать\n;дом\nswim;\n")
 

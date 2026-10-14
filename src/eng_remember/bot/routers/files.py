@@ -7,6 +7,7 @@ sees exactly what will be saved, and only the confirmation writes anything.
 
 from __future__ import annotations
 
+import csv
 import io
 
 import structlog
@@ -95,7 +96,12 @@ def build_router() -> Router:
             await message.answer(texts.file_import_unreadable(), reply_markup=keyboards.main_menu())
             return
 
-        parsed = parse_cards_csv(text)
+        try:
+            parsed = parse_cards_csv(text)
+        except csv.Error:
+            # A field beyond csv's own limit is a malformed file, not a crash.
+            await message.answer(texts.file_import_unreadable(), reply_markup=keyboards.main_menu())
+            return
         rows, duplicates, untranslated, filled = await _prepare_rows(user, services, parsed)
         if not rows:
             await message.answer(texts.file_import_empty(), reply_markup=keyboards.main_menu())
@@ -140,13 +146,32 @@ def build_router() -> Router:
         outcome = await _save_rows(user, services, rows)
         await services.commit()
         await query.answer()
-        await rendering.edit_or_send(query, texts.file_import_result(outcome), bot=bot)
+        await rendering.edit_or_send(
+            query,
+            texts.file_import_result(outcome),
+            bot=bot,
+            reply_markup=keyboards.empty_keyboard(),
+        )
 
     @router.callback_query(FileImportCB.filter(F.action == "cancel"))
-    async def cancel_import(query: CallbackQuery, bot: Bot, state: FSMContext) -> None:
+    async def cancel_import(
+        query: CallbackQuery,
+        bot: Bot,
+        state: FSMContext,
+    ) -> None:
+        # Only the live confirmation owns cancel: an old button from a spent
+        # preview must not clear whatever flow is active now.
+        if await state.get_state() != ImportFile.confirming.state:
+            await query.answer(texts.stale_button(), show_alert=True)
+            return
         await state.clear()
         await query.answer()
-        await rendering.edit_or_send(query, texts.file_import_cancelled(), bot=bot)
+        await rendering.edit_or_send(
+            query,
+            texts.file_import_cancelled(),
+            bot=bot,
+            reply_markup=keyboards.empty_keyboard(),
+        )
 
     return router
 
@@ -161,9 +186,14 @@ async def _read_document(bot: Bot, document: Document) -> bytes:
 def _decode(payload: bytes) -> str | None:
     for encoding in ("utf-8-sig", "cp1251"):
         try:
-            return payload.decode(encoding)
+            text = payload.decode(encoding)
         except UnicodeDecodeError:
             continue
+        # cp1251 decodes nearly any byte soup, including UTF-16 files (which
+        # then arrive full of NULs) — refuse rather than import mojibake.
+        if "\x00" in text:
+            return None
+        return text
     return None
 
 

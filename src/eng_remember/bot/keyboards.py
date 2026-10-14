@@ -30,6 +30,7 @@ from eng_remember.models.card import Card
 
 __all__ = [
     "clarification",
+    "empty_keyboard",
     "file_import_confirm",
     "import_confirm",
     "leech_menu",
@@ -86,6 +87,11 @@ def file_import_confirm() -> InlineKeyboardMarkup:
     builder.button(text="❌ Отмена", callback_data=FileImportCB(action="cancel"))
     builder.adjust(1)
     return builder.as_markup()
+
+
+def empty_keyboard() -> InlineKeyboardMarkup:
+    """An explicit empty markup: an edit without one keeps the old buttons."""
+    return InlineKeyboardMarkup(inline_keyboard=[])
 
 
 def review_prompt(card_id: int, *, hint: bool = False) -> InlineKeyboardMarkup:
