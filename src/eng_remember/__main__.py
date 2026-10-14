@@ -18,6 +18,7 @@ from eng_remember.config import Settings, get_settings, require_bot_token
 from eng_remember.db.engine import SessionFactory, create_engine, create_session_factory
 from eng_remember.errors import ConfigurationError
 from eng_remember.logging_setup import configure_logging
+from eng_remember.services.enrichment_worker import enrichment_worker
 from eng_remember.services.reminders import build_reminder_service
 
 log = structlog.get_logger(__name__)
@@ -69,6 +70,16 @@ async def main() -> None:
         if settings.reminders.enabled
         else None
     )
+    # Cards earn their examples in the background; with no model there is
+    # nothing to generate, so the worker is not started at all.
+    enrichment = (
+        asyncio.create_task(
+            enrichment_worker(session_factory, settings, stopping),
+            name="enrichment-worker",
+        )
+        if settings.llm.is_configured
+        else None
+    )
 
     try:
         await bot.set_my_commands(COMMANDS)
@@ -80,9 +91,10 @@ async def main() -> None:
         )
     finally:
         stopping.set()
-        if reminders is not None:
-            reminders.cancel()
-            await asyncio.gather(reminders, return_exceptions=True)
+        for task in (reminders, enrichment):
+            if task is not None:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
         await bot.session.close()
         await engine.dispose()
         log.info("bot_stopped")

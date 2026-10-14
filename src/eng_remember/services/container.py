@@ -22,8 +22,10 @@ from eng_remember.repositories.streaks import StreakRepository
 from eng_remember.repositories.users import UserRepository
 from eng_remember.services.cards import CardService
 from eng_remember.services.discovery import DiscoveryService
+from eng_remember.services.enrichment import EnrichmentService
 from eng_remember.services.grading import AnswerGradingService
 from eng_remember.services.llm.checker import AnswerChecker
+from eng_remember.services.llm.enricher import CardEnricher
 from eng_remember.services.llm.explorer import WordExplorer
 from eng_remember.services.llm.factory import build_llm_client
 from eng_remember.services.llm.parser import MessageParser
@@ -54,6 +56,7 @@ class Services:
     streak_service: StreakService
     praise_service: PraiseService
     discovery_service: DiscoveryService
+    enrichment: EnrichmentService
 
     parser: MessageParser
     explorer: WordExplorer
@@ -124,6 +127,11 @@ def build_services(session: AsyncSession, settings: Settings) -> Services:
             cards=cards,
             explorer=explorer,
             settings=settings.discovery,
+        ),
+        enrichment=EnrichmentService(
+            cards=cards,
+            enricher=CardEnricher(llm),
+            settings=settings,
         ),
         parser=parser,
         explorer=explorer,
