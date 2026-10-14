@@ -7,6 +7,7 @@ assert is what the user would actually receive.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 
 import pytest
@@ -22,9 +23,17 @@ from eng_remember.models.card import Card
 from eng_remember.models.deck import Deck
 from eng_remember.models.review import Review
 from eng_remember.models.user import User
+from eng_remember.services.llm.schema import AnswerCheckResponse
 from eng_remember.utils.time import utcnow
 from tests.conftest import RecordingSession, make_due
-from tests.factories import TEST_USER_ID, ScriptedClient, make_callback_update, make_message_update
+from tests.factories import (
+    TEST_USER_ID,
+    ScriptedClient,
+    card_payload,
+    make_callback_update,
+    make_message_update,
+    parse_payload,
+)
 
 
 async def send(dispatcher: Dispatcher, bot: Bot, text: str, **kwargs: object) -> None:
@@ -416,6 +425,84 @@ class TestReview:
 
         async with session_factory() as check:
             assert await check.scalar(select(func.count(Review.id))) == 1
+
+    async def test_a_pasted_answer_is_shown_truncated(
+        self,
+        dispatcher: Dispatcher,
+        bot: Bot,
+        recording: RecordingSession,
+        session_factory: async_sessionmaker[AsyncSession],
+        card_id: int,
+    ) -> None:
+        """A pasted paragraph must not overflow Telegram's message limit.
+
+        The whole answer is used for grading; only the revealed line is capped,
+        or the result would be rejected by the API and the session would wedge.
+        """
+        await send(dispatcher, bot, "/review", update_id=20)
+        await send(dispatcher, bot, "а" * 4000, update_id=21, date=utcnow())
+
+        text = result_text(recording)
+        assert len(text) < 4096
+        assert "…" in text
+
+    async def test_a_pause_during_the_check_wins(
+        self,
+        llm_dispatcher: Dispatcher,
+        llm: ScriptedClient,
+        monkeypatch: pytest.MonkeyPatch,
+        bot: Bot,
+        recording: RecordingSession,
+        session_factory: async_sessionmaker[AsyncSession],
+        saved_card: Card,
+    ) -> None:
+        """A multi-second model check must not hijack the state after a pause.
+
+        «Добавить слова» ends the review for now; the in-flight answer is still
+        graded — it was given — but its result must not overwrite the new flow.
+        """
+        await make_due(session_factory)
+        gate = asyncio.Event()
+        entered = asyncio.Event()
+        original = llm.complete_json
+
+        async def gated(
+            *,
+            purpose: str,
+            system: str,
+            user: str,
+            schema: object,
+            user_id: int | None = None,
+        ) -> object:
+            if schema is AnswerCheckResponse:
+                entered.set()
+                await gate.wait()
+            return await original(
+                purpose=purpose, system=system, user=user, schema=schema, user_id=user_id
+            )
+
+        monkeypatch.setattr(llm, "complete_json", gated)
+        llm.push_check({"verdict": "correct"})
+        llm.push_parse(parse_payload(cards=[card_payload("run", "бежать")]))
+
+        await send(llm_dispatcher, bot, "/review", update_id=20)
+        recording.clear()
+        answer = asyncio.create_task(
+            send(llm_dispatcher, bot, "жуткий", update_id=21, date=utcnow())
+        )
+        await asyncio.wait_for(entered.wait(), timeout=1)
+
+        await send(llm_dispatcher, bot, texts.BTN_ADD, update_id=22)
+        await send(llm_dispatcher, bot, "run - бежать", update_id=23)
+        confirm_data = button_with(recording, "im:confirm")
+        gate.set()
+        await answer
+
+        await tap(llm_dispatcher, bot, confirm_data, update_id=24)
+
+        async with session_factory() as check:
+            terms = set((await check.scalars(select(Card.term))).all())
+        assert "run" in terms
 
     async def test_a_stale_tap_is_rejected(
         self,

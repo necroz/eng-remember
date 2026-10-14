@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+import structlog
 from aiogram import Bot, F, Router
 from aiogram.dispatcher.event.bases import SkipHandler
 from aiogram.filters import Command
@@ -23,6 +24,7 @@ from eng_remember.bot.states import (
     ANSWERED_KEY,
     ANSWERING_KEY,
     FRONT_MESSAGE_KEY,
+    SESSION_KEY,
     SHOWN_AT_KEY,
     SHOWN_CARD_KEY,
     Review,
@@ -31,6 +33,8 @@ from eng_remember.models.card import Card
 from eng_remember.models.user import User
 from eng_remember.services.container import Services
 from eng_remember.utils.time import ensure_utc, utcnow
+
+log = structlog.get_logger(__name__)
 
 # Telegram timestamps carry whole seconds while the stored moment keeps
 # microseconds, so an answer sent right after the front can look up to a second
@@ -57,7 +61,7 @@ def build_router() -> Router:
         state: FSMContext,
     ) -> None:
         await state.clear()
-        await state.update_data({ANSWERED_KEY: 0})
+        await state.update_data({ANSWERED_KEY: 0, SESSION_KEY: utcnow().isoformat()})
 
         queue = await services.review_service.build_queue(user)
         if not queue.cards:
@@ -204,9 +208,20 @@ def build_router() -> Router:
         duration_seconds: float | None,
     ) -> None:
         """Grade the answer, reveal the card and move on."""
+        before = await state.get_data()
         outcome = await services.grading_service.grade(
             user, card, typed=typed, duration_seconds=duration_seconds
         )
+
+        # While the model was checking, the learner may have paused the review,
+        # restarted it or confirmed an import. The answer itself was given and is
+        # recorded; re-arming this session over whatever exists now would scatter
+        # a flow that started meanwhile.
+        data = await state.get_data()
+        if data.get(SESSION_KEY) != before.get(SESSION_KEY) or data.get(ANSWERING_KEY) != card.id:
+            log.warning("answer_abandoned", user_id=user.id, card_id=card.id)
+            return
+
         # Praise is chosen after the answer because reaching a round number
         # changes which bank it comes from.
         pick = services.praise_service.pick(
@@ -216,7 +231,6 @@ def build_router() -> Router:
         )
         await services.commit()
 
-        data = await state.get_data()
         await state.update_data({ANSWERED_KEY: int(data.get(ANSWERED_KEY, 0)) + 1})
 
         streak = outcome.answer.streak.state if outcome.answer.streak else None

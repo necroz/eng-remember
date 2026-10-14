@@ -77,6 +77,11 @@ BTN_HELP = "❓ Помощь"
 
 MAIN_MENU_BUTTONS = (BTN_ADD, BTN_REVIEW, BTN_DECKS, BTN_STATS, BTN_HELP)
 
+# The revealed answer plus the card must stay under Telegram's 4096-character
+# message limit; a pasted paragraph is not worth showing in full anyway. The
+# whole text still goes to grading — only the display is capped.
+ANSWER_DISPLAY_LIMIT = 500
+
 
 def welcome_new(first_name: str | None, deck_name: str) -> str:
     name = f", {escape(first_name)}" if first_name else ""
@@ -214,7 +219,7 @@ def answer_result(
     """
     lines = ["🤷 Не помню" if typed is None else f"{verdict.emoji} {verdict.label}"]
     if typed is not None:
-        lines.append(f"<i>Ваш ответ:</i> <code>{escape(typed)}</code>")
+        lines.append(f"<i>Ваш ответ:</i> <code>{escape(_display_answer(typed))}</code>")
     lines.append("")
     lines.append(card_back(card))
     lines.append("")
@@ -613,6 +618,12 @@ def explain(answer: str) -> str:
 
 def global_error() -> str:
     return "Что-то сломалось на моей стороне. Уже записал в лог — попробуйте ещё раз."
+
+
+def _display_answer(typed: str) -> str:
+    if len(typed) <= ANSWER_DISPLAY_LIMIT:
+        return typed
+    return typed[:ANSWER_DISPLAY_LIMIT].rstrip() + "…"
 
 
 def _terms(terms: list[str]) -> str:

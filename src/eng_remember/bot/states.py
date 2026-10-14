@@ -17,6 +17,7 @@ __all__ = [
     "OWN_KEY",
     "QUESTION_KEY",
     "ROUND_KEY",
+    "SESSION_KEY",
     "SHOWN_AT_KEY",
     "SHOWN_CARD_KEY",
     "TOPIC_KEY",
@@ -48,12 +49,15 @@ ROUND_KEY = "clarify_round"
 
 # The review dialogue: which card is waiting, when its front was shown (the
 # speed signal), which message carries it (edited into the result), and whether
-# an answer is already being checked (reservation against a double send).
+# an answer is already being checked (reservation against a double send). The
+# session token identifies one run of the loop: a paused or restarted review
+# replaces or drops it, so a slow model answer cannot land in a new session.
 SHOWN_AT_KEY = "shown_at"
 SHOWN_CARD_KEY = "shown_card"
 FRONT_MESSAGE_KEY = "front_message"
 ANSWERING_KEY = "answering"
 ANSWERED_KEY = "answered"
+SESSION_KEY = "review_session"
 
 
 class AddWords(StatesGroup):
