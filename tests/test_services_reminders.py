@@ -496,6 +496,62 @@ class TestDigestPlanning:
         assert digest.weak == ((card.term, 3),)
         assert digest.due_now == 2
 
+    async def test_counts_advertise_words_not_pairs(
+        self,
+        services: Services,
+        session: AsyncSession,
+        settings: Settings,
+        user: User,
+        notifier: RecordingNotifier,
+    ) -> None:
+        """A pair is introduced one side a day: «новых» must promise words."""
+        await services.card_service.add_drafts(
+            user,
+            [
+                CardDraft(term="run", translation="бежать"),
+                CardDraft(term="swim", translation="плавать"),
+                CardDraft(term="fly", translation="летать"),
+            ],
+        )
+        await session.commit()
+
+        run = await build_reminder_service(session, settings, notifier).run(
+            now=moment(9, 0, days=1)
+        )
+
+        assert run.sent_count == 1
+        assert notifier.sent[-1].new_available == 3
+
+    async def test_the_digest_counts_words_not_pairs(
+        self,
+        services: Services,
+        session: AsyncSession,
+        settings: Settings,
+        user: User,
+        notifier: RecordingNotifier,
+    ) -> None:
+        settings.reminders.digest_enabled = True
+        settings.reminders.digest_weekday = TODAY.weekday()
+        service = build_reminder_service(session, settings, notifier)
+        outcome = await services.card_service.add_drafts(
+            user, [CardDraft(term="run", translation="бежать")]
+        )
+        forward = outcome.added[0]
+        twin = await services.cards.find_twin(forward)
+        assert twin is not None
+        forward.again_count = 4
+        twin.again_count = 2
+        await session.execute(update(Card).values(created_at=moment(12, 0, days=-1)))
+        await session.commit()
+
+        run = await service.run(now=moment(9, 0))
+
+        assert run.sent_count == 1
+        digest = notifier.sent[-1].digest
+        assert digest is not None
+        assert digest.new_words == 1
+        assert digest.weak == (("run", 4),)
+
     async def test_the_digest_marks_both_watermarks(
         self,
         services: Services,

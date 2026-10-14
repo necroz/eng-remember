@@ -175,7 +175,8 @@ class TestCardService:
         assert today.reviews_today == 0
 
         tomorrow = await services.card_service.stats(user, now=outcome.added[0].due_at)
-        assert tomorrow.new_cards == 6
+        # Three words, one forward card each: the reverse sides arrive later.
+        assert tomorrow.new_cards == 3
 
 
 class TestReviewService:
@@ -430,11 +431,15 @@ class TestCardPairs:
         queue = await services.review_service.build_queue(user, now=due_at)
         assert [card.id for card in queue.cards] == [card.id for card in forwards]
 
-        await services.review_service.answer(user, forwards[0], ReviewRating.GOOD, now=due_at)
-        second = await services.review_service.get_next(user, now=due_at)
+        walked = []
+        while True:
+            card = await services.review_service.get_next(user, now=due_at)
+            if card is None:
+                break
+            walked.append(card.term)
+            await services.review_service.answer(user, card, ReviewRating.GOOD, now=due_at)
 
-        assert second is not None
-        assert second.term == "w1"
+        assert walked == ["w0", "w1", "w2"]
 
     async def test_the_reverse_twin_waits_for_the_next_day(
         self, services: Services, user: User, draft: CardDraft

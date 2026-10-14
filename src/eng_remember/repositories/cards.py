@@ -5,8 +5,18 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, cast
 
-from sqlalchemy import CursorResult, Select, and_, case, delete, func, select
+from sqlalchemy import (
+    CursorResult,
+    Select,
+    and_,
+    case,
+    delete,
+    exists,
+    func,
+    select,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from eng_remember.domain.enums import CardDirection
 from eng_remember.domain.examples import merge_examples
@@ -160,31 +170,6 @@ class CardRepository:
         )
         return set((await self._session.scalars(stmt)).all())
 
-    async def terms_reviewed_since(
-        self,
-        user_id: int,
-        terms: Sequence[str],
-        *,
-        since: datetime,
-    ) -> set[str]:
-        """Lower-cased terms among ``terms`` with an answer since a moment.
-
-        Used to bury a new twin whose sibling was already answered today: the
-        second direction of a word answered this morning must not arrive this
-        evening as if it were new material.
-        """
-        if not terms:
-            return set()
-        lowered = [term.strip().lower() for term in terms]
-        stmt = select(func.lower(Card.term)).where(
-            Card.user_id == user_id,
-            Card.reps > 0,
-            Card.last_review_at.is_not(None),
-            Card.last_review_at >= since,
-            func.lower(Card.term).in_(lowered),
-        )
-        return set((await self._session.scalars(stmt)).all())
-
     async def list_due(
         self,
         user_id: int,
@@ -209,11 +194,17 @@ class CardRepository:
         now: datetime,
         limit: int,
         deck_id: int | None = None,
+        bury_reviewed_since: datetime | None = None,
     ) -> list[Card]:
         """Cards that have never been answered and are not postponed.
 
         The ``due_at`` filter is what makes "later" work on a brand-new card:
         without it the card is postponed and handed straight back.
+
+        ``bury_reviewed_since`` drops a new card whose sibling was answered
+        after that moment: the second direction of a word practised today is
+        not new material. The exclusion lives in SQL so a run of buried twins
+        cannot exhaust a small candidate window.
         """
         if limit <= 0:
             return []
@@ -221,6 +212,18 @@ class CardRepository:
             Card.reps == 0,
             Card.due_at <= now,
         )
+        if bury_reviewed_since is not None:
+            sibling = aliased(Card)
+            stmt = stmt.where(
+                ~exists().where(
+                    sibling.user_id == Card.user_id,
+                    sibling.id != Card.id,
+                    func.lower(sibling.term) == func.lower(Card.term),
+                    sibling.reps > 0,
+                    sibling.last_review_at.is_not(None),
+                    sibling.last_review_at >= bury_reviewed_since,
+                )
+            )
         return list((await self._session.scalars(stmt.order_by(Card.id).limit(limit))).all())
 
     async def queue_counts(
@@ -239,7 +242,17 @@ class CardRepository:
             return {}
 
         due_case = case((and_(Card.reps > 0, Card.due_at <= now), 1), else_=0)
-        new_case = case((and_(Card.reps == 0, Card.due_at <= now), 1), else_=0)
+        new_case = case(
+            (
+                and_(
+                    Card.reps == 0,
+                    Card.due_at <= now,
+                    Card.direction == CardDirection.FORWARD,
+                ),
+                1,
+            ),
+            else_=0,
+        )
         stmt = (
             select(Card.user_id, func.sum(due_case), func.sum(new_case))
             .where(
@@ -280,12 +293,18 @@ class CardRepository:
         return ensure_utc(await self._session.scalar(stmt))
 
     async def count_new(self, user_id: int, *, now: datetime, deck_id: int | None = None) -> int:
-        """New cards waiting *now* — postponed ones are not in the queue."""
+        """New words waiting *now* — postponed ones are not in the queue.
+
+        Counted per forward card: bury introduces one direction per word a day,
+        so advertising both twins would promise twice the work a session can
+        serve.
+        """
         stmt = select(func.count(Card.id)).where(
             Card.user_id == user_id,
             Card.is_suspended.is_(False),
             Card.reps == 0,
             Card.due_at <= now,
+            Card.direction == CardDirection.FORWARD,
         )
         if deck_id is not None:
             stmt = stmt.where(Card.deck_id == deck_id)
@@ -393,6 +412,7 @@ class CardRepository:
         *,
         since: datetime,
         until: datetime | None = None,
+        direction: CardDirection | None = None,
     ) -> int:
         stmt = select(func.count(Card.id)).where(
             Card.user_id == user_id,
@@ -400,13 +420,23 @@ class CardRepository:
         )
         if until is not None:
             stmt = stmt.where(Card.created_at < until)
+        if direction is not None:
+            stmt = stmt.where(Card.direction == direction)
         return int(await self._session.scalar(stmt) or 0)
 
     async def weakest(self, user_id: int, *, limit: int = 3) -> list[Card]:
-        """The words that failed most, for the weekly digest."""
+        """The words that failed most, for the weekly digest.
+
+        Forward cards only: a word is one entry, not two, however often each
+        of its sides has been failed.
+        """
         stmt = (
             select(Card)
-            .where(Card.user_id == user_id, Card.again_count > 0)
+            .where(
+                Card.user_id == user_id,
+                Card.again_count > 0,
+                Card.direction == CardDirection.FORWARD,
+            )
             .order_by(Card.again_count.desc(), Card.term)
             .limit(limit)
         )

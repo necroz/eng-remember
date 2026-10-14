@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from eng_remember.config import ReminderSettings, Settings
 from eng_remember.domain.digest import HEATMAP_DAYS, daily_series
-from eng_remember.domain.enums import ReviewRating
+from eng_remember.domain.enums import CardDirection, ReviewRating
 from eng_remember.domain.gamification import StreakState, roll_forward
 from eng_remember.domain.reminders import ReminderContext, ReminderKind, decide
 from eng_remember.errors import RecipientUnreachable
@@ -253,6 +253,7 @@ class ReminderService:
                 user.id,
                 since=local_midnight(user.timezone, week_start),
                 until=local_midnight(user.timezone, today),
+                direction=CardDirection.FORWARD,
             ),
             weak=tuple((card.term, card.again_count) for card in weak),
             due_now=due_now,

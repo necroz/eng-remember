@@ -117,27 +117,16 @@ class ReviewService:
         new_cards: list[Card] = []
         if remaining > 0 and allowance > 0:
             wanted = min(remaining, allowance)
-            # Candidates are fetched with a margin because the bury filters only
-            # ever remove entries: both directions of a word are in the list, and
-            # a twin whose sibling was answered today is skipped. Without the
-            # margin a one-card queue build (get_next) would fetch exactly the
-            # buried twin and report "nothing left" while words are waiting.
+            # The margin covers the remaining in-Python filter: both directions
+            # of a word sit in the list and only one may be introduced.
             candidates = await self._cards.list_new(
                 user.id,
                 now=moment,
                 limit=min(self._reviews_per_session, max(2, wanted * 2)),
                 deck_id=deck_id,
+                bury_reviewed_since=local_day_start(user.timezone, now=moment),
             )
-            answered_today = await self._cards.terms_reviewed_since(
-                user.id,
-                [card.term for card in candidates],
-                since=local_day_start(user.timezone, now=moment),
-            )
-            new_cards = [
-                card
-                for card in _one_per_term(candidates)
-                if card.term.casefold() not in answered_today
-            ][:wanted]
+            new_cards = _one_per_term(candidates)[:wanted]
 
         return ReviewQueue(
             cards=[*due_cards, *new_cards],
