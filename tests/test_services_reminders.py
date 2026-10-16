@@ -132,7 +132,7 @@ class TestWhoGetsReminded:
     ) -> None:
         await give_work(services, user)
 
-        run = await reminders.run(now=moment(8, 30))
+        run = await reminders.run(now=moment(7, 30))
 
         assert run.sent_count == 0
 

@@ -138,15 +138,15 @@ class ReminderSettings(BaseModel):
     """When the bot is allowed to write first.
 
     Reminders are dispatched by a periodic tick that catches up rather than by
-    exact-time scheduling: a bot that was down at 09:00 still sends the morning
-    reminder when it starts at 10:00, and nobody gets a message at 03:00 because
+    exact-time scheduling: a bot that was down at 08:00 still sends the morning
+    reminder when it starts at 09:00, and nobody gets a message at 03:00 because
     a timer drifted.
     """
 
     enabled: bool = True
     tick_seconds: int = Field(default=600, ge=30, le=3600)
-    default_time: time = time(9, 0)
-    default_streak_time: time = time(20, 0)
+    default_time: time = time(8, 0)
+    default_streak_time: time = time(18, 0)
     digest_weekday: int = Field(
         default=0,
         ge=0,

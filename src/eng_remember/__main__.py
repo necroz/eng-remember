@@ -115,8 +115,8 @@ async def reminder_loop(
     """Send reminders every ``REMINDERS__TICK_SECONDS`` until asked to stop.
 
     The first tick runs immediately, which is what gives the catch-up behaviour:
-    a bot that was down at the learner's 09:00 still sends the morning reminder
-    when it comes up at 10:00, and nothing is sent at 03:00 because a timer
+    a bot that was down at the learner's 08:00 still sends the morning reminder
+    when it comes up at 09:00, and nothing is sent at 03:00 because a timer
     drifted.
 
     Each tick gets its own session and commits at the end, so a long-running

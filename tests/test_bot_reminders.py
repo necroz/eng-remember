@@ -65,8 +65,8 @@ class TestRemindCommand:
         await send(dispatcher, bot, "/remind")
 
         sent = recording.last_text()
-        assert "09:00" in sent
-        assert "20:00" in sent
+        assert "08:00" in sent
+        assert "18:00" in sent
         assert "включены" in sent
 
     async def test_the_morning_time_can_be_changed(
