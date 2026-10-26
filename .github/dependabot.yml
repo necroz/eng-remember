@@ -20,3 +20,8 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    ignore:
+      # Python 3.15 is not usable yet: pydantic-core has no cp315 wheels, and
+      # the uv 3.15 builder image only exists for trixie. Revisit separately.
+      - dependency-name: "python"
+        versions: ["~> 3.15.0"]
