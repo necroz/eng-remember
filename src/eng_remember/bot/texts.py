@@ -712,7 +712,7 @@ def quota_exceeded() -> str:
     return (
         "⏳ Лимит обращений к модели исчерпан.\n\n"
         "Пришлите пары «слово — перевод», и я разберу их без модели. "
-        "Лимит настраивается в <code>LLM__MAX_CALLS_PER_HOUR</code> и "
+        "Лимит настраивается в <code>LLM__MAX_CALLS_PER_DAY</code> и "
         "<code>LLM__MAX_TOKENS_PER_DAY</code>."
     )
 

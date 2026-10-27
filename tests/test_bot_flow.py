@@ -496,10 +496,10 @@ class TestReview:
         await asyncio.wait_for(entered.wait(), timeout=1)
 
         await send(llm_dispatcher, bot, texts.BTN_ADD, update_id=22)
-        await send(llm_dispatcher, bot, "run - бежать", update_id=23)
-        confirm_data = button_with(recording, "im:confirm")
         gate.set()
         await answer
+        await send(llm_dispatcher, bot, "run - бежать", update_id=23)
+        confirm_data = button_with(recording, "im:confirm")
 
         await tap(llm_dispatcher, bot, confirm_data, update_id=24)
 

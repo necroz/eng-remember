@@ -380,7 +380,7 @@ async def test_the_llm_quota_window_uses_real_timestamps(
         client = QuotaLimitedClient(
             RecordingModel(),
             calls=LlmCallRepository(pg_session),
-            settings=LlmSettings(max_calls_per_hour=limit, max_tokens_per_day=0),
+            settings=LlmSettings(max_calls_per_day=limit, max_tokens_per_day=0),
         )
         await client.complete_json(
             purpose="parse_message",
@@ -390,7 +390,7 @@ async def test_the_llm_quota_window_uses_real_timestamps(
             user_id=pg_user.id,
         )
 
-    # Two calls happened within the hour: a limit of two already refuses.
+    # Two calls happened within the day: a limit of two already refuses.
     with pytest.raises(LlmQuotaExceededError):
         await call(2)
     # A limit of three passes, so the two-day-old rows did not leak in.

@@ -90,7 +90,7 @@ async def test_calls_below_the_limit_reach_the_model(
     client = QuotaLimitedClient(
         inner,
         calls=LlmCallRepository(session),
-        settings=LlmSettings(max_calls_per_hour=3, max_tokens_per_day=0),
+        settings=LlmSettings(max_calls_per_day=3, max_tokens_per_day=0),
     )
 
     await make_call(client, user.id)
@@ -98,7 +98,7 @@ async def test_calls_below_the_limit_reach_the_model(
     assert inner.calls == 1
 
 
-async def test_the_next_call_over_the_hourly_limit_is_refused(
+async def test_the_next_call_over_the_daily_limit_is_refused(
     session: AsyncSession,
     user: User,
 ) -> None:
@@ -107,7 +107,7 @@ async def test_the_next_call_over_the_hourly_limit_is_refused(
     client = QuotaLimitedClient(
         inner,
         calls=LlmCallRepository(session),
-        settings=LlmSettings(max_calls_per_hour=3, max_tokens_per_day=0),
+        settings=LlmSettings(max_calls_per_day=3, max_tokens_per_day=0),
     )
 
     with pytest.raises(LlmQuotaExceededError):
@@ -125,13 +125,44 @@ async def test_the_daily_token_budget_is_enforced(
     client = QuotaLimitedClient(
         inner,
         calls=LlmCallRepository(session),
-        settings=LlmSettings(max_calls_per_hour=0, max_tokens_per_day=5000),
+        settings=LlmSettings(max_calls_per_day=0, max_tokens_per_day=5000),
     )
 
     with pytest.raises(LlmQuotaExceededError):
         await make_call(client, user.id)
 
     assert inner.calls == 0
+
+
+async def test_calls_older_than_a_day_do_not_count(
+    session: AsyncSession,
+    user: User,
+) -> None:
+    from datetime import timedelta
+
+    from eng_remember.models.llm_call import LlmCall
+    from eng_remember.utils.time import utcnow
+
+    session.add(
+        LlmCall(
+            user_id=user.id,
+            purpose="parse_message",
+            provider_model="recording-model",
+            total_tokens=10,
+            created_at=utcnow() - timedelta(days=2),
+        )
+    )
+    await session.commit()
+    inner = RecordingModel()
+    client = QuotaLimitedClient(
+        inner,
+        calls=LlmCallRepository(session),
+        settings=LlmSettings(max_calls_per_day=1, max_tokens_per_day=0),
+    )
+
+    await make_call(client, user.id)
+
+    assert inner.calls == 1
 
 
 async def test_usage_of_another_learner_does_not_count(
@@ -147,7 +178,7 @@ async def test_usage_of_another_learner_does_not_count(
     client = QuotaLimitedClient(
         inner,
         calls=LlmCallRepository(session),
-        settings=LlmSettings(max_calls_per_hour=3, max_tokens_per_day=0),
+        settings=LlmSettings(max_calls_per_day=3, max_tokens_per_day=0),
     )
 
     await make_call(client, user.id)
@@ -164,7 +195,7 @@ async def test_zero_limits_disables_the_check(
     client = QuotaLimitedClient(
         inner,
         calls=LlmCallRepository(session),
-        settings=LlmSettings(max_calls_per_hour=0, max_tokens_per_day=0),
+        settings=LlmSettings(max_calls_per_day=0, max_tokens_per_day=0),
     )
 
     await make_call(client, user.id)

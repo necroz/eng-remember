@@ -59,6 +59,7 @@ async def main() -> None:
         llm_model=settings.llm.model if settings.llm.is_configured else None,
         database=settings.database_url.split("@")[-1],
         reminders=settings.reminders.enabled,
+        tasks_concurrency_limit=settings.bot.tasks_concurrency_limit,
     )
 
     stopping = asyncio.Event()
@@ -93,6 +94,7 @@ async def main() -> None:
         await dispatcher.start_polling(
             bot,
             allowed_updates=dispatcher.resolve_used_update_types(),
+            tasks_concurrency_limit=settings.bot.tasks_concurrency_limit,
         )
     finally:
         stopping.set()

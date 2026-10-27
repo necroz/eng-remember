@@ -31,6 +31,11 @@ class BotSettings(BaseModel):
     practice_size: int = Field(default=10, ge=4, le=50, description="Questions per practice quiz")
     request_timeout_seconds: float = Field(default=10.0, gt=0)
     drop_pending_updates: bool = False
+    tasks_concurrency_limit: int = Field(
+        default=20,
+        ge=1,
+        description="Maximum updates processed concurrently per bot process",
+    )
 
 
 class LlmSettings(BaseModel):
@@ -49,13 +54,13 @@ class LlmSettings(BaseModel):
     timeout_seconds: float = Field(default=30.0, gt=0)
     max_output_tokens: int = Field(default=1500, ge=1)
     retries: int = Field(default=2, ge=0, description="Extra attempts after a bad answer")
-    max_calls_per_hour: int = Field(
+    max_calls_per_day: int = Field(
         default=60,
         ge=0,
-        description="Model calls per learner in any rolling hour; 0 disables the check",
+        description="Model calls per learner in any rolling 24 hours; 0 disables the check",
     )
     max_tokens_per_day: int = Field(
-        default=300_000,
+        default=100_000,
         ge=0,
         description="Tokens per learner in any rolling 24 hours; 0 disables the check",
     )
