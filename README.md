@@ -7,6 +7,7 @@
 <p align="center">
   <a href="https://github.com/necroz/eng-remember/actions/workflows/ci.yml"><img src="https://github.com/necroz/eng-remember/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
   <img src="https://img.shields.io/badge/python-3.12-blue" alt="Python 3.12">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License"></a>
   <a href="https://t.me/EngRememberBot"><img src="https://img.shields.io/badge/Telegram-%40EngRememberBot-26A5E4?logo=telegram&logoColor=white" alt="Telegram"></a>
 </p>
 
@@ -194,3 +195,7 @@ make docker-up / docker-down / docker-logs
 ## Обратная связь
 
 Нашли баг или есть идея — создайте [issue](https://github.com/necroz/eng-remember/issues).
+
+## Лицензия
+
+Код распространяется по [MIT](LICENSE). © 2026 Igor Lashkevich.
