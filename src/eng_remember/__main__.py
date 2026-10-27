@@ -12,6 +12,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.types import BotCommand
 
+from eng_remember.bot import texts
 from eng_remember.bot.dispatcher import build_dispatcher
 from eng_remember.bot.notifier import BotNotifier
 from eng_remember.config import Settings, get_settings, require_bot_token
@@ -19,6 +20,7 @@ from eng_remember.db.engine import SessionFactory, create_engine, create_session
 from eng_remember.errors import ConfigurationError
 from eng_remember.logging_setup import configure_logging
 from eng_remember.services.enrichment_worker import enrichment_worker
+from eng_remember.services.llm.budget import BudgetAlert, global_budget
 from eng_remember.services.reminders import build_reminder_service
 
 log = structlog.get_logger(__name__)
@@ -52,6 +54,17 @@ async def main() -> None:
         token=require_bot_token(settings),
         default=DefaultBotProperties(parse_mode=ParseMode(settings.bot.parse_mode)),
     )
+
+    async def notify_budget(alert: BudgetAlert) -> None:
+        chat_id = settings.bot.admin_chat_id
+        if chat_id is None:
+            return
+        await bot.send_message(
+            chat_id,
+            texts.budget_alert(alert.level, alert.used, alert.limit),
+        )
+
+    global_budget.set_notifier(notify_budget)
 
     log.info(
         "bot_starting",

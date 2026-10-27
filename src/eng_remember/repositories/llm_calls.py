@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, literal, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eng_remember.models.llm_call import LlmCall
@@ -57,10 +57,44 @@ class LlmCallRepository:
         await self._session.flush()
         return call
 
-    async def usage_since(self, user_id: int, *, since: datetime) -> dict[str, int]:
+    async def usage_since(
+        self,
+        user_id: int,
+        *,
+        since: datetime,
+        background_purpose: str | None = None,
+    ) -> dict[str, int]:
+        """Calls, tokens and background calls for one learner in the window.
+
+        ``background_calls`` is zero unless a purpose is supplied; the quota
+        gate uses it to keep example generation from consuming the interactive
+        call budget.
+        """
+        background = (
+            func.coalesce(
+                func.sum(case((LlmCall.purpose == background_purpose, 1), else_=0)),
+                0,
+            )
+            if background_purpose is not None
+            else literal(0)
+        )
         stmt = select(
             func.count(LlmCall.id),
             func.coalesce(func.sum(LlmCall.total_tokens), 0),
+            background,
         ).where(LlmCall.user_id == user_id, LlmCall.created_at >= since)
+        calls, tokens, background_calls = (await self._session.execute(stmt)).one()
+        return {
+            "calls": int(calls or 0),
+            "tokens": int(tokens or 0),
+            "background_calls": int(background_calls or 0),
+        }
+
+    async def global_usage_since(self, *, since: datetime) -> dict[str, int]:
+        """Calls and tokens across every learner in the window."""
+        stmt = select(
+            func.count(LlmCall.id),
+            func.coalesce(func.sum(LlmCall.total_tokens), 0),
+        ).where(LlmCall.created_at >= since)
         calls, tokens = (await self._session.execute(stmt)).one()
         return {"calls": int(calls or 0), "tokens": int(tokens or 0)}

@@ -516,13 +516,30 @@ class TestDiscoveryGuardrails:
         from eng_remember.errors import LlmQuotaExceededError
 
         llm.push_parse(parse_payload(intent="expand", topic="медицина"))
-        llm.push_expand(LlmQuotaExceededError("calls_per_hour limit reached: 60 used, limit 60"))
+        llm.push_expand(LlmQuotaExceededError("calls_per_day limit reached: 60 used, limit 60"))
 
         await send(discovery_dispatcher, bot, "ещё слов про медицину")
 
         sent = recording.last_text()
         assert "Лимит" in sent
         assert "нужна подключённая модель" not in sent
+
+    async def test_an_exhausted_global_budget_gets_a_busy_message(
+        self,
+        discovery_dispatcher: Dispatcher,
+        bot: Bot,
+        recording: RecordingSession,
+        llm: ScriptedClient,
+    ) -> None:
+        from eng_remember.bot import texts
+        from eng_remember.errors import LlmGlobalBudgetExceededError
+
+        llm.push_parse(parse_payload(intent="expand", topic="медицина"))
+        llm.push_expand(LlmGlobalBudgetExceededError("global token budget reached"))
+
+        await send(discovery_dispatcher, bot, "ещё слов про медицину")
+
+        assert texts.model_busy() in recording.last_text()
 
 
 class TestClarification:

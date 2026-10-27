@@ -26,7 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 import eng_remember.models  # noqa: F401  — registers tables on Base.metadata
 from eng_remember.bot.dispatcher import build_dispatcher
-from eng_remember.config import ReminderSettings, Settings
+from eng_remember.config import BotSettings, ReminderSettings, Settings
 from eng_remember.db import Base, create_engine, create_session_factory
 from eng_remember.models.card import Card
 from eng_remember.models.user import User
@@ -137,6 +137,9 @@ def settings(tmp_path: Path) -> Settings:
 
     The weekly digest is off here on purpose: a test suite that depends on the
     real weekday would go red once a week. Digest tests switch it back on.
+
+    The inbound guards are tested directly; handler tests raise their limits so
+    a long scenario does not trip a production-shaped minute budget.
     """
     return Settings(
         _env_file=None,
@@ -144,6 +147,11 @@ def settings(tmp_path: Path) -> Settings:
         bot_token=SecretStr(TEST_TOKEN),
         log_json=False,
         log_level="WARNING",
+        bot=BotSettings(
+            messages_per_minute=1000,
+            callbacks_per_minute=1000,
+            duplicate_message_ttl_seconds=0,
+        ),
         reminders=ReminderSettings(digest_enabled=False),
     )
 

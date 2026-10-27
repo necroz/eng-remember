@@ -48,7 +48,12 @@ from eng_remember.bot.states import (
     AddWords,
 )
 from eng_remember.config import DiscoverySettings
-from eng_remember.errors import LlmError, LlmQuotaExceededError, ParseError
+from eng_remember.errors import (
+    LlmError,
+    LlmGlobalBudgetExceededError,
+    LlmQuotaExceededError,
+    ParseError,
+)
 from eng_remember.models.deck import Deck
 from eng_remember.models.user import User
 from eng_remember.repositories.cards import CardDraft
@@ -227,6 +232,23 @@ def build_router() -> Router:
                 exclude=exclude,
                 user_id=user.id,
             )
+        except LlmGlobalBudgetExceededError as exc:
+            # The bot-wide budget is spent, not this learner's own one. The
+            # manual path still works, so keep their own words and say why the
+            # extra discovery did not run.
+            log.info("discovery_global_budget_exceeded", user_id=user.id, error=str(exc))
+            if own:
+                await _present(
+                    bot=bot,
+                    chat_id=chat_id,
+                    state=state,
+                    own=own,
+                    engine=engine,
+                    note=texts.more_unavailable(),
+                )
+            else:
+                await bot.send_message(chat_id, texts.model_busy())
+            return
         except LlmQuotaExceededError as exc:
             # A budget refusal is not a broken model; saying "connect a model"
             # here would send the learner looking for the wrong problem.

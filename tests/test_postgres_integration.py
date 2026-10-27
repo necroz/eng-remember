@@ -335,6 +335,14 @@ async def test_reminder_time_survives_the_postgres_time_column(
     assert reloaded.evening_reminder_time == time(21, 15)
 
 
+async def test_llm_calls_has_the_user_created_index(pg_session: AsyncSession) -> None:
+    rows = await pg_session.execute(
+        text("SELECT indexname FROM pg_indexes WHERE tablename = 'llm_calls'")
+    )
+
+    assert "ix_llm_calls_user_id_created_at" in {row[0] for row in rows}
+
+
 async def test_the_llm_quota_window_uses_real_timestamps(
     pg_session: AsyncSession, pg_user: User
 ) -> None:

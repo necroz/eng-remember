@@ -36,6 +36,25 @@ class BotSettings(BaseModel):
         ge=1,
         description="Maximum updates processed concurrently per bot process",
     )
+    messages_per_minute: int = Field(
+        default=10,
+        ge=1,
+        description="Inbound messages allowed per learner in any rolling minute",
+    )
+    callbacks_per_minute: int = Field(
+        default=30,
+        ge=1,
+        description="Inbound button presses allowed per learner in any rolling minute",
+    )
+    duplicate_message_ttl_seconds: float = Field(
+        default=60.0,
+        ge=0,
+        description="Ignore identical text from one learner for this many seconds; 0 disables",
+    )
+    admin_chat_id: int | None = Field(
+        default=None,
+        description="Telegram chat that receives global budget alerts",
+    )
 
 
 class LlmSettings(BaseModel):
@@ -57,12 +76,28 @@ class LlmSettings(BaseModel):
     max_calls_per_day: int = Field(
         default=60,
         ge=0,
-        description="Model calls per learner in any rolling 24 hours; 0 disables the check",
+        description="Interactive model calls per learner in any rolling 24 hours",
+    )
+    max_example_calls_per_day: int = Field(
+        default=30,
+        ge=0,
+        description="Example-generation calls per learner in any rolling 24 hours",
     )
     max_tokens_per_day: int = Field(
         default=100_000,
         ge=0,
         description="Tokens per learner in any rolling 24 hours; 0 disables the check",
+    )
+    max_tokens_per_day_global: int = Field(
+        default=2_000_000,
+        ge=0,
+        description="Tokens across all learners in any rolling 24 hours; 0 disables the check",
+    )
+    global_alert_percent: int = Field(
+        default=80,
+        ge=1,
+        le=100,
+        description="Send an admin alert when the global token budget reaches this percentage",
     )
 
     @property

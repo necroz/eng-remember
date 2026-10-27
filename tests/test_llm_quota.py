@@ -14,10 +14,11 @@ from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eng_remember.config import LlmSettings, Settings
-from eng_remember.errors import LlmQuotaExceededError
+from eng_remember.errors import LlmGlobalBudgetExceededError, LlmQuotaExceededError
 from eng_remember.models.user import User
 from eng_remember.repositories.llm_calls import LlmCallRecord, LlmCallRepository
 from eng_remember.repositories.users import TelegramProfile, UserRepository
+from eng_remember.services.llm.budget import GlobalBudgetMonitor
 from eng_remember.services.llm.factory import build_llm_client
 from eng_remember.services.llm.quota import QuotaLimitedClient
 from eng_remember.services.llm.schema import ParseResponse
@@ -56,12 +57,13 @@ async def record_usage(
     *,
     calls: int = 0,
     tokens_per_call: int = 0,
+    purpose: str = "parse_message",
 ) -> None:
     repository = LlmCallRepository(session)
     for _ in range(calls):
         await repository.add(
             LlmCallRecord(
-                purpose="parse_message",
+                purpose=purpose,
                 provider_model="recording-model",
                 success=True,
                 user_id=user_id,
@@ -71,9 +73,14 @@ async def record_usage(
     await session.commit()
 
 
-async def make_call(client: QuotaLimitedClient, user_id: int) -> None:
+async def make_call(
+    client: QuotaLimitedClient,
+    user_id: int,
+    *,
+    purpose: str = "parse_message",
+) -> None:
     await client.complete_json(
-        purpose="parse_message",
+        purpose=purpose,
         system="system",
         user="user",
         schema=ParseResponse,
@@ -129,6 +136,80 @@ async def test_the_daily_token_budget_is_enforced(
     )
 
     with pytest.raises(LlmQuotaExceededError):
+        await make_call(client, user.id)
+
+    assert inner.calls == 0
+
+
+async def test_example_calls_have_their_own_daily_budget(
+    session: AsyncSession,
+    user: User,
+) -> None:
+    await record_usage(session, user.id, calls=30, purpose="card_examples")
+    inner = RecordingModel()
+    client = QuotaLimitedClient(
+        inner,
+        calls=LlmCallRepository(session),
+        settings=LlmSettings(
+            max_calls_per_day=60,
+            max_example_calls_per_day=30,
+            max_tokens_per_day=0,
+            max_tokens_per_day_global=0,
+        ),
+    )
+
+    with pytest.raises(LlmQuotaExceededError):
+        await make_call(client, user.id, purpose="card_examples")
+
+    assert inner.calls == 0
+
+
+async def test_example_calls_do_not_consume_the_interactive_budget(
+    session: AsyncSession,
+    user: User,
+) -> None:
+    await record_usage(session, user.id, calls=30, purpose="card_examples")
+    await record_usage(session, user.id, calls=59)
+    inner = RecordingModel()
+    client = QuotaLimitedClient(
+        inner,
+        calls=LlmCallRepository(session),
+        settings=LlmSettings(
+            max_calls_per_day=60,
+            max_example_calls_per_day=30,
+            max_tokens_per_day=0,
+            max_tokens_per_day_global=0,
+        ),
+    )
+
+    await make_call(client, user.id)
+
+    assert inner.calls == 1
+
+
+async def test_global_token_budget_refuses_even_under_the_user_limit(
+    session: AsyncSession,
+    user: User,
+) -> None:
+    other, _ = await UserRepository(session).get_or_create(
+        TelegramProfile(telegram_id=user.telegram_id + 1)
+    )
+    await session.commit()
+    await record_usage(session, other.id, calls=1, tokens_per_call=1000)
+    inner = RecordingModel()
+    client = QuotaLimitedClient(
+        inner,
+        calls=LlmCallRepository(session),
+        settings=LlmSettings(
+            max_calls_per_day=60,
+            max_example_calls_per_day=30,
+            max_tokens_per_day=0,
+            max_tokens_per_day_global=1000,
+        ),
+        budget=GlobalBudgetMonitor(),
+    )
+
+    with pytest.raises(LlmGlobalBudgetExceededError):
         await make_call(client, user.id)
 
     assert inner.calls == 0
@@ -195,7 +276,12 @@ async def test_zero_limits_disables_the_check(
     client = QuotaLimitedClient(
         inner,
         calls=LlmCallRepository(session),
-        settings=LlmSettings(max_calls_per_day=0, max_tokens_per_day=0),
+        settings=LlmSettings(
+            max_calls_per_day=0,
+            max_example_calls_per_day=0,
+            max_tokens_per_day=0,
+            max_tokens_per_day_global=0,
+        ),
     )
 
     await make_call(client, user.id)

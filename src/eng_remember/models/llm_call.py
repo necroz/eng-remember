@@ -22,7 +22,10 @@ class LlmCall(Base):
     """
 
     __tablename__ = "llm_calls"
-    __table_args__ = (Index("ix_llm_calls_created_at", "created_at"),)
+    __table_args__ = (
+        Index("ix_llm_calls_created_at", "created_at"),
+        Index("ix_llm_calls_user_id_created_at", "user_id", "created_at"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))

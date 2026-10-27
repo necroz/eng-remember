@@ -40,6 +40,7 @@ __all__ = [
     "answer_accepted",
     "answer_result",
     "badge",
+    "budget_alert",
     "cannot_parse",
     "card_back",
     "card_front",
@@ -52,6 +53,7 @@ __all__ = [
     "discovery_needs_context",
     "discovery_preview",
     "discovery_unavailable",
+    "duplicate_message",
     "evening_reminder",
     "explain",
     "file_export_caption",
@@ -80,6 +82,7 @@ __all__ = [
     "llm_failed",
     "llm_required",
     "looking_for_more",
+    "model_busy",
     "more_found_nothing",
     "more_needs_topic",
     "more_quota_exceeded",
@@ -101,6 +104,7 @@ __all__ = [
     "stats",
     "streak_notes",
     "streak_summary",
+    "too_many_requests",
     "unknown_command",
     "weekly_digest",
     "welcome_back",
@@ -296,6 +300,18 @@ def stale_button() -> str:
 
 def already_checking() -> str:
     return "Секунду — уже проверяю предыдущий ответ."
+
+
+def too_many_requests() -> str:
+    return "Слишком часто. Подождите минуту и попробуйте снова."
+
+
+def duplicate_message() -> str:
+    return "Это сообщение уже отправлено — второй раз не обрабатываю."
+
+
+def model_busy() -> str:
+    return "Модель временно недоступна — попробуйте позже."
 
 
 def card_unavailable() -> str:
@@ -715,6 +731,22 @@ def quota_exceeded() -> str:
         "Лимит настраивается в <code>LLM__MAX_CALLS_PER_DAY</code> и "
         "<code>LLM__MAX_TOKENS_PER_DAY</code>."
     )
+
+
+def budget_alert(level: str, used: int, limit: int) -> str:
+    """A message for the operator, not for a learner."""
+
+    def fmt(value: int) -> str:
+        return f"{value:,}".replace(",", " ")
+
+    if level == "critical":
+        return (
+            "🛑 Глобальный бюджет LLM исчерпан: "
+            f"<b>{fmt(used)}</b> / {fmt(limit)} токенов. "
+            "Модель отключена, работает fallback."
+        )
+    percent = used * 100 // limit if limit else 0
+    return f"⚠️ Глобальный бюджет LLM: <b>{fmt(used)}</b> / {fmt(limit)} токенов ({percent}%)."
 
 
 def praise_line(

@@ -39,6 +39,14 @@ class LlmQuotaExceededError(LlmError):
     """
 
 
+class LlmGlobalBudgetExceededError(LlmError):
+    """The bot-wide token budget is spent.
+
+    Distinct from a per-learner refusal: the learner did nothing wrong, so the
+    bot falls back to rules instead of telling them their own limit is gone.
+    """
+
+
 class RecipientUnreachable(EngRememberError):
     """The user cannot be messaged — blocked the bot, deleted the chat, gone.
 
