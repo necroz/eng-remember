@@ -30,6 +30,7 @@ from pydantic import (
 )
 
 from eng_remember.domain.answers import Verdict
+from eng_remember.domain.languages import DEFAULT_LANGUAGE, resolve_target_language
 from eng_remember.repositories.cards import CardDraft
 
 __all__ = [
@@ -73,6 +74,12 @@ EXAMPLES_LIMIT = 5
 # A CEFR level is exactly one letter and one digit; anything else (ranges,
 # other frameworks, prose) is treated as "no estimate" rather than guessed at.
 _CEFR = re.compile(r"^[ABC][12]$")
+
+
+def _clean_target_language(value: object) -> str:
+    """An ISO 639-3 target code; Russian and unknown labels degrade to English."""
+    return resolve_target_language(value if isinstance(value, str) else None)
+
 
 # What models actually say for frequency, mapped onto the one vocabulary.
 _FREQUENCY_ALIASES: dict[str, str] = {
@@ -161,8 +168,12 @@ _INTENT_ALIASES: dict[str, Intent] = {
 class ParsedCard(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
-    term: str = Field(description="English word or short phrase")
+    term: str = Field(description="Word or short phrase in the studied language")
     translation: str = Field(description="Russian translation")
+    language: str = Field(
+        default=DEFAULT_LANGUAGE,
+        description="ISO 639-3 code of the studied language",
+    )
     transcription: str | None = Field(default=None, description="IPA, with slashes")
     part_of_speech: str | None = Field(default=None, description="noun, verb, adjective…")
     example: str | None = Field(default=None, description="One short English example sentence")
@@ -186,6 +197,11 @@ class ParsedCard(BaseModel):
     @classmethod
     def _clean_translation(cls, value: str) -> str:
         return flatten_line(value, limit=TRANSLATION_LIMIT)
+
+    @field_validator("language", mode="before")
+    @classmethod
+    def _clean_language(cls, value: object) -> str:
+        return _clean_target_language(value)
 
     @field_validator("transcription")
     @classmethod
@@ -286,6 +302,7 @@ class ParsedCard(BaseModel):
         return CardDraft(
             term=self.term,
             translation=self.translation,
+            language=self.language,
             transcription=self.transcription,
             part_of_speech=self.part_of_speech,
             example=self.example,
@@ -343,6 +360,10 @@ class ParseResponse(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     intent: Intent = Intent.ADD_CARDS
+    language: str = Field(
+        default=DEFAULT_LANGUAGE,
+        description="Target language for discovery or expansion",
+    )
     cards: list[ParsedCard] = Field(default_factory=list)
     answer: str | None = Field(
         default=None,
@@ -392,6 +413,23 @@ class ParseResponse(BaseModel):
         if value is None:
             return None
         return value if value > 0 else None
+
+    @field_validator("language", mode="before")
+    @classmethod
+    def _clean_language(cls, value: object) -> str:
+        return _clean_target_language(value)
+
+    @model_validator(mode="after")
+    def _language_from_first_card(self) -> ParseResponse:
+        """Fill the discovery language when the model did not state one.
+
+        A missing top-level field is different from an explicit ``null``: the
+        latter was a deliberate choice and has already become English in the
+        field validator. Only an absent field inherits the first card.
+        """
+        if "language" not in self.model_fields_set:
+            self.language = self.cards[0].language if self.cards else DEFAULT_LANGUAGE
+        return self
 
     @field_validator("topic")
     @classmethod

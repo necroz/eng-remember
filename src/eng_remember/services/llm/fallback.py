@@ -16,12 +16,13 @@ from __future__ import annotations
 
 import re
 
+from eng_remember.domain.languages import detect_script_language
 from eng_remember.errors import ParseError
 from eng_remember.services.llm.schema import Intent, ParsedCard, ParseResponse
 
 __all__ = ["FallbackParser", "parse_text"]
 
-_ENTRY_SPLIT = re.compile(r"[\n;]+")
+_ENTRY_SPLIT = re.compile(r"[\n;；]+")
 
 # Two shapes of leading chatter, and the colon is what tells them apart.
 #
@@ -38,9 +39,9 @@ _NOISE_BARE = re.compile(
     r"^\s*(?:добавь|добавить|запиши|запомни|заучи)\b\s+",
     re.IGNORECASE,
 )
-_SEPARATORS = ("—", "–", "=", ":", "->", "→")
+_SEPARATORS = ("—", "–", "=", ":", "：", "->", "→")
 _HYPHEN = re.compile(r"\s+-\s+|\s+-\s*|^\s*-\s*")
-_TRANSCRIPTION = re.compile(r"[\(\[]\s*/?([^\)\]]+/?)\s*[\)\]]")
+_TRANSCRIPTION = re.compile(r"[\(\（\[]\s*/?([^\)\）\]]+/?)\s*[\)\）\]]")
 _IPA_INLINE = re.compile(r"(?<!\w)(/[^/\s]+/)(?!\w)")
 
 
@@ -61,7 +62,7 @@ def parse_text(text: str) -> ParseResponse:
 
     if not cards:
         raise ParseError("no word/translation pairs found")
-    return ParseResponse(intent=Intent.ADD_CARDS, cards=cards)
+    return ParseResponse(intent=Intent.ADD_CARDS, cards=cards, language=cards[0].language)
 
 
 def _strip_noise(chunk: str) -> str:
@@ -77,16 +78,24 @@ def _parse_entry(entry: str) -> ParsedCard | None:
     translation = translation.strip(" \t.,")
     if not term or not translation:
         return None
-    if not _looks_like_term(term):
-        return None
 
+    # Transcription before script detection: pinyin or IPA in parentheses must
+    # not make a Han or kana term look Latin.
     transcription = None
     match = _TRANSCRIPTION.search(term) or _IPA_INLINE.search(term)
     if match is not None:
         transcription = match.group(1).strip()
         term = (term[: match.start()] + term[match.end() :]).strip()
 
-    return ParsedCard(term=term, translation=translation, transcription=transcription)
+    language = detect_script_language(term)
+    if language is None:
+        return None
+    return ParsedCard(
+        term=term,
+        translation=translation,
+        language=language,
+        transcription=transcription,
+    )
 
 
 def _split(entry: str) -> tuple[str, str, str]:
@@ -98,15 +107,6 @@ def _split(entry: str) -> tuple[str, str, str]:
     if hyphen is not None:
         return entry[: hyphen.start()], "-", entry[hyphen.end() :]
     return entry, "", ""
-
-
-def _looks_like_term(term: str) -> bool:
-    """Reject Russian-left/English-right mixups and pure-symbol noise."""
-    if not any(char.isalpha() for char in term):
-        return False
-    letters = [char for char in term if char.isalpha()]
-    latin = sum(1 for char in letters if char.isascii())
-    return latin >= len(letters) / 2
 
 
 class FallbackParser:

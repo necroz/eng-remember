@@ -28,6 +28,72 @@ def test_part_of_speech_is_lowercased() -> None:
     assert ParsedCard(term="a", translation="б", part_of_speech="Noun").part_of_speech == "noun"
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("fr", "fra"),
+        ("zh-Hant", "cmn"),
+        ("pt-BR", "por"),
+        ("ar-EG", "arb"),
+        ("ru", "eng"),
+        ("unknown", "eng"),
+        ("FR", "fra"),
+    ],
+)
+def test_card_language_is_normalised_to_a_target_code(raw: str, expected: str) -> None:
+    card = ParsedCard(term="bonjour", translation="здравствуйте", language=raw)
+
+    assert card.language == expected
+
+
+def test_card_language_reaches_the_draft_without_touching_the_translation() -> None:
+    card = ParsedCard(term="bonjour", translation="здравствуйте", language="fr")
+
+    assert card.to_draft().language == "fra"
+    assert card.translation == "здравствуйте"
+
+
+def test_parse_response_takes_its_language_from_the_first_card() -> None:
+    response = ParseResponse.model_validate(
+        {
+            "cards": [
+                {"term": "bonjour", "translation": "здравствуйте", "language": "fr"},
+                {"term": "书", "translation": "книга", "language": "zh"},
+            ]
+        }
+    )
+
+    assert response.language == "fra"
+    assert [card.language for card in response.cards] == ["fra", "cmn"]
+
+
+def test_explicit_parse_language_beats_the_first_card() -> None:
+    response = ParseResponse.model_validate(
+        {
+            "language": "eng",
+            "cards": [{"term": "bonjour", "translation": "здравствуйте", "language": "fr"}],
+        }
+    )
+
+    assert response.language == "eng"
+
+
+def test_an_empty_parse_response_is_english() -> None:
+    assert ParseResponse().language == "eng"
+    assert ParseResponse.model_validate({"cards": []}).language == "eng"
+
+
+def test_an_explicit_null_language_stays_english() -> None:
+    response = ParseResponse.model_validate(
+        {
+            "language": None,
+            "cards": [{"term": "bonjour", "translation": "здравствуйте", "language": "fr"}],
+        }
+    )
+
+    assert response.language == "eng"
+
+
 def test_blank_optional_fields_become_none() -> None:
     card = ParsedCard(term="run", translation="бежать", example="   ", notes="")
 

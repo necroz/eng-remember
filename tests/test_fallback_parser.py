@@ -38,6 +38,56 @@ def test_several_lines_become_several_cards() -> None:
     assert [card.term for card in result.cards] == ["resilient", "thorough", "ubiquitous"]
 
 
+@pytest.mark.parametrize(
+    ("text", "term", "language"),
+    [
+        ("书（shū）— книга", "书", "cmn"),
+        ("こんにちは - привет", "こんにちは", "jpn"),
+        ("한국어 - корейский", "한국어", "kor"),
+        ("العربية - арабский", "العربية", "arb"),
+        ("हिन्दी - хинди", "हिन्दी", "hin"),
+        ("বাংলা - бенгальский", "বাংলা", "ben"),
+        ("ไทย - тайский", "ไทย", "tha"),
+        ("bonjour - здравствуйте", "bonjour", "eng"),
+    ],
+)
+def test_the_script_of_the_term_sets_the_language(text: str, term: str, language: str) -> None:
+    card = parse_text(text).cards[0]
+
+    assert card.term == term
+    assert card.language == language
+
+
+def test_pinyin_in_parentheses_is_extracted_before_language_detection() -> None:
+    card = parse_text("书（shū）— книга").cards[0]
+
+    assert card.term == "书"
+    assert card.transcription == "/shū/"
+    assert card.language == "cmn"
+
+
+def test_ascii_parentheses_around_pinyin_work_too() -> None:
+    card = parse_text("书 (shū) — книга").cards[0]
+
+    assert card.term == "书"
+    assert card.transcription == "/shū/"
+    assert card.language == "cmn"
+
+
+def test_parse_response_language_is_the_first_card_language() -> None:
+    result = parse_text("书（shū）— книга\nbonjour - здравствуйте")
+
+    assert result.language == "cmn"
+    assert [card.language for card in result.cards] == ["cmn", "eng"]
+
+
+def test_fullwidth_colon_and_semicolon_split_entries() -> None:
+    result = parse_text("书（shū）：книга；こんにちは：привет")
+
+    assert [card.term for card in result.cards] == ["书", "こんにちは"]
+    assert [card.language for card in result.cards] == ["cmn", "jpn"]
+
+
 def test_semicolons_and_leading_verb_are_ignored() -> None:
     result = parse_text("добавь слова: run - бежать; jump - прыгать")
 
@@ -76,6 +126,7 @@ def test_bare_word_without_a_translation_is_rejected() -> None:
     [
         "привет, как дела?",
         "вездесущий — ubiquitous",
+        "γειά - привет",
         "",
         "   ",
         "42 - 43",
