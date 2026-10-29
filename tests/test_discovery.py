@@ -176,7 +176,7 @@ class TestDiscovery:
 
         await discovery.expand(user, topic="медицина", count=10)
 
-        assert "Find 14 English words." in llm.last_prompt()
+        assert "Find 14 words." in llm.last_prompt()
 
     async def test_words_not_in_the_text_are_dropped(
         self, discovery: DiscoveryService, user: User, llm: ScriptedClient
@@ -253,6 +253,32 @@ class TestDiscovery:
         assert service.resolve_count(-5) == 1
         assert service.resolve_count(30) == 30
         assert service.resolve_count(500) == 30
+
+
+class TestExpansionLanguage:
+    def test_the_prompt_names_the_target_language(self) -> None:
+        prompt = build_expansion_prompt(
+            topic="медицина",
+            context_text=None,
+            seeds=[],
+            count=5,
+            known=[],
+            language="fra",
+        )
+
+        assert prompt.startswith("Find 5 words.")
+        assert "Target language: French (fra)." in prompt
+        assert "Translation language: Russian." in prompt
+        assert "English" not in prompt
+
+    async def test_the_explorer_overwrites_card_languages(self, llm: ScriptedClient) -> None:
+        llm.push_expand(
+            expansion_payload([card_payload("bonjour", "здравствуйте", language="eng")])
+        )
+
+        response = await WordExplorer(llm).expand(count=1, language="fra")
+
+        assert response.cards[0].language == "fra"
 
 
 class TestLevelGuidance:

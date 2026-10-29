@@ -61,6 +61,7 @@ async def test_a_near_miss_is_hard(services: Services, user: User, saved_card: C
 
     assert outcome.verdict is Verdict.ALMOST
     assert outcome.rating is ReviewRating.HARD
+    assert "<target_language>Russian</target_language>" in client.calls[-1]["user"]
 
 
 async def test_a_slow_correct_answer_is_good(
@@ -159,6 +160,22 @@ async def test_a_reverse_synonym_escalates_to_the_model(services: Services, user
     assert outcome.verdict is Verdict.ALMOST
     assert outcome.rating is ReviewRating.HARD
     assert "<expected_term>run</expected_term>" in client.calls[-1]["user"]
+
+
+async def test_a_reverse_french_near_miss_sends_the_card_language(
+    services: Services, user: User
+) -> None:
+    forward = await services.card_service.add_draft(
+        user, CardDraft(term="café", translation="кафе", language="fra")
+    )
+    twin = await services.cards.find_twin(forward)
+    assert twin is not None
+    client = ScriptedClient().push_check({"verdict": "almost"})
+
+    outcome = await build(services, client).grade(user, twin, typed="cafe", duration_seconds=1.0)
+
+    assert outcome.verdict is Verdict.ALMOST
+    assert "<target_language>French</target_language>" in client.calls[-1]["user"]
 
 
 async def test_a_reverse_french_card_accepts_an_accented_answer(

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import structlog
 
+from eng_remember.domain.languages import DEFAULT_LANGUAGE, resolve_target_language
 from eng_remember.errors import LlmNotConfiguredError
 from eng_remember.services.llm.client import JsonChatClient
 from eng_remember.services.llm.prompts import EXPANSION_SYSTEM_PROMPT, build_expansion_prompt
@@ -49,6 +50,7 @@ class WordExplorer:
         seeds: list[str] | None = None,
         known: list[str] | None = None,
         level: str | None = None,
+        language: str = DEFAULT_LANGUAGE,
         user_id: int | None = None,
     ) -> ExpansionResponse:
         """Ask for words. Raises :class:`LlmNotConfiguredError` without a model.
@@ -61,7 +63,7 @@ class WordExplorer:
         if llm is None or not llm.available:
             raise LlmNotConfiguredError("word discovery needs a configured LLM")
 
-        return await llm.complete_json(
+        response = await llm.complete_json(
             purpose=PURPOSE_EXPAND,
             system=EXPANSION_SYSTEM_PROMPT,
             user=build_expansion_prompt(
@@ -71,7 +73,12 @@ class WordExplorer:
                 count=count,
                 known=list(known or [])[:KNOWN_TERMS_IN_PROMPT],
                 level=level,
+                language=language,
             ),
             schema=ExpansionResponse,
             user_id=user_id,
         )
+        target = resolve_target_language(language)
+        for card in response.cards:
+            card.language = target
+        return response

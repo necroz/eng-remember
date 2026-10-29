@@ -9,6 +9,7 @@ comparison cannot make — "повсеместный" for "вездесущий"
 from __future__ import annotations
 
 from eng_remember.domain.answers import Verdict
+from eng_remember.domain.languages import DEFAULT_LANGUAGE
 from eng_remember.errors import LlmNotConfiguredError
 from eng_remember.services.llm.client import JsonChatClient
 from eng_remember.services.llm.prompts import (
@@ -38,6 +39,7 @@ class AnswerChecker:
         translation: str,
         answer: str,
         direction: str = "forward",
+        language: str = DEFAULT_LANGUAGE,
         user_id: int | None = None,
     ) -> Verdict:
         """Ask the model to grade the answer. Raises :class:`LlmNotConfiguredError`.
@@ -47,7 +49,8 @@ class AnswerChecker:
         the code rather than being mistaken for a verdict.
 
         ``direction`` decides which side the learner was shown: "reverse" means
-        the expected answer is the English term, not the Russian meaning.
+        the expected answer is the target-language term, not the Russian
+        meaning. ``language`` is the language of that expected answer.
         """
         llm = self._llm
         if llm is None or not llm.available:
@@ -66,6 +69,7 @@ class AnswerChecker:
                 translation=translation,
                 answer=answer,
                 direction=direction,
+                language=language,
             ),
             schema=AnswerCheckResponse,
             user_id=user_id,

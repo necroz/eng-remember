@@ -5,7 +5,10 @@ from __future__ import annotations
 import pytest
 
 from eng_remember.errors import LlmNotConfiguredError
-from eng_remember.services.llm.prompts import build_translation_prompt
+from eng_remember.services.llm.prompts import (
+    TRANSLATION_SYSTEM_PROMPT,
+    build_translation_prompt,
+)
 from eng_remember.services.llm.translator import TermTranslator
 from tests.factories import ScriptedClient
 
@@ -27,6 +30,17 @@ async def test_translate_returns_a_mapping_and_is_attributed() -> None:
     assert result == {"run": "бежать", "swim": "плавать"}
     assert client.calls[-1]["purpose"] == "translate_terms"
     assert client.calls[-1]["user_id"] == 7
+
+
+async def test_translation_uses_the_requested_target_language() -> None:
+    client = ScriptedClient()
+    client.push_translations({"translations": [{"term": "bonjour", "translation": "здравствуйте"}]})
+    translator = TermTranslator(llm=client)
+
+    await translator.translate(terms=["bonjour"], language="fra", user_id=7)
+
+    assert "Target language: French (fra)." in client.calls[-1]["user"]
+    assert "English" not in TRANSLATION_SYSTEM_PROMPT
 
 
 async def test_duplicate_and_blank_entries_are_dropped() -> None:

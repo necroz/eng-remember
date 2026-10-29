@@ -174,12 +174,16 @@ class ParsedCard(BaseModel):
         default=DEFAULT_LANGUAGE,
         description="ISO 639-3 code of the studied language",
     )
-    transcription: str | None = Field(default=None, description="IPA, with slashes")
+    transcription: str | None = Field(
+        default=None, description="IPA or standard transcription, with slashes"
+    )
     part_of_speech: str | None = Field(default=None, description="noun, verb, adjective…")
-    example: str | None = Field(default=None, description="One short English example sentence")
+    example: str | None = Field(
+        default=None, description="One short example sentence in the studied language"
+    )
     examples: list[str] = Field(
         default_factory=list,
-        description="Up to three short English example sentences",
+        description="Up to three short example sentences in the studied language",
     )
     notes: str | None = Field(default=None, description="Usage hint, false friend, register")
     tags: list[str] = Field(default_factory=list)
@@ -526,7 +530,7 @@ class TermTranslation(BaseModel):
 
     model_config = ConfigDict(str_strip_whitespace=True)
 
-    term: str = Field(description="English term")
+    term: str = Field(description="Term in the target language")
     translation: str = Field(description="Russian meaning")
 
     @field_validator("term")

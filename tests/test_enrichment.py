@@ -8,6 +8,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from eng_remember.config import Settings
+from eng_remember.domain.languages import DEFAULT_LANGUAGE
 from eng_remember.errors import LlmResponseError
 from eng_remember.models.card import Card
 from eng_remember.models.user import User
@@ -40,6 +41,7 @@ class FakeEnricher(CardEnricher):
         count: int,
         existing: Sequence[str],
         user_id: int | None = None,
+        language: str = DEFAULT_LANGUAGE,
     ) -> list[str]:
         self.calls.append(("examples", term, count, tuple(existing), user_id))
         return self._answers[:count]
@@ -50,6 +52,7 @@ class FakeEnricher(CardEnricher):
         term: str,
         translation: str,
         user_id: int | None = None,
+        language: str = DEFAULT_LANGUAGE,
     ) -> str:
         self.calls.append(("mnemonic", term, 0, (), user_id))
         return self._mnemonic

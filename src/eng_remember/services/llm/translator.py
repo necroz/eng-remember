@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from eng_remember.domain.languages import DEFAULT_LANGUAGE
 from eng_remember.errors import LlmNotConfiguredError
 from eng_remember.services.llm.client import JsonChatClient
 from eng_remember.services.llm.prompts import (
@@ -36,6 +37,7 @@ class TermTranslator:
         *,
         terms: Sequence[str],
         user_id: int | None = None,
+        language: str = DEFAULT_LANGUAGE,
     ) -> dict[str, str]:
         """Term (lower-cased) to Russian meaning. Raises without a model."""
         llm = self._llm
@@ -45,7 +47,7 @@ class TermTranslator:
         response = await llm.complete_json(
             purpose=PURPOSE_TRANSLATE,
             system=TRANSLATION_SYSTEM_PROMPT,
-            user=build_translation_prompt(list(terms)),
+            user=build_translation_prompt(list(terms), language=language),
             schema=TranslationsResponse,
             user_id=user_id,
         )

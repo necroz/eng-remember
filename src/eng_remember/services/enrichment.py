@@ -73,6 +73,7 @@ class EnrichmentService:
             count=missing,
             existing=existing,
             user_id=user_id,
+            language=card.language,
         )
         merged = merge_examples(card.example, [*card.examples, *generated], limit=self.target)
         added = [item for item in merged if item not in existing]
@@ -92,6 +93,7 @@ class EnrichmentService:
             count=1,
             existing=existing,
             user_id=user_id,
+            language=card.language,
         )
         if not generated:
             raise LlmResponseError("the model returned no examples")
@@ -107,6 +109,7 @@ class EnrichmentService:
             term=card.term,
             translation=card.translation,
             user_id=user_id,
+            language=card.language,
         )
         notes = f"{card.notes} · {mnemonic}" if card.notes else mnemonic
         await self._cards.update_notes(card, notes)

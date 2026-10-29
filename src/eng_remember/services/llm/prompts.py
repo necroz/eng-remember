@@ -8,6 +8,13 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from eng_remember.domain.languages import (
+    DEFAULT_LANGUAGE,
+    SUPPORTED_LANGUAGES,
+    language_name_en,
+    resolve_language,
+    resolve_target_language,
+)
 from eng_remember.services.llm.schema import flatten_line
 
 __all__ = [
@@ -28,16 +35,42 @@ __all__ = [
     "build_user_prompt",
 ]
 
+_LANGUAGE_LIST = "\n".join(
+    f"- {language.code} — {language.name_en} ({language.name_ru})"
+    for language in SUPPORTED_LANGUAGES
+)
+
 PARSE_SYSTEM_PROMPT = """\
 You turn a learner's Telegram message into structured vocabulary cards.
 
-The user is a Russian speaker studying English. Messages arrive in Russian or \
-mixed Russian/English and may be sloppy: typos, no punctuation, several words \
-in one line, a quote pasted in, an answer to a question you asked earlier.
+The user is a Russian speaker learning one or more target languages. Messages \
+arrive in Russian or mixed with a target language and may be sloppy: typos, no \
+punctuation, several words in one line, a quote pasted in, an answer to a \
+question you asked earlier.
+
+Russian is the translation language, not a target. Never create a card whose \
+term is Russian; "translation" is always Russian.
+
+Supported target languages:
+{language_list}
+
+Decide the target language of every card:
+- If the user names a language, use it.
+- Otherwise infer it from the term and its context.
+- A term written only in the Latin alphabet is ambiguous. If no language is \
+named, use "eng" (English) for such a term.
+- Chinese means Mandarin ("cmn") and Arabic means Modern Standard Arabic \
+("arb"); do not use dialect codes.
+- If a term is in a language outside the list, do not create a card for it. \
+Explain in "answer" that the language is not supported.
+- The top-level "language" is the language the request is about: for \
+"add_cards" use the first card's language, and for "expand" use the language \
+the learner wants vocabulary in. If neither is determinable, use "eng".
 
 Decide the intent:
-- "add_cards" — the user names English words to memorise, with a translation or \
-clearly implying one. This is the default when English words are present.
+- "add_cards" — the user names target-language words to memorise, with a \
+translation or clearly implying one. This is the default when target-language \
+words are present.
 - "expand" — the user wants MORE words and names none to save: on a topic \
 ("ещё слова про медицину", "подбери лексику для переговоров", "дай 10 слов из \
 этого текста"), or based on a word they mention as a starting point ("ещё слова \
@@ -66,24 +99,26 @@ Options must be phrases the user could plausibly tap, in Russian, up to four \
 words each.
 
 For "add_cards" fill a card per word:
-- "term": the English word or collocation, lowercase, as a dictionary headword. \
-Strip leading articles unless they are part of the phrase.
+- "term": the target-language word or collocation, lowercase, as a dictionary \
+headword. Strip leading articles unless they are part of the phrase.
 - "translation": the Russian meaning. Use the user's own wording when given. \
 Otherwise give the most common meaning, adding a second variant after a comma \
 only when it is genuinely common. When the user pins the word to a phrase \
 ("как во фразе ..."), translate the sense it has there, not the most frequent \
 one.
-- "transcription": IPA in slashes, e.g. /juːˈbɪkwɪtəs/. Always fill it in.
+- "language": the ISO 639-3 code of the term, from the supported list above.
+- "transcription": IPA or the standard transcription for that language, in \
+slashes, e.g. /juːˈbɪkwɪtəs/. Always fill it in.
 - "part_of_speech": noun, verb, adjective, adverb, phrase, preposition, \
 conjunction, pronoun, numeral or interjection.
 - "cefr": the word's CEFR level for a learner: one of A1, A2, B1, B2, C1, C2.
 - "frequency": how common the word is: "common", "uncommon" or "rare".
-- "examples": up to three short natural English sentences using the term. When \
-the user supplied a phrase or sentence with the word, the first example must be \
-exactly that phrase.
-- "notes": a usage hint worth knowing — a false friend, a required preposition, \
-a synonym nuance, or the fact that the usual sense differs from the one in the \
-user's context. Omit when there is nothing useful to say.
+- "examples": up to three short natural sentences in the target language using \
+the term. When the user supplied a phrase or sentence with the word, the first \
+example must be exactly that phrase.
+- "notes": a usage hint worth knowing, in Russian — a false friend, a required \
+preposition, a synonym nuance, or the fact that the usual sense differs from \
+the one in the user's context. Omit when there is nothing useful to say.
 - "tags": up to three lowercase topic tags, e.g. ["business"], ["it"].
 
 Rules:
@@ -97,29 +132,41 @@ to find words in it: intent "expand" and a short "topic" describing the text.
 - For "unknown", leave everything empty.
 
 Answer with a single JSON object and nothing else, in this exact shape:
-{"intent": "add_cards", "cards": [{"term": "...", "translation": "...", \
-"transcription": "...", "part_of_speech": "...", "examples": ["..."], "notes": "...", \
-"tags": ["..."], "cefr": "B2", "frequency": "common"}], "topic": null, "count": null, \
-"more_words": false, "answer": null, "clarification": null}
+{"intent": "add_cards", "language": "fra", "cards": [{"term": "...",\
+ "translation": "...", "language": "fra", "transcription": "...",\
+ "part_of_speech": "...", "examples": ["..."], "notes": "...", "tags": ["..."],\
+ "cefr": "B2", "frequency": "common"}], "topic": null, "count": null,\
+ "more_words": false, "answer": null, "clarification": null}
+
+Example of a non-English card:
+message: "добавь bonjour — здравствуйте"
+answer: {"intent": "add_cards", "language": "fra", "cards": [{"term": \
+"bonjour", "translation": "здравствуйте", "language": "fra", "transcription": \
+"/bɔ̃ʒuʁ/", "examples": ["Bonjour, comment allez-vous ?"], "notes": null, \
+"tags": ["greeting"], "cefr": "A1", "frequency": "common"}], "topic": null, \
+"count": null, "more_words": false, "answer": null, "clarification": null}
 
 Example of the combined request:
 message: "arrangement как во фразе The graded evaluation criteria is an \
 arrangement of descriptions sorted from 0 points upwards. И добавь ещё пару \
 слов на эту тему"
-answer: {"intent": "add_cards", "cards": [{"term": "arrangement", "translation": \
-"упорядоченный набор, расположение по порядку", "examples": ["The graded \
-evaluation criteria is an arrangement of descriptions sorted from 0 points \
-upwards."], "notes": "здесь смысл «упорядоченный набор», а не обычное \
-«договорённость»", "tags": ["assessment"]}], "topic": "оценка по критериям", \
-"count": 2, "more_words": true, "answer": null, "clarification": null}
-"""
+answer: {"intent": "add_cards", "language": "eng", "cards": [{"term": \
+"arrangement", "translation": "упорядоченный набор, расположение по порядку", \
+"language": "eng", "examples": ["The graded evaluation criteria is an \
+arrangement of descriptions sorted from 0 points upwards."], "notes": "здесь \
+смысл «упорядоченный набор», а не обычное «договорённость»", "tags": \
+["assessment"]}], "topic": "оценка по критериям", "count": 2, "more_words": \
+true, "answer": null, "clarification": null}
+""".replace("{language_list}", _LANGUAGE_LIST)
 
 EXPANSION_SYSTEM_PROMPT = """\
-You suggest English vocabulary for a Russian-speaking learner.
+You suggest vocabulary in the target language named in the request for a \
+Russian-speaking learner.
 
-You are given a topic, a piece of English text, or the words the learner is \
-already working with — and how many words to find. You answer with cards in the \
-same shape the rest of the system uses.
+You are given a topic, a piece of source text, or the words the learner is \
+already working with — and how many words to find. The target language is \
+stated in the request. You answer with cards in the same shape the rest of the \
+system uses.
 
 When a source text is given:
 - Suggest ONLY words and collocations that appear in that text, verbatim.
@@ -133,7 +180,8 @@ When a topic is given:
 - Choose words the learner would actually meet in that domain — not the \
 rarest ones, and not the trivial ones. Respect the learner's level when the \
 request names one.
-- "examples" are up to three of your own short natural sentences using the term.
+- "examples" are up to three of your own short natural sentences in the target \
+language using the term.
 - Vary the part of speech: mostly nouns and verbs, some adjectives and phrases.
 
 When words the learner already works with are named:
@@ -144,7 +192,8 @@ the learner stands.
 
 Always:
 - "translation" is Russian and concise.
-- "transcription" is IPA in slashes.
+- "transcription" is IPA or the standard transcription for the target language, \
+in slashes.
 - "part_of_speech" is lowercase: noun, verb, adjective, adverb, phrase, \
 preposition, conjunction, pronoun, numeral or interjection.
 - "cefr" is the word's level for a learner: one of A1, A2, B1, B2, C1, C2.
@@ -162,13 +211,14 @@ Answer with a single JSON object and nothing else:
 """
 
 ANSWER_CHECK_SYSTEM_PROMPT = """\
-You check a Russian answer against the expected meaning of an English vocabulary card.
+You check a Russian answer against the expected meaning of a vocabulary card.
 
-The learner is a Russian speaker who was shown the English term and had to type \
-its meaning in Russian. Judge the meaning, not the wording.
+The learner is a Russian speaker who was shown a target-language term and had \
+to type its meaning in Russian. Judge the meaning, not the wording.
 
 - "correct": the answer conveys the same meaning. Synonyms, other word forms and \
-any valid translation variant all count.
+any valid translation variant all count. Small spelling variants that do not \
+change the word, Arabic diacritics and variant Han characters count as correct.
 - "almost": the answer is close but flawed — a recognisable typo, a wrong word \
 form, or only part of the meaning.
 - "wrong": a different meaning, unrelated or empty text.
@@ -178,15 +228,16 @@ Answer with a single JSON object and nothing else: {"verdict": "correct"} \
 """
 
 ANSWER_CHECK_REVERSE_SYSTEM_PROMPT = """\
-You check how close a learner's English answer is to the target word of a vocabulary card.
+You check how close a learner's answer is to the target word of a vocabulary card.
 
 The learner is a Russian speaker who was shown the Russian meaning and had to \
-recall the English word. Judge the word, not the phrasing.
+recall the target-language word. Judge the word, not the phrasing.
 
 - "correct": the target word itself; small spelling slips (a missing or doubled \
-letter) count as correct.
-- "almost": a valid English word for the meaning that is not the target word \
-(a synonym), or a substantially misspelt form of the target.
+letter), Arabic diacritics and variant Han characters that do not change the \
+word count as correct.
+- "almost": a valid word in the target language for the meaning that is not the \
+target word (a synonym), or a substantially misspelt form of the target.
 - "wrong": an unrelated word or empty text.
 
 Answer with a single JSON object and nothing else: {"verdict": "correct"} \
@@ -202,27 +253,31 @@ CHECK_FIELD_LIMIT = 200
 EXISTING_EXAMPLES_IN_PROMPT = 10
 
 ENRICH_EXAMPLES_SYSTEM_PROMPT = """\
-You write fresh example sentences for an English vocabulary card.
+You write fresh example sentences for a vocabulary card.
 
-The learner is a Russian speaker studying English. Every sentence must contain \
-the target term exactly as written and stay at a B1-B2 level. Never repeat a \
-sentence that is already on the card.
+The learner is a Russian speaker studying the target language named in the \
+request. Every sentence must be in that target language, contain the target term \
+exactly as written, and stay at a B1-B2 level. Never repeat a sentence that is \
+already on the card.
 
 Answer with a single JSON object and nothing else: {"examples": ["..."]}
 """
 
 MNEMONIC_SYSTEM_PROMPT = """\
-You invent a mnemonic for a Russian speaker learning an English word.
+You invent a mnemonic for a Russian speaker learning a word in the target \
+language named in the request.
 
-Connect the sound or spelling of the English term to its Russian meaning with \
-one vivid association: an image, a pun or a rhyme to recall the word by. Write \
-in Russian, one or two short sentences, under 200 characters.
+Connect the sound, spelling or, for non-Latin scripts, the components of the \
+target term to its Russian meaning with one vivid association: an image, a pun \
+or a rhyme to recall the word by. Write in Russian, one or two short sentences, \
+under 200 characters.
 
 Answer with a single JSON object and nothing else: {"mnemonic": "..."}
 """
 
 TRANSLATION_SYSTEM_PROMPT = """\
-You translate English vocabulary into Russian for a Russian-speaking learner.
+You translate vocabulary in the target language named in the request into \
+Russian for a Russian-speaking learner.
 
 Every term is given on its own. Return the most common meaning as one concise \
 Russian phrase; when the term is a collocation, translate its meaning as a \
@@ -246,6 +301,21 @@ No prose, no markdown fences.
 def build_user_prompt(text: str) -> str:
     """Wrap the raw message so a stray instruction inside it stays data."""
     return f"Parse the message between the markers.\n<message>\n{text.strip()}\n</message>"
+
+
+def _language_code(language: str, *, allow_native: bool = False) -> str:
+    """Resolve a user/model-supplied language without trusting its spelling."""
+    return resolve_language(language) if allow_native else resolve_target_language(language)
+
+
+def _target_language_line(language: str, *, allow_native: bool = False) -> str:
+    code = _language_code(language, allow_native=allow_native)
+    return f"Target language: {language_name_en(code)} ({code}). Translation language: Russian."
+
+
+def _target_language_tag(language: str, *, allow_native: bool = False) -> str:
+    code = _language_code(language, allow_native=allow_native)
+    return f"<target_language>{language_name_en(code)}</target_language>"
 
 
 def build_clarified_prompt(original: str, question: str, answer: str) -> str:
@@ -278,6 +348,7 @@ def build_expansion_prompt(
     count: int,
     known: list[str],
     level: str | None = None,
+    language: str = DEFAULT_LANGUAGE,
 ) -> str:
     """Assemble the expansion request.
 
@@ -286,7 +357,7 @@ def build_expansion_prompt(
     guidance is absent in source-text mode: there the only rule that matters is
     "words from this text", and a level would argue with it.
     """
-    parts: list[str] = [f"Find {count} English words."]
+    parts: list[str] = [f"Find {count} words.", _target_language_line(language)]
 
     if topic:
         parts.append(f"<topic>\n{topic}\n</topic>")
@@ -320,12 +391,15 @@ def build_answer_check_prompt(
     translation: str,
     answer: str,
     direction: str = "forward",
+    language: str = DEFAULT_LANGUAGE,
 ) -> str:
     """Wrap the three values so a stray instruction inside any of them stays data.
 
     Term and translation come from a card and the answer comes from the
     learner — all three can carry text a human typed, so every field is
-    flattened and stripped of brackets before it enters the prompt.
+    flattened and stripped of brackets before it enters the prompt. The
+    language comes from the registry, never from free text, and is tagged so the
+    model judges an answer in the right language.
     """
     fields = {
         "term": term,
@@ -336,17 +410,20 @@ def build_answer_check_prompt(
         name: flatten_line(value, limit=CHECK_FIELD_LIMIT, strip_brackets=True)
         for name, value in fields.items()
     }
+    target = _target_language_tag(language, allow_native=True)
     if direction == "reverse":
         return (
-            "The learner was shown the meaning and answered with the English word. "
-            "Decide which verdict applies.\n"
+            f"{target}\n"
+            "The learner was shown the meaning and answered with a word in the "
+            "target language. Decide which verdict applies.\n"
             f"<expected_term>{safe['term']}</expected_term>\n"
             f"<meaning_shown>{safe['expected_meaning']}</meaning_shown>\n"
             f"<learner_answer>{safe['learner_answer']}</learner_answer>"
         )
     return (
-        "The learner was shown the term and answered with the meaning below. "
-        "Decide which verdict applies.\n"
+        f"{target}\n"
+        "The learner was shown the term and answered with the Russian meaning "
+        "below. Decide which verdict applies.\n"
         f"<term>{safe['term']}</term>\n"
         f"<expected_meaning>{safe['expected_meaning']}</expected_meaning>\n"
         f"<learner_answer>{safe['learner_answer']}</learner_answer>"
@@ -359,12 +436,14 @@ def build_enrich_examples_prompt(
     translation: str,
     count: int,
     existing: Sequence[str],
+    language: str = DEFAULT_LANGUAGE,
 ) -> str:
     """Assemble the enrichment request, fields wrapped like every other prompt."""
     safe_term = flatten_line(term, limit=CHECK_FIELD_LIMIT, strip_brackets=True)
     safe_translation = flatten_line(translation, limit=CHECK_FIELD_LIMIT, strip_brackets=True)
     parts = [
-        f"Write {count} new example sentences for this card.",
+        _target_language_line(language),
+        f"Write {count} new example sentences in the target language for this card.",
         f"<term>{safe_term}</term>",
         f"<translation>{safe_translation}</translation>",
     ]
@@ -378,19 +457,23 @@ def build_enrich_examples_prompt(
     return "\n".join(parts)
 
 
-def build_mnemonic_prompt(*, term: str, translation: str) -> str:
+def build_mnemonic_prompt(*, term: str, translation: str, language: str = DEFAULT_LANGUAGE) -> str:
     safe_term = flatten_line(term, limit=CHECK_FIELD_LIMIT, strip_brackets=True)
     safe_translation = flatten_line(translation, limit=CHECK_FIELD_LIMIT, strip_brackets=True)
     return (
+        f"{_target_language_line(language)}\n"
         "Invent a mnemonic for this card.\n"
         f"<term>{safe_term}</term>\n"
         f"<translation>{safe_translation}</translation>"
     )
 
 
-def build_translation_prompt(terms: Sequence[str]) -> str:
+def build_translation_prompt(terms: Sequence[str], *, language: str = DEFAULT_LANGUAGE) -> str:
     safe_terms = [
         flatten_line(term, limit=CHECK_FIELD_LIMIT, strip_brackets=True) for term in terms
     ]
     safe_terms = [term for term in safe_terms if term]
-    return "Translate these terms:\n<terms>\n" + "\n".join(safe_terms) + "\n</terms>"
+    return (
+        f"{_target_language_line(language)}\n"
+        "Translate these terms:\n<terms>\n" + "\n".join(safe_terms) + "\n</terms>"
+    )

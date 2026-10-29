@@ -87,6 +87,7 @@ class AnswerGradingService:
                 translation=card.translation,
                 answer=typed,
                 direction=card.direction.value,
+                language=language,
                 user_id=user_id,
             )
         except LlmError as exc:
