@@ -16,13 +16,14 @@ remove entries.
 from __future__ import annotations
 
 import math
-import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 import structlog
 
 from eng_remember.config import DiscoverySettings
+from eng_remember.domain.languages import DEFAULT_LANGUAGE, resolve_target_language
+from eng_remember.domain.term_match import contains_term
 from eng_remember.models.user import User
 from eng_remember.repositories.cards import CardDraft, CardRepository
 from eng_remember.services.llm.explorer import WordExplorer
@@ -30,14 +31,6 @@ from eng_remember.services.llm.explorer import WordExplorer
 __all__ = ["DiscoveryResult", "DiscoveryService", "appears_in_text"]
 
 log = structlog.get_logger(__name__)
-
-# Latin words with internal hyphens and apostrophes: "well-known", "don't".
-_WORDS = re.compile(r"[a-z][a-z'\-]*")
-
-# How many leading characters have to match for a word to count as the same
-# lemma. Four handles the common English inflections — run/running,
-# develop/development — without matching unrelated words.
-_STEM = 4
 
 # Terms named in the prompt as already known.
 _KNOWN_HINTS = 40
@@ -48,6 +41,7 @@ class DiscoveryResult:
     """Suggestions plus the accounting behind them."""
 
     topic: str = ""
+    language: str = DEFAULT_LANGUAGE
     drafts: list[CardDraft] = field(default_factory=list)
     requested: int = 0
     engine: str = ""
@@ -96,6 +90,7 @@ class DiscoveryService:
         seeds: Sequence[str] = (),
         count: int | None = None,
         exclude: Sequence[str] = (),
+        language: str = DEFAULT_LANGUAGE,
         user_id: int | None = None,
     ) -> DiscoveryResult:
         """Ask the model for words and keep only the ones that hold up.
@@ -103,12 +98,14 @@ class DiscoveryService:
         ``exclude`` drops terms without mentioning them to the model — used when
         the learner asks for another round from a batch still on screen, where
         naming the rejected words would only anchor the next answer to them.
+        ``language`` scopes both the known-word check and the source-text check.
         """
+        target = resolve_target_language(language)
         wanted = self.resolve_count(count)
         topic = (topic or "").strip()
         context = (context_text or "").strip() or None
 
-        existing = await self._cards.all_terms(user.id)
+        existing = await self._cards.all_terms(user.id, language=target)
         seed_terms = [seed.strip() for seed in seeds if seed.strip()]
         excluded = (
             existing
@@ -128,11 +125,13 @@ class DiscoveryService:
             seeds=seed_terms,
             known=sorted(existing)[:_KNOWN_HINTS],
             level=user.level,
+            language=target,
             user_id=user_id if user_id is not None else user.id,
         )
 
         result = DiscoveryResult(
             topic=(response.topic or topic).strip(),
+            language=target,
             requested=wanted,
             engine=self._explorer.engine,
         )
@@ -146,7 +145,7 @@ class DiscoveryService:
             if key in seen:
                 result.dropped_repeated += 1
                 continue
-            if context is not None and not appears_in_text(draft.term, context):
+            if context is not None and not appears_in_text(draft.term, context, target):
                 result.dropped_out_of_text += 1
                 continue
 
@@ -167,30 +166,12 @@ class DiscoveryService:
         return result
 
 
-def appears_in_text(term: str, text: str) -> bool:
+def appears_in_text(term: str, text: str, language: str = DEFAULT_LANGUAGE) -> bool:
     """Whether the term — or a plausible form of it — occurs in the text.
 
-    Matching is by four-character stem, so "run" is accepted for "running" and
-    the other way round. Irregular forms ("go"/"went") fail the check and are
-    dropped; that is the deliberate direction of the error, because a word that
-    is not in the text is worse than one word short of the requested count.
+    Matching follows the language's script: Latin and Cyrillic use the same
+    four-character stem rule as before, CJK terms are substrings, and other
+    scripts use normalized Unicode token containment. A word that is not in the
+    text is worse than one word short of the requested count.
     """
-    words = _WORDS.findall(text.lower())
-    if not words:
-        return False
-
-    needle = term.lower().strip()
-    if not needle:
-        return False
-
-    parts = [part for part in re.split(r"[\s\-]+", needle) if part]
-    if not parts:
-        return False
-    return all(_token_appears(part, words) for part in parts)
-
-
-def _token_appears(token: str, words: Sequence[str]) -> bool:
-    stem = token[:_STEM]
-    if not stem:
-        return False
-    return any(word.startswith(stem) or token.startswith(word[:_STEM]) for word in words)
+    return contains_term(text, term, language)

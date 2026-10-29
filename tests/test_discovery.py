@@ -63,6 +63,27 @@ class TestAppearsInText:
         assert not appears_in_text("run", "")
         assert not appears_in_text("run", "нет латинских слов")
 
+    @pytest.mark.parametrize(
+        ("term", "text", "language"),
+        [
+            ("中文", "我正在学习中文。", "cmn"),
+            ("العربية", "أنا أدرس اللغة العربية.", "arb"),
+            ("日本語", "私は日本語を勉強します。", "jpn"),
+            ("हिन्दी", "मैं हिन्दी सीखता हूँ।", "hin"),
+            ("ไทย", "ฉันเรียนภาษาไทย", "tha"),
+        ],
+    )
+    def test_non_latin_terms_use_unicode_matching(
+        self, term: str, text: str, language: str
+    ) -> None:
+        assert appears_in_text(term, text, language)
+
+    def test_arabic_diacritics_in_the_text_do_not_hide_the_word(self) -> None:
+        assert appears_in_text("كتاب", "هذا كِتَابٌ جديد", "arb")
+
+    def test_latin_diacritics_are_significant(self) -> None:
+        assert not appears_in_text("hôtel", "The hotel is open.", "fra")
+
 
 class TestDiscovery:
     async def test_suggestions_are_returned(
@@ -167,6 +188,59 @@ class TestDiscovery:
         result = await discovery.expand(user, topic="медицина", count=5)
 
         assert result.found == 5
+
+    async def test_the_requested_language_reaches_every_draft(
+        self, discovery: DiscoveryService, user: User, llm: ScriptedClient
+    ) -> None:
+        llm.push_expand(
+            expansion_payload(
+                [
+                    card_payload("bonjour", "здравствуйте", language="eng"),
+                    card_payload("merci", "спасибо", language="eng"),
+                ]
+            )
+        )
+
+        result = await discovery.expand(user, topic="приветствия", count=2, language="fra")
+
+        assert result.language == "fra"
+        assert [draft.language for draft in result.drafts] == ["fra", "fra"]
+        assert "Target language: French (fra)." in llm.last_prompt()
+        assert "English" not in llm.last_prompt()
+
+    async def test_known_words_are_filtered_by_language(
+        self,
+        discovery: DiscoveryService,
+        llm_services: Services,
+        user: User,
+        llm: ScriptedClient,
+    ) -> None:
+        await llm_services.card_service.add_draft(user, CardDraft(term="fever", translation="жар"))
+        await llm_services.commit()
+        llm.push_expand(expansion_payload([card_payload("fever", "fièvre", language="eng")]))
+
+        result = await discovery.expand(user, topic="медицина", count=1, language="fra")
+
+        assert [draft.term for draft in result.drafts] == ["fever"]
+        assert result.dropped_known == 0
+
+    async def test_a_known_word_in_the_same_language_is_dropped(
+        self,
+        discovery: DiscoveryService,
+        llm_services: Services,
+        user: User,
+        llm: ScriptedClient,
+    ) -> None:
+        await llm_services.card_service.add_draft(
+            user, CardDraft(term="fever", translation="fièvre", language="fra")
+        )
+        await llm_services.commit()
+        llm.push_expand(expansion_payload([card_payload("fever", "fièvre", language="eng")]))
+
+        result = await discovery.expand(user, topic="медицина", count=1, language="fra")
+
+        assert result.drafts == []
+        assert result.dropped_known == 1
 
     async def test_more_than_asked_is_requested_from_the_model(
         self, discovery: DiscoveryService, user: User, llm: ScriptedClient
