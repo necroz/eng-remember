@@ -139,6 +139,27 @@ def test_card_listing_escapes_model_output() -> None:
     assert "<script>" not in rendered
 
 
+def test_a_card_draft_drops_an_invalid_language_to_english() -> None:
+    assert (
+        CardDraft(term="bonjour", translation="здравствуйте", language="<b>bad</b>")
+        .normalized()
+        .language
+        == "eng"
+    )
+
+
+def test_card_listing_uses_the_registry_language_badge() -> None:
+    rendered = "\n".join(
+        texts.cards_listing(
+            [CardDraft(term="<b>bonjour</b>", translation="<script>", language="fra")]
+        )
+    )
+
+    assert "🇫🇷 Французский" in rendered
+    assert "&lt;b&gt;bonjour&lt;/b&gt;" in rendered
+    assert "<script>" not in rendered
+
+
 def test_unknown_timezone_escapes_user_input() -> None:
     rendered = texts.unknown_timezone("<b>Москва</b>")
 

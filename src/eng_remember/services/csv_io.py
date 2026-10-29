@@ -57,6 +57,7 @@ class CsvRow:
     notes: str | None = None
     tags: tuple[str, ...] = ()
     deck: str | None = None
+    language: str | None = None
 
 
 @dataclass(slots=True)

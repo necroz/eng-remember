@@ -99,6 +99,7 @@ class TestStart:
             assert deck.is_default
 
         assert "Привет" in recording.last_text()
+        assert "иностранные слова" in recording.last_text()
 
     async def test_start_again_greets_a_returning_user(
         self, dispatcher: Dispatcher, bot: Bot, recording: RecordingSession
@@ -203,6 +204,41 @@ class TestCapturingWords:
             terms = set((await check.scalars(select(Card.term))).all())
             assert terms == {"jump"}
 
+    async def test_the_preview_names_the_card_language_and_how_to_fix_it(
+        self,
+        llm_dispatcher: Dispatcher,
+        bot: Bot,
+        recording: RecordingSession,
+        llm: ScriptedClient,
+    ) -> None:
+        llm.push_parse(
+            parse_payload(
+                cards=[card_payload("bonjour", "здравствуйте", language="fra")],
+                language="fra",
+            )
+        )
+
+        await send(llm_dispatcher, bot, "добавь bonjour — здравствуйте")
+
+        sent = recording.last_text()
+        assert "🇫🇷 Французский" in sent
+        assert "Если язык определён неверно" in sent
+        assert "французское слово hotel — отель" in sent
+
+    async def test_a_fallback_preview_explains_script_based_language(
+        self,
+        dispatcher: Dispatcher,
+        bot: Bot,
+        recording: RecordingSession,
+    ) -> None:
+        await send(dispatcher, bot, "bonjour - здравствуйте")
+
+        sent = recording.last_text()
+        assert "🇬🇧 Английский" in sent
+        assert (
+            "Без модели язык определяется по письменности; латиница считается английской." in sent
+        )
+
     async def test_cancelling_saves_nothing(
         self,
         dispatcher: Dispatcher,
@@ -239,7 +275,7 @@ class TestCapturingWords:
         await send(dispatcher, bot, "/add")
 
         sent = recording.last_text()
-        assert "Напишите слово" in sent
+        assert "Напишите иностранное слово" in sent
         assert "Не знаю такой команды" not in sent
 
     async def test_the_add_menu_button_reaches_its_own_handler(
@@ -247,7 +283,7 @@ class TestCapturingWords:
     ) -> None:
         await send(dispatcher, bot, texts.BTN_ADD)
 
-        assert "Напишите слово" in recording.last_text()
+        assert "Напишите иностранное слово" in recording.last_text()
 
 
 class TestReview:
@@ -277,8 +313,12 @@ class TestReview:
     ) -> None:
         await send(dispatcher, bot, "/review")
 
-        assert "ubiquitous" in recording.last_text()
-        assert "вездесущий" not in recording.last_text()
+        sent = recording.last_text()
+        assert "🇬🇧" in sent
+        assert "Английский" in sent
+        assert "переведите на русский" in sent
+        assert "ubiquitous" in sent
+        assert "вездесущий" not in sent
         assert recording.last_button_data() == [
             ReviewCB(action="dont_know", card_id=card_id).pack()
         ]
@@ -540,7 +580,7 @@ class TestReview:
         await send(dispatcher, bot, "/review", update_id=20)
 
         await send(dispatcher, bot, texts.BTN_ADD, update_id=21)
-        assert "Напишите слово" in recording.last_text()
+        assert "Напишите иностранное слово" in recording.last_text()
 
         await send(dispatcher, bot, "run - бежать", update_id=22)
         assert any("im:confirm" in data for data in recording.last_button_data())

@@ -22,10 +22,20 @@ async def seed_reverse_due(
     services: Services,
     user: User,
     session_factory: async_sessionmaker[AsyncSession],
+    *,
+    term: str = "run",
+    translation: str = "бежать",
+    language: str = "eng",
 ) -> Card:
     """A pair whose forward side was answered yesterday, reverse due now."""
     forward = await services.card_service.add_draft(
-        user, CardDraft(term="run", translation="бежать", examples=("He runs every morning.",))
+        user,
+        CardDraft(
+            term=term,
+            translation=translation,
+            language=language,
+            examples=(f"{term} in a sentence.",),
+        ),
     )
     twin = await services.cards.find_twin(forward)
     assert twin is not None
@@ -58,9 +68,62 @@ async def test_the_reverse_front_shows_the_meaning(
     await send(dispatcher, bot, "/review", update_id=100)
 
     sent = recording.last_text()
-    assert "Переведите на английский" in sent
+    assert "🇬🇧" in sent
+    assert "Английский" in sent
+    assert "напишите слово на английском" in sent
+    assert "Переведите на английский" not in sent
     assert "бежать" in sent
     assert "run" not in sent
+
+
+async def test_a_french_reverse_front_names_the_language(
+    dispatcher: Dispatcher,
+    bot: Bot,
+    recording: RecordingSession,
+    services: Services,
+    user: User,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await seed_reverse_due(
+        services,
+        user,
+        session_factory,
+        term="café",
+        translation="кафе",
+        language="fra",
+    )
+
+    await send(dispatcher, bot, "/review", update_id=100)
+
+    sent = recording.last_text()
+    assert "🇫🇷" in sent
+    assert "Французский" in sent
+    assert "напишите слово на французском" in sent
+    assert "кафе" in sent
+    assert "café" not in sent
+
+
+async def test_a_reverse_french_answer_is_graded_as_french(
+    dispatcher: Dispatcher,
+    bot: Bot,
+    recording: RecordingSession,
+    services: Services,
+    user: User,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await seed_reverse_due(
+        services,
+        user,
+        session_factory,
+        term="café",
+        translation="кафе",
+        language="fra",
+    )
+    await send(dispatcher, bot, "/review", update_id=100)
+
+    await send(dispatcher, bot, "café", update_id=101, date=utcnow())
+
+    assert any("✅ Верно" in text for text in recording.sent_texts())
 
 
 async def test_the_english_answer_is_graded_and_the_card_revealed(

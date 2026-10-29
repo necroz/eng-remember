@@ -272,7 +272,7 @@ def build_router() -> Router:
             "/add — добавить слова\n"
             "/decks — колоды\n"
             "/stats — статистика\n"
-            "/level — уровень английского\n"
+            "/level — уровень изучаемого языка\n"
             "/remind — напоминания\n"
             "/cancel — отменить текущее действие",
             reply_markup=keyboards.main_menu(),

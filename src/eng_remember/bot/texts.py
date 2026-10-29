@@ -17,6 +17,12 @@ from eng_remember.domain.digest import HEATMAP_DAYS
 from eng_remember.domain.digest import heatmap as digest_heatmap
 from eng_remember.domain.enums import CardDirection
 from eng_remember.domain.gamification import StreakState, StreakTransition
+from eng_remember.domain.languages import (
+    DEFAULT_LANGUAGE,
+    LANGUAGES,
+    language_badge,
+    language_for_code,
+)
 from eng_remember.domain.praise import render
 from eng_remember.models.card import Card
 from eng_remember.repositories.cards import CardDraft
@@ -130,14 +136,18 @@ def welcome_new(first_name: str | None, deck_name: str) -> str:
     name = f", {escape(first_name)}" if first_name else ""
     return (
         f"Привет{name}! 👋\n\n"
-        "Я помогу запоминать английские слова с интервальным повторением: "
+        "Я помогу запоминать иностранные слова с интервальным повторением: "
         "слово возвращается ровно тогда, когда вы почти готовы его забыть.\n\n"
         f"Колода «{escape(deck_name)}» уже создана.\n\n"
         "<b>Как добавлять слова</b>\n"
         "Просто напишите мне сообщение в свободной форме — я разберу его сам:\n"
+        "• <code>bonjour — здравствуйте</code>\n"
+        "• <code>书 — книга</code>\n"
         "• <code>ubiquitous — вездесущий</code>\n"
-        "• <code>добавь слова resilient и thorough</code>\n"
-        "• <code>to run, to jump, to swim</code>\n\n"
+        "• <code>добавь слова resilient и thorough</code>\n\n"
+        "Язык определяется по слову и сообщению; латиница без указания "
+        "языка считается английской. Если язык определён неверно, укажите его "
+        "словами: «французское слово hotel — отель».\n\n"
         f"Дальше — «{BTN_REVIEW}», и я буду показывать то, что пора повторить.\n\n"
         "Если слово никак не даётся, я сам предложу помощь, а приостановленные "
         "слова ждут в /paused. Хочется просто погонять слова — /practice.\n"
@@ -168,13 +178,13 @@ def cannot_parse(engine_is_llm: bool) -> str:
         return (
             "Не разобрал сообщение. 🤔\n\n"
             "Напишите слово и перевод, например:\n"
-            "<code>ubiquitous — вездесущий</code>\n\n"
-            "Или просто пришлите английское слово — перевод добавлю сам."
+            "<code>bonjour — здравствуйте</code>\n\n"
+            "Или просто пришлите иностранное слово — перевод добавлю сам."
         )
     return (
         "Не разобрал сообщение. 🤔\n\n"
         "Без подключённой модели я понимаю только пары «слово — перевод»:\n"
-        "<code>ubiquitous — вездесущий</code>"
+        "<code>bonjour — здравствуйте</code>"
     )
 
 
@@ -201,14 +211,19 @@ def review_finished(answered: int) -> str:
 
 
 def card_front(card: Card, *, hint: str | None = None) -> str:
+    language = language_for_code(card.language) or LANGUAGES[DEFAULT_LANGUAGE]
     if card.direction is CardDirection.REVERSE:
         lines = [
-            "🇬🇧 <i>Переведите на английский</i>",
+            f"{language.flag} <i>{language.name_ru} · напишите слово {language.name_ru_in}</i>",
             "",
             f"<b>{escape(card.translation)}</b>",
         ]
     else:
-        lines = [f"<b>{escape(card.term)}</b>"]
+        lines = [
+            f"{language.flag} <i>{language.name_ru} · переведите на русский</i>",
+            "",
+            f"<b>{escape(card.term)}</b>",
+        ]
         if card.part_of_speech:
             lines.append(f"<i>{escape(card.part_of_speech)}</i>")
     lines.append("")
@@ -440,8 +455,10 @@ def file_export_caption(total: int) -> str:
 def file_import_prompt() -> str:
     return (
         "Пришлите CSV-файл со словами — разберу и покажу, что нашёл.\n\n"
-        "Колонки: <code>term;translation;transcription;part_of_speech;example;notes;tags;deck</code>.\n"
+        "Колонки: <code>term;translation;transcription;part_of_speech;example;notes;tags;deck;language</code>.\n"
         "Обязательна только <code>term</code>; переводы, если их нет, дополнит модель.\n"
+        "Необязательная <code>language</code> — ISO-код языка: <code>eng</code>, "
+        "<code>fra</code>, <code>cmn</code> и другие из списка.\n"
         "Разделитель — <code>;</code>, <code>,</code> или табуляция; заголовок необязателен."
     )
 
@@ -457,7 +474,8 @@ def file_import_preview(
     word = _plural(len(rows), "слово", "слова", "слов")
     lines = [f"📄 Нашёл {len(rows)} {word} для импорта.", ""]
     for row in list(rows)[:PREVIEW_ROWS]:
-        lines.append(f"• <b>{escape(row.term)}</b> — {escape(row.translation or '')}")
+        language = language_badge(row.language or DEFAULT_LANGUAGE)
+        lines.append(f"• {language} <b>{escape(row.term)}</b> — {escape(row.translation or '')}")
     if len(rows) > PREVIEW_ROWS:
         lines.append(f"… и ещё {len(rows) - PREVIEW_ROWS}")
 
@@ -533,8 +551,15 @@ def import_preview(
 
     lines.append("")
     if engine != "rules":
+        lines.append(
+            "<i>Если язык определён неверно, укажите его в сообщении: "
+            "«французское слово hotel — отель».</i>"
+        )
         lines.append(f"<i>Разобрано моделью {escape(engine)}</i>")
     else:
+        lines.append(
+            "<i>Без модели язык определяется по письменности; латиница считается английской.</i>"
+        )
         lines.append("<i>Разобрано без модели. Проверьте переводы.</i>")
     return "\n".join(lines)
 
@@ -573,7 +598,7 @@ def cards_listing(drafts: Sequence[CardDraft]) -> list[str]:
     """Render cards the same way everywhere they are previewed."""
     lines: list[str] = []
     for draft in drafts:
-        head = f"• <b>{escape(draft.term)}</b>"
+        head = f"• {language_badge(draft.language)} <b>{escape(draft.term)}</b>"
         if draft.transcription:
             head += f" <code>{escape(draft.transcription)}</code>"
         level = badge(draft.cefr, draft.frequency)

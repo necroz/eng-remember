@@ -427,12 +427,15 @@ def build_router() -> Router:
     @router.message(F.text == texts.BTN_ADD)
     async def prompt_add(message: Message) -> None:
         await message.answer(
-            "Напишите слово или сразу несколько.\n\n"
+            "Напишите иностранное слово или сразу несколько.\n\n"
             "Примеры:\n"
-            "• <code>ubiquitous — вездесущий</code>\n"
+            "• <code>bonjour — здравствуйте</code>\n"
+            "• <code>书 — книга</code>\n"
             "• <code>resilient, thorough, ubiquitous</code>\n"
             "• <code>ещё 10 слов про медицину</code>\n"
             "• пришлите абзац текста — найду в нём слова\n\n"
+            "Если язык не назван, латиница считается английской. Указать язык "
+            "можно словами: «французское слово hotel — отель».\n\n"
             "Можно совместить: <code>arrangement как во фразе … и ещё пару слов "
             "на эту тему</code> — добавлю слово и подберу слова того же домена."
         )

@@ -35,7 +35,7 @@ COMMANDS = [
     BotCommand(command="export", description="Выгрузить слова в CSV"),
     BotCommand(command="import", description="Загрузить слова из CSV"),
     BotCommand(command="limit", description="Сколько новых слов в день"),
-    BotCommand(command="level", description="Мой уровень английского"),
+    BotCommand(command="level", description="Мой уровень изучаемого языка"),
     BotCommand(command="tz", description="Часовой пояс"),
     BotCommand(command="remind", description="Напоминания"),
     BotCommand(command="cancel", description="Отменить действие"),
