@@ -12,6 +12,7 @@ import io
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
+from eng_remember.domain.languages import DEFAULT_LANGUAGE
 from eng_remember.models.card import Card
 
 __all__ = [
@@ -37,6 +38,7 @@ _HEADER = (
     "notes",
     "tags",
     "deck",
+    "language",
 )
 
 # First cells that mean "this first row is a header", paired with the second
@@ -86,6 +88,7 @@ def cards_to_csv(cards: Sequence[Card], *, deck_names: Mapping[int, str] | None 
                 card.notes or "",
                 "|".join(card.tags),
                 names.get(card.deck_id, ""),
+                card.language or DEFAULT_LANGUAGE,
             ]
         )
     return buffer.getvalue()
@@ -160,4 +163,5 @@ def _to_row(raw: list[str]) -> CsvRow:
         notes=cells[5] or None,
         tags=tags,
         deck=cells[7] or None,
+        language=cells[8] or None,
     )

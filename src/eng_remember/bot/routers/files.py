@@ -27,6 +27,7 @@ from eng_remember.bot.states import (
     ImportFile,
 )
 from eng_remember.domain.enums import CardDirection
+from eng_remember.domain.languages import DEFAULT_LANGUAGE, detect_script_language
 from eng_remember.errors import LlmError
 from eng_remember.models.user import User
 from eng_remember.repositories.cards import CardDraft
@@ -208,38 +209,59 @@ async def _prepare_rows(
     parsed: CsvParseResult,
 ) -> tuple[list[CsvRow], int, int, int]:
     """Cleaned, de-duplicated rows plus the counters the preview owns."""
-    known = await services.cards.existing_terms(user.id, [row.term for row in parsed.rows])
+    cleaned = [_clean_row(row) for row in parsed.rows]
+    terms_by_language: dict[str, list[str]] = {}
+    for row in cleaned:
+        language = row.language or DEFAULT_LANGUAGE
+        terms_by_language.setdefault(language, []).append(row.term)
+
+    known_by_language = {
+        language: await services.cards.existing_terms(user.id, terms, language=language)
+        for language, terms in terms_by_language.items()
+    }
+
     rows: list[CsvRow] = []
-    seen: set[str] = set()
+    seen: set[tuple[str, str]] = set()
     duplicates = 0
 
-    for row in parsed.rows:
-        key = row.term.casefold()
-        if key in seen or key in known:
+    for row in cleaned:
+        language = row.language or DEFAULT_LANGUAGE
+        key = (language, row.term.casefold())
+        if key in seen or row.term.casefold() in known_by_language.get(language, set()):
             duplicates += 1
             continue
         seen.add(key)
-        rows.append(_clean_row(row))
+        rows.append(row)
 
     missing = [index for index, row in enumerate(rows) if row.translation is None]
     filled = 0
     if missing and services.translator.available:
-        batch = missing[:MAX_TRANSLATION_FILL]
-        try:
-            mapping = await services.translator.translate(
-                terms=[rows[index].term for index in batch],
-                user_id=user.id,
-            )
-        except LlmError as exc:
-            # The import is still worth doing; the preview will count what
-            # remained without a meaning.
-            log.warning("file_import_translation_failed", error=str(exc))
-            mapping = {}
-        for index in batch:
-            translated = mapping.get(rows[index].term.casefold())
-            if translated:
-                rows[index] = replace_translation(rows[index], translated)
-                filled += 1
+        groups: dict[str, list[int]] = {}
+        for index in missing:
+            language = rows[index].language or DEFAULT_LANGUAGE
+            groups.setdefault(language, []).append(index)
+        remaining = MAX_TRANSLATION_FILL
+        for language, indices in groups.items():
+            if remaining <= 0:
+                break
+            batch = indices[:remaining]
+            try:
+                mapping = await services.translator.translate(
+                    terms=[rows[index].term for index in batch],
+                    language=language,
+                    user_id=user.id,
+                )
+            except LlmError as exc:
+                # The import is still worth doing; the preview will count what
+                # remained without a meaning.
+                log.warning("file_import_translation_failed", error=str(exc))
+                mapping = {}
+            for index in batch:
+                translated = mapping.get(rows[index].term.casefold())
+                if translated:
+                    rows[index] = replace_translation(rows[index], translated)
+                    filled += 1
+            remaining -= len(batch)
 
     untranslated = sum(1 for row in rows if row.translation is None)
     return [row for row in rows if row.translation is not None], duplicates, untranslated, filled
@@ -247,9 +269,11 @@ async def _prepare_rows(
 
 def _clean_row(row: CsvRow) -> CsvRow:
     """The same cleaning model output gets, plus the column widths."""
+    language = row.language or detect_script_language(row.term) or DEFAULT_LANGUAGE
     parsed = ParsedCard(
         term=row.term,
         translation=row.translation or "",
+        language=language,
         transcription=row.transcription,
         part_of_speech=row.part_of_speech,
         example=row.example,
@@ -265,6 +289,7 @@ def _clean_row(row: CsvRow) -> CsvRow:
         notes=parsed.notes,
         tags=tuple(parsed.tags),
         deck=(row.deck or "")[:DECK_NAME_WIDTH] or None,
+        language=parsed.language,
     )
 
 
@@ -278,6 +303,7 @@ def replace_translation(row: CsvRow, translation: str) -> CsvRow:
         notes=row.notes,
         tags=row.tags,
         deck=row.deck,
+        language=row.language,
     )
 
 
@@ -303,9 +329,11 @@ async def _save_rows(user: User, services: Services, rows: list[CsvRow]) -> Impo
 
 
 def _row_to_draft(row: CsvRow) -> CardDraft:
+    language = row.language or detect_script_language(row.term) or DEFAULT_LANGUAGE
     return CardDraft(
         term=row.term,
         translation=row.translation or "",
+        language=language,
         transcription=row.transcription,
         part_of_speech=row.part_of_speech,
         example=row.example,
@@ -324,6 +352,7 @@ def _row_to_dict(row: CsvRow) -> dict[str, object]:
         "notes": row.notes,
         "tags": list(row.tags),
         "deck": row.deck,
+        "language": row.language,
     }
 
 
@@ -349,6 +378,7 @@ def _rows_from_state(raw: object) -> list[CsvRow]:
                 notes=_optional_str(item.get("notes")),
                 tags=tuple(str(tag) for tag in tags) if isinstance(tags, list) else (),
                 deck=_optional_str(item.get("deck")),
+                language=_optional_str(item.get("language")),
             )
         )
     return rows

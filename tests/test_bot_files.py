@@ -24,6 +24,10 @@ from tests.test_bot_flow import send, tap
 CSV_TEXT = "run;бежать;;;;;sport|basic;Бег\nswim;плавать;;\n"
 
 
+def csv_row(term: str, translation: str, language: str = "") -> str:
+    return ";".join([term, translation, "", "", "", "", "", "", language]) + "\n"
+
+
 async def seed_due_card(
     services: Services, user: User, session_factory: async_sessionmaker[AsyncSession]
 ) -> None:
@@ -191,6 +195,128 @@ async def test_the_model_translates_missing_meanings(
         cards = (await check.scalars(select(Card))).all()
         assert {card.term for card in cards} == {"hike"}
         assert {card.translation for card in cards} == {"ходить в походы"}
+
+
+async def test_a_french_row_shows_its_language_in_the_preview(
+    dispatcher: Dispatcher,
+    bot: Bot,
+    recording: RecordingSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    patch_file(monkeypatch, csv_row("bonjour", "здравствуйте", "fra").encode("utf-8"))
+
+    await send_file(dispatcher, bot)
+
+    preview = recording.last_text()
+    assert "🇫🇷 Французский" in preview
+    assert "bonjour" in preview
+
+
+async def test_confirming_saves_the_row_language(
+    dispatcher: Dispatcher,
+    bot: Bot,
+    recording: RecordingSession,
+    monkeypatch: pytest.MonkeyPatch,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    patch_file(monkeypatch, csv_row("bonjour", "здравствуйте", "fra").encode("utf-8"))
+    await send_file(dispatcher, bot)
+
+    await tap(dispatcher, bot, button_data(recording, "fi:confirm"), update_id=10)
+
+    async with session_factory() as check:
+        cards = (await check.scalars(select(Card))).all()
+    assert {card.term for card in cards} == {"bonjour"}
+    assert {card.language for card in cards} == {"fra"}
+
+
+async def test_a_missing_language_column_uses_the_script(
+    dispatcher: Dispatcher,
+    bot: Bot,
+    recording: RecordingSession,
+    monkeypatch: pytest.MonkeyPatch,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    patch_file(monkeypatch, "bonjour;здравствуйте\n书;книга\n".encode())
+    await send_file(dispatcher, bot)
+
+    await tap(dispatcher, bot, button_data(recording, "fi:confirm"), update_id=10)
+
+    async with session_factory() as check:
+        cards = (await check.scalars(select(Card))).all()
+    assert {card.term: card.language for card in cards} == {
+        "bonjour": "eng",
+        "书": "cmn",
+    }
+
+
+async def test_the_same_term_in_two_languages_is_saved_twice(
+    dispatcher: Dispatcher,
+    bot: Bot,
+    recording: RecordingSession,
+    monkeypatch: pytest.MonkeyPatch,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    text = csv_row("fever", "жар", "eng") + csv_row("fever", "fièvre", "fra")
+    patch_file(monkeypatch, text.encode("utf-8"))
+    await send_file(dispatcher, bot)
+
+    await tap(dispatcher, bot, button_data(recording, "fi:confirm"), update_id=10)
+
+    async with session_factory() as check:
+        cards = (await check.scalars(select(Card))).all()
+    assert sorted((card.term, card.language) for card in cards) == [
+        ("fever", "eng"),
+        ("fever", "eng"),
+        ("fever", "fra"),
+        ("fever", "fra"),
+    ]
+
+
+async def test_an_existing_english_word_does_not_block_the_french_one(
+    dispatcher: Dispatcher,
+    bot: Bot,
+    recording: RecordingSession,
+    monkeypatch: pytest.MonkeyPatch,
+    services: Services,
+    user: User,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await services.card_service.add_draft(user, CardDraft(term="fever", translation="жар"))
+    await services.commit()
+    patch_file(monkeypatch, csv_row("fever", "fièvre", "fra").encode("utf-8"))
+    await send_file(dispatcher, bot)
+
+    await tap(dispatcher, bot, button_data(recording, "fi:confirm"), update_id=10)
+
+    async with session_factory() as check:
+        cards = (await check.scalars(select(Card))).all()
+    assert any(card.term == "fever" and card.language == "fra" for card in cards)
+
+
+async def test_missing_translations_are_filled_per_language(
+    llm_dispatcher: Dispatcher,
+    llm: ScriptedClient,
+    bot: Bot,
+    recording: RecordingSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    llm.push_translations({"translations": [{"term": "hike", "translation": "ходить в походы"}]})
+    llm.push_translations({"translations": [{"term": "randonner", "translation": "гулять"}]})
+    patch_file(
+        monkeypatch,
+        (csv_row("hike", "", "eng") + csv_row("randonner", "", "fra")).encode("utf-8"),
+    )
+
+    await send_file(llm_dispatcher, bot)
+
+    calls = [call for call in llm.calls if call["purpose"] == "translate_terms"]
+    assert len(calls) == 2
+    assert any("Target language: English (eng)." in call["user"] for call in calls)
+    assert any("Target language: French (fra)." in call["user"] for call in calls)
+    preview = recording.last_text()
+    assert "ходить в походы" in preview
+    assert "гулять" in preview
 
 
 async def test_cancelling_imports_nothing(
