@@ -49,7 +49,7 @@ from eng_remember.bot.states import (
     AddWords,
 )
 from eng_remember.config import DiscoverySettings
-from eng_remember.domain.languages import DEFAULT_LANGUAGE
+from eng_remember.domain.languages import DEFAULT_LANGUAGE, resolve_target_language
 from eng_remember.errors import (
     LlmError,
     LlmGlobalBudgetExceededError,
@@ -84,11 +84,14 @@ def build_router() -> Router:
         services: Services,
         state: FSMContext,
         clarify: tuple[str, str, int] | None = None,
+        fallback_language: str | None = None,
     ) -> None:
         """Parse ``text`` and route it to the right follow-up.
 
         ``clarify`` carries the question the user is answering, if any, so the
         parser can see the original request and the missing detail together.
+        ``fallback_language`` keeps a language stored before the question when
+        the clarified answer itself does not name one.
         """
         try:
             if clarify is None:
@@ -108,6 +111,8 @@ def build_router() -> Router:
             return
 
         response = outcome.response
+        if clarify is not None and fallback_language and not response.cards:
+            response.language = resolve_target_language(fallback_language)
         settings = services.settings.discovery
 
         if response.clarification is not None and round_number < settings.max_clarification_rounds:
@@ -434,8 +439,8 @@ def build_router() -> Router:
             "• <code>resilient, thorough, ubiquitous</code>\n"
             "• <code>ещё 10 слов про медицину</code>\n"
             "• пришлите абзац текста — найду в нём слова\n\n"
-            "Если язык не назван, латиница считается английской. Указать язык "
-            "можно словами: «французское слово hotel — отель».\n\n"
+            "Если язык не удалось определить, латиница считается английской. "
+            "Указать язык можно словами: «французское слово hotel — отель».\n\n"
             "Можно совместить: <code>arrangement как во фразе … и ещё пару слов "
             "на эту тему</code> — добавлю слово и подберу слова того же домена."
         )
@@ -453,6 +458,7 @@ def build_router() -> Router:
 
         if await state.get_state() == AddWords.clarifying.state:
             data = await state.get_data()
+            language = data.get(LANGUAGE_KEY)
             await handle_request(
                 text=text,
                 bot=bot,
@@ -465,6 +471,7 @@ def build_router() -> Router:
                     str(data.get(QUESTION_KEY) or ""),
                     int(data.get(ROUND_KEY, 0)) + 1,
                 ),
+                fallback_language=language if isinstance(language, str) else None,
             )
             return
 
@@ -495,6 +502,7 @@ def build_router() -> Router:
         answer = str(options[callback_data.index])
         await edit_or_send(query, texts.clarification_answered(answer), bot=bot)
         await query.answer()
+        language = data.get(LANGUAGE_KEY)
         await handle_request(
             text=answer,
             bot=bot,
@@ -507,6 +515,7 @@ def build_router() -> Router:
                 str(data.get(QUESTION_KEY) or ""),
                 int(data.get(ROUND_KEY, 0)) + 1,
             ),
+            fallback_language=language if isinstance(language, str) else None,
         )
 
     @router.callback_query(ClarifyCB.filter(F.action == "skip"))

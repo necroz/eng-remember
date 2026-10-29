@@ -2,9 +2,8 @@
 
 Latin and Cyrillic scripts keep the four-character stem rule used by discovery:
 an example may contain "negotiating" for "negotiate". Scripts without word
-spacing or with rich morphology use normalized containment instead, and CJK
-terms are exact substrings because Chinese and Japanese do not put spaces
-between words.
+spacing — CJK and Thai — use exact substring spans; other non-Latin scripts use
+normalized token containment.
 """
 
 from __future__ import annotations
@@ -17,7 +16,7 @@ from eng_remember.domain.languages import DEFAULT_LANGUAGE, resolve_language
 
 __all__ = ["contains_term", "term_spans"]
 
-_CJK_LANGUAGES = frozenset({"cmn", "jpn"})
+_SUBSTRING_LANGUAGES = frozenset({"cmn", "jpn", "tha"})
 _STEM_LANGUAGES = frozenset(
     {"eng", "fra", "spa", "por", "ind", "deu", "vie", "swh", "tur", "ita", "rus"}
 )
@@ -35,13 +34,13 @@ def term_spans(text: str, term: str, language: str = DEFAULT_LANGUAGE) -> list[t
     if not text or not cleaned_term:
         return []
 
-    if code in _CJK_LANGUAGES:
+    if code in _SUBSTRING_LANGUAGES:
         return [
             (match.start(), match.end())
             for match in re.finditer(re.escape(cleaned_term), text, re.IGNORECASE)
         ]
 
-    parts = [part for part in cleaned_term.split() if part]
+    parts = [part for part in re.split(r"[\s'’\-]+", cleaned_term) if part]
     if not parts:
         return []
     tokens = _tokens(text)
@@ -62,14 +61,29 @@ def term_spans(text: str, term: str, language: str = DEFAULT_LANGUAGE) -> list[t
         if all(start + offset in part_matches[offset] for offset in range(1, len(parts))):
             runs.append((tokens[start][0], tokens[start + len(parts) - 1][1]))
     if runs:
-        return runs
+        return _merge_overlapping(runs)
 
     # Every part is present, but not as one phrase. Hide each occurrence; a
     # partial phrase blank would be misleading, so this branch only runs when
     # all parts were found.
-    return sorted(
-        {(tokens[index][0], tokens[index][1]) for indices in part_matches for index in indices}
+    return _merge_overlapping(
+        [(tokens[index][0], tokens[index][1]) for indices in part_matches for index in indices]
     )
+
+
+def _merge_overlapping(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Join spans that share characters so replacement cannot corrupt text."""
+    if not spans:
+        return []
+    ordered = sorted(spans)
+    merged = [ordered[0]]
+    for start, end in ordered[1:]:
+        previous_start, previous_end = merged[-1]
+        if start < previous_end:
+            merged[-1] = (previous_start, max(previous_end, end))
+        else:
+            merged.append((start, end))
+    return merged
 
 
 def contains_term(text: str, term: str, language: str = DEFAULT_LANGUAGE) -> bool:

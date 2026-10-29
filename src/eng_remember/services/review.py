@@ -20,17 +20,19 @@ __all__ = ["AnswerResult", "ReviewQueue", "ReviewService"]
 
 
 def _one_per_term(cards: list[Card]) -> list[Card]:
-    """At most one new card per word per queue.
+    """At most one new card per word per language per queue.
 
     Every word is a pair; showing both directions back to back in one session
     would make the second answer a trivial echo. ``list_new`` orders by id, and
     the forward card is always created first, so the pair is introduced from
-    the English side and the reverse twin waits for the next day.
+    the studied-language side and the reverse twin waits for the next day. The
+    language is part of the key: ``hotel`` in English and ``hotel`` in French
+    are different words.
     """
-    seen: set[str] = set()
+    seen: set[tuple[str, str]] = set()
     kept: list[Card] = []
     for card in cards:
-        key = card.term.casefold()
+        key = (card.language, card.term.casefold())
         if key in seen:
             continue
         seen.add(key)

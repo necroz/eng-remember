@@ -240,6 +240,7 @@ class CardRepository:
                     sibling.user_id == Card.user_id,
                     sibling.id != Card.id,
                     func.lower(sibling.term) == func.lower(Card.term),
+                    sibling.language == Card.language,
                     sibling.reps > 0,
                     sibling.last_review_at.is_not(None),
                     sibling.last_review_at >= bury_reviewed_since,

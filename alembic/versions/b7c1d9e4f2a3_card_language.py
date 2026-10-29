@@ -1,5 +1,9 @@
 """card language
 
+Downgrading is destructive: the old schema cannot represent the same term in
+two languages, so non-English cards and their review history are deleted.
+Back up the database before rolling this migration back.
+
 Revision ID: b7c1d9e4f2a3
 Revises: 420f510e800f
 Create Date: 2026-10-29 16:30:00.000000

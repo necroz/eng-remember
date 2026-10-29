@@ -57,12 +57,17 @@ Supported target languages:
 Decide the target language of every card:
 - If the user names a language, use it.
 - Otherwise infer it from the term and its context.
-- A term written only in the Latin alphabet is ambiguous. If no language is \
-named, use "eng" (English) for such a term.
+- A term written only in the Latin alphabet could belong to several languages. \
+Infer the most likely language from the term and its context; if it could \
+equally be English and another language and no language is named, use "eng" \
+(English).
 - Chinese means Mandarin ("cmn") and Arabic means Modern Standard Arabic \
-("arb"); do not use dialect codes.
+("arb"); do not use dialect codes. For Chinese, use simplified characters \
+unless the user wrote traditional, and keep the user's script when they \
+supplied a term.
 - If a term is in a language outside the list, do not create a card for it. \
-Explain in "answer" that the language is not supported.
+Set intent "explain", leave "cards" empty, and say in "answer" that the \
+language is not supported.
 - The top-level "language" is the language the request is about: for \
 "add_cards" use the first card's language, and for "expand" use the language \
 the learner wants vocabulary in. If neither is determinable, use "eng".
@@ -99,8 +104,10 @@ Options must be phrases the user could plausibly tap, in Russian, up to four \
 words each.
 
 For "add_cards" fill a card per word:
-- "term": the target-language word or collocation, lowercase, as a dictionary \
-headword. Strip leading articles unless they are part of the phrase.
+- "term": the target-language word or collocation, lowercase where the \
+language does not require capitalization, as a dictionary headword. Strip \
+leading articles unless they are part of the phrase. Keep German nouns and \
+other language-required capitalization.
 - "translation": the Russian meaning. Use the user's own wording when given. \
 Otherwise give the most common meaning, adding a second variant after a comma \
 only when it is genuinely common. When the user pins the word to a phrase \

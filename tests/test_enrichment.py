@@ -28,6 +28,7 @@ class FakeEnricher(CardEnricher):
         self._answers = list(examples or [])
         self._mnemonic = mnemonic
         self.calls: list[tuple[str, str, int, tuple[str, ...], int | None]] = []
+        self.languages: list[str] = []
 
     @property
     def available(self) -> bool:
@@ -44,6 +45,7 @@ class FakeEnricher(CardEnricher):
         language: str = DEFAULT_LANGUAGE,
     ) -> list[str]:
         self.calls.append(("examples", term, count, tuple(existing), user_id))
+        self.languages.append(language)
         return self._answers[:count]
 
     async def mnemonic(
@@ -55,6 +57,7 @@ class FakeEnricher(CardEnricher):
         language: str = DEFAULT_LANGUAGE,
     ) -> str:
         self.calls.append(("mnemonic", term, 0, (), user_id))
+        self.languages.append(language)
         return self._mnemonic
 
 
@@ -81,6 +84,19 @@ async def test_enrich_embeds_the_existing_example_first(
     assert card.examples == ["My own sentence.", "New one.", "New two."]
     assert card.example == "My own sentence."
     assert enricher.calls == [("examples", "run", 2, ("My own sentence.",), user.id)]
+
+
+async def test_enrichment_passes_the_card_language_to_the_enricher(
+    services: Services, user: User, enrichment: EnrichmentService, enricher: FakeEnricher
+) -> None:
+    card = await services.card_service.add_draft(
+        user, CardDraft(term="bonjour", translation="здравствуйте", language="fra")
+    )
+
+    await enrichment.enrich_examples(card=card, user_id=user.id)
+    await enrichment.add_mnemonic(card=card, user_id=user.id)
+
+    assert enricher.languages == ["fra", "fra"]
 
 
 async def test_enrich_does_nothing_when_the_target_is_already_met(

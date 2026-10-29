@@ -487,6 +487,30 @@ class TestCardPairs:
 
         assert walked == ["w0", "w1", "w2"]
 
+    async def test_same_term_in_two_languages_are_separate_new_cards(
+        self, services: Services, user: User
+    ) -> None:
+        english = await services.card_service.add_draft(
+            user, CardDraft(term="hotel", translation="отель", language="eng")
+        )
+        french = await services.card_service.add_draft(
+            user, CardDraft(term="hotel", translation="отель", language="fra")
+        )
+        await services.commit()
+
+        queue = await services.review_service.build_queue(user, now=french.due_at)
+
+        assert sorted(card.id for card in queue.cards) == sorted([english.id, french.id])
+        assert queue.new_total == 2
+
+        await services.review_service.answer(user, english, ReviewRating.GOOD, now=french.due_at)
+        await services.commit()
+        later = await services.review_service.build_queue(
+            user, now=french.due_at + timedelta(minutes=5)
+        )
+
+        assert french.id in [card.id for card in later.cards]
+
     async def test_the_reverse_twin_waits_for_the_next_day(
         self, services: Services, user: User, draft: CardDraft
     ) -> None:

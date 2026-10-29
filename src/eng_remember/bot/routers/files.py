@@ -27,7 +27,12 @@ from eng_remember.bot.states import (
     ImportFile,
 )
 from eng_remember.domain.enums import CardDirection
-from eng_remember.domain.languages import DEFAULT_LANGUAGE, detect_script_language
+from eng_remember.domain.languages import (
+    DEFAULT_LANGUAGE,
+    NATIVE_LANGUAGE,
+    detect_script_language,
+    resolve_language,
+)
 from eng_remember.errors import LlmError
 from eng_remember.models.user import User
 from eng_remember.repositories.cards import CardDraft
@@ -209,7 +214,18 @@ async def _prepare_rows(
     parsed: CsvParseResult,
 ) -> tuple[list[CsvRow], int, int, int]:
     """Cleaned, de-duplicated rows plus the counters the preview owns."""
-    cleaned = [_clean_row(row) for row in parsed.rows]
+    cleaned: list[CsvRow] = []
+    for row in parsed.rows:
+        if row.language is not None:
+            if resolve_language(row.language) == NATIVE_LANGUAGE:
+                parsed.skipped += 1
+                continue
+        elif detect_script_language(row.term) is None:
+            # An old file without the optional column cannot say what an
+            # unsupported script means; saving it as English would be a lie.
+            parsed.skipped += 1
+            continue
+        cleaned.append(_clean_row(row))
     terms_by_language: dict[str, list[str]] = {}
     for row in cleaned:
         language = row.language or DEFAULT_LANGUAGE

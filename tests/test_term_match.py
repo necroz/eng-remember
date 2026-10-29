@@ -35,6 +35,29 @@ def test_consecutive_phrase_parts_become_one_span() -> None:
     assert term_spans(text, "get away with", "eng") == [(10, 24)]
 
 
+def test_apostrophe_and_hyphen_terms_match_as_one_phrase() -> None:
+    assert contains_term("I don't know.", "don't", "eng")
+    assert contains_term("A well-known problem.", "well-known", "eng")
+    assert contains_term("We met at o'clock.", "o'clock", "eng")
+
+    text = "Il a réservé l’hôtel."
+    spans = term_spans(text, "l’hôtel", "fra")
+    assert [text[start:end] for start, end in spans] == ["l’hôtel"]
+
+
+def test_thai_terms_are_substrings_of_unspaced_text() -> None:
+    text = "ฉันเรียนภาษาไทยทุกวัน"
+
+    assert contains_term(text, "ภาษาไทย", "tha")
+    assert [text[start:end] for start, end in term_spans(text, "ภาษาไทย", "tha")] == ["ภาษาไทย"]
+
+
+def test_overlapping_phrase_spans_are_merged() -> None:
+    text = "la la la"
+
+    assert term_spans(text, "la la", "eng") == [(0, len(text))]
+
+
 def test_non_consecutive_phrase_parts_are_hidden_separately() -> None:
     text = "With it, get away."
 

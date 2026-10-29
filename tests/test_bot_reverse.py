@@ -1,4 +1,4 @@
-"""The reverse card as the learner uses it: meaning in, English word out."""
+"""The reverse card as the learner uses it: meaning in, studied word out."""
 
 from __future__ import annotations
 

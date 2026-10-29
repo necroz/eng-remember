@@ -20,6 +20,7 @@ from eng_remember.domain.gamification import StreakState, StreakTransition
 from eng_remember.domain.languages import (
     DEFAULT_LANGUAGE,
     LANGUAGES,
+    SUPPORTED_LANGUAGES,
     language_badge,
     language_for_code,
 )
@@ -131,6 +132,8 @@ MAIN_MENU_BUTTONS = (BTN_ADD, BTN_REVIEW, BTN_PRACTICE, BTN_DECKS, BTN_STATS, BT
 # the revealed line is capped.
 ANSWER_DISPLAY_LIMIT = 200
 
+_SUPPORTED_LANGUAGE_NAMES = ", ".join(language.name_ru for language in SUPPORTED_LANGUAGES)
+
 
 def welcome_new(first_name: str | None, deck_name: str) -> str:
     name = f", {escape(first_name)}" if first_name else ""
@@ -145,9 +148,10 @@ def welcome_new(first_name: str | None, deck_name: str) -> str:
         "• <code>书 — книга</code>\n"
         "• <code>ubiquitous — вездесущий</code>\n"
         "• <code>добавь слова resilient и thorough</code>\n\n"
-        "Язык определяется по слову и сообщению; латиница без указания "
-        "языка считается английской. Если язык определён неверно, укажите его "
-        "словами: «французское слово hotel — отель».\n\n"
+        "Язык определяется по слову и сообщению; если язык не удалось "
+        "определить, латиница считается английской. Если язык определён "
+        "неверно, укажите его словами: «французское слово hotel — отель».\n\n"
+        f"<b>Языки:</b> {_SUPPORTED_LANGUAGE_NAMES}.\n\n"
         f"Дальше — «{BTN_REVIEW}», и я буду показывать то, что пора повторить.\n\n"
         "Если слово никак не даётся, я сам предложу помощь, а приостановленные "
         "слова ждут в /paused. Хочется просто погонять слова — /practice.\n"

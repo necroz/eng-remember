@@ -130,6 +130,13 @@ def test_the_parse_prompt_lists_every_supported_language() -> None:
     assert '"language"' in PARSE_SYSTEM_PROMPT
 
 
+def test_the_parse_prompt_defaults_only_ambiguous_latin_to_english() -> None:
+    assert "could belong to several languages" in PARSE_SYSTEM_PROMPT
+    assert 'intent "explain"' in PARSE_SYSTEM_PROMPT
+    assert "simplified" in PARSE_SYSTEM_PROMPT
+    assert "capitalization" in PARSE_SYSTEM_PROMPT
+
+
 def test_card_listing_escapes_model_output() -> None:
     rendered = "\n".join(
         texts.cards_listing([CardDraft(term="<b>bold</b>", translation="<script>x</script>")])

@@ -43,3 +43,20 @@ def test_arabic_diacritics_are_part_of_the_hidden_word() -> None:
 
 def test_french_apostrophe_is_a_token_separator() -> None:
     assert cloze("Il a réservé l’hôtel.", "hôtel", "fra") == "Il a réservé l’____."
+
+
+def test_apostrophes_and_hyphens_are_blanked_with_their_terms() -> None:
+    assert cloze("I don't know.", "don't", "eng") == "I ____ know."
+    assert cloze("A well-known problem.", "well-known", "eng") == "A ____ problem."
+
+
+def test_french_elision_is_blanked_with_the_term() -> None:
+    assert cloze("Il a réservé l’hôtel.", "l’hôtel", "fra") == "Il a réservé ____."
+
+
+def test_thai_term_is_blanked_by_substring() -> None:
+    assert cloze("ฉันเรียนภาษาไทยทุกวัน", "ภาษาไทย", "tha") == "ฉันเรียน____ทุกวัน"
+
+
+def test_overlapping_phrases_do_not_corrupt_the_blank() -> None:
+    assert cloze("la la la", "la la", "eng") == "____"

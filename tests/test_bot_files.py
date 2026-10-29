@@ -319,6 +319,22 @@ async def test_missing_translations_are_filled_per_language(
     assert "гулять" in preview
 
 
+async def test_a_cyrillic_row_without_a_language_is_not_saved_as_english(
+    dispatcher: Dispatcher,
+    bot: Bot,
+    recording: RecordingSession,
+    monkeypatch: pytest.MonkeyPatch,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    patch_file(monkeypatch, ("привет;привет\n" + "привет;привет;;;;;;;rus\n").encode())
+
+    await send_file(dispatcher, bot)
+
+    assert "не нашлось" in recording.last_text()
+    async with session_factory() as check:
+        assert (await check.scalars(select(Card))).all() == []
+
+
 async def test_cancelling_imports_nothing(
     dispatcher: Dispatcher,
     bot: Bot,

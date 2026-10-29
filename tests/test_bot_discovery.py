@@ -725,6 +725,71 @@ class TestClarification:
         assert "медицина" in clarified
         assert "fever" in recording.last_text()
 
+    async def test_an_option_answer_keeps_the_stored_language(
+        self,
+        discovery_dispatcher: Dispatcher,
+        bot: Bot,
+        recording: RecordingSession,
+        llm: ScriptedClient,
+    ) -> None:
+        llm.push_parse(
+            parse_payload(
+                intent="expand",
+                topic="приветствия",
+                count=1,
+                language="fra",
+                clarification={"question": "Уточнить тему?", "options": ["приветствия"]},
+            )
+        )
+        llm.push_parse(parse_payload(intent="expand", topic="приветствия", count=1))
+        llm.push_expand(
+            expansion_payload(
+                [card_payload("bonjour", "здравствуйте", language="eng")],
+                topic="приветствия",
+            )
+        )
+        await send(discovery_dispatcher, bot, "хочу ещё слов", update_id=55)
+
+        await tap(
+            discovery_dispatcher,
+            bot,
+            ClarifyCB(action="option", index=0).pack(),
+            update_id=56,
+        )
+
+        assert "Target language: French (fra)." in llm.last_prompt()
+        assert "bonjour" in recording.last_text()
+
+    async def test_a_typed_answer_keeps_the_stored_language(
+        self,
+        discovery_dispatcher: Dispatcher,
+        bot: Bot,
+        recording: RecordingSession,
+        llm: ScriptedClient,
+    ) -> None:
+        llm.push_parse(
+            parse_payload(
+                intent="expand",
+                topic="приветствия",
+                count=1,
+                language="fra",
+                clarification={"question": "Уточнить тему?", "options": ["приветствия"]},
+            )
+        )
+        llm.push_parse(parse_payload(intent="expand", topic="приветствия", count=1))
+        llm.push_expand(
+            expansion_payload(
+                [card_payload("bonjour", "здравствуйте", language="eng")],
+                topic="приветствия",
+            )
+        )
+        await send(discovery_dispatcher, bot, "хочу ещё слов", update_id=57)
+
+        await send(discovery_dispatcher, bot, "приветствия", update_id=58)
+
+        assert "Target language: French (fra)." in llm.last_prompt()
+        assert "bonjour" in recording.last_text()
+
     async def test_a_typed_answer_also_resolves_the_question(
         self,
         discovery_dispatcher: Dispatcher,

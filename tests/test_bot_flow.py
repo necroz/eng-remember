@@ -100,6 +100,7 @@ class TestStart:
 
         assert "Привет" in recording.last_text()
         assert "иностранные слова" in recording.last_text()
+        assert "Французский" in recording.last_text()
 
     async def test_start_again_greets_a_returning_user(
         self, dispatcher: Dispatcher, bot: Bot, recording: RecordingSession
