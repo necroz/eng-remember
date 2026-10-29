@@ -20,6 +20,7 @@ __all__ = [
     "FILE_UNTRANSLATED_KEY",
     "FRONT_MESSAGE_KEY",
     "HINT_USED_KEY",
+    "LANGUAGE_KEY",
     "OPTIONS_KEY",
     "ORIGINAL_KEY",
     "OWN_KEY",
@@ -52,6 +53,7 @@ ENGINE_KEY = "engine"
 TOPIC_KEY = "topic"
 COUNT_KEY = "count"
 CONTEXT_KEY = "context"
+LANGUAGE_KEY = "language"
 
 # The clarification dialogue: what was asked, what the answer options were, and
 # which round this is — without the round counter a model that keeps asking the

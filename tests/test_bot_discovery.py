@@ -451,6 +451,135 @@ class TestAWordAndWordsAroundIt:
         assert terms == {"arrangement"}
 
 
+class TestDiscoveryLanguage:
+    async def test_a_french_request_keeps_its_language_across_more_and_confirm(
+        self,
+        discovery_dispatcher: Dispatcher,
+        bot: Bot,
+        recording: RecordingSession,
+        llm: ScriptedClient,
+        session_factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        llm.push_parse(
+            parse_payload(
+                intent="add_cards",
+                cards=[card_payload("bonjour", "здравствуйте", language="fra")],
+                topic="приветствия",
+                count=1,
+                more_words=True,
+            )
+        )
+        llm.push_expand(
+            expansion_payload(
+                [card_payload("merci", "спасибо", language="eng")], topic="приветствия"
+            )
+        )
+        llm.push_expand(
+            expansion_payload(
+                [card_payload("au revoir", "до свидания", language="eng")],
+                topic="приветствия",
+            )
+        )
+
+        await send(discovery_dispatcher, bot, "добавь bonjour и ещё слово")
+
+        assert "Target language: French (fra)." in llm.last_prompt()
+        assert "bonjour" in recording.last_text()
+
+        await tap(discovery_dispatcher, bot, button_with(recording, "im:more"))
+
+        assert "Target language: French (fra)." in llm.last_prompt()
+        assert "au revoir" in recording.last_text()
+
+        await tap(discovery_dispatcher, bot, button_with(recording, "im:confirm"))
+
+        async with session_factory() as check:
+            cards = (await check.scalars(select(Card))).all()
+        assert {card.term: card.language for card in cards} == {
+            "bonjour": "fra",
+            "au revoir": "fra",
+        }
+
+    async def test_skipping_a_clarification_keeps_the_language(
+        self,
+        discovery_dispatcher: Dispatcher,
+        bot: Bot,
+        recording: RecordingSession,
+        llm: ScriptedClient,
+    ) -> None:
+        llm.push_parse(
+            parse_payload(
+                intent="expand",
+                topic="приветствия",
+                count=1,
+                language="fra",
+                clarification={"question": "Уточнить тему?", "options": ["приветствия"]},
+            )
+        )
+        await send(discovery_dispatcher, bot, "хочу ещё слов", update_id=700)
+
+        llm.push_expand(
+            expansion_payload(
+                [card_payload("bonjour", "здравствуйте", language="eng")],
+                topic="приветствия",
+            )
+        )
+        await tap(
+            discovery_dispatcher,
+            bot,
+            ClarifyCB(action="skip").pack(),
+            update_id=701,
+        )
+
+        assert "Target language: French (fra)." in llm.last_prompt()
+        assert "bonjour" in recording.last_text()
+
+    async def test_a_mixed_batch_keeps_each_cards_own_language(
+        self,
+        discovery_dispatcher: Dispatcher,
+        bot: Bot,
+        recording: RecordingSession,
+        llm: ScriptedClient,
+        session_factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        llm.push_parse(
+            parse_payload(
+                intent="add_cards",
+                language="fra",
+                cards=[card_payload("hello", "привет", language="eng")],
+                topic="приветствия",
+                count=1,
+                more_words=True,
+            )
+        )
+        llm.push_expand(
+            expansion_payload(
+                [card_payload("bonjour", "здравствуйте", language="eng")],
+                topic="приветствия",
+            )
+        )
+
+        await send(discovery_dispatcher, bot, "добавь hello и ещё слово", update_id=710)
+
+        assert "Target language: French (fra)." in llm.last_prompt()
+        assert "hello" in recording.last_text()
+        assert "bonjour" in recording.last_text()
+
+        await tap(
+            discovery_dispatcher,
+            bot,
+            button_with(recording, "im:confirm"),
+            update_id=711,
+        )
+
+        async with session_factory() as check:
+            cards = (await check.scalars(select(Card))).all()
+        assert {card.term: card.language for card in cards} == {
+            "hello": "eng",
+            "bonjour": "fra",
+        }
+
+
 class TestDiscoveryGuardrails:
     async def test_without_a_model_the_user_is_told(
         self, dispatcher: Dispatcher, bot: Bot, recording: RecordingSession

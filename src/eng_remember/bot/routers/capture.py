@@ -39,6 +39,7 @@ from eng_remember.bot.states import (
     COUNT_KEY,
     DRAFT_KEY,
     ENGINE_KEY,
+    LANGUAGE_KEY,
     OPTIONS_KEY,
     ORIGINAL_KEY,
     OWN_KEY,
@@ -48,6 +49,7 @@ from eng_remember.bot.states import (
     AddWords,
 )
 from eng_remember.config import DiscoverySettings
+from eng_remember.domain.languages import DEFAULT_LANGUAGE
 from eng_remember.errors import (
     LlmError,
     LlmGlobalBudgetExceededError,
@@ -153,7 +155,14 @@ def build_router() -> Router:
         if not own:
             await bot.send_message(chat_id, texts.cannot_parse(_llm_available(services)))
             return
-        await _present(bot=bot, chat_id=chat_id, state=state, own=own, engine=outcome.engine)
+        await _present(
+            bot=bot,
+            chat_id=chat_id,
+            state=state,
+            own=own,
+            engine=outcome.engine,
+            language=response.language,
+        )
 
     async def run_discovery(
         *,
@@ -168,6 +177,7 @@ def build_router() -> Router:
         exclude: tuple[str, ...] = (),
         own: Sequence[CardDraft] = (),
         engine: str = "",
+        language: str | None = None,
     ) -> None:
         """Look for words the user does not have yet, then offer them.
 
@@ -180,6 +190,7 @@ def build_router() -> Router:
         topic has to be read out of the request or away from its context, so a
         message that names no domain gets a question rather than a guess.
         """
+        target = language or response.language
         own = list(own)
         seeds = [draft.term for draft in own]
 
@@ -192,6 +203,7 @@ def build_router() -> Router:
                     own=own,
                     engine=engine,
                     note=texts.more_unavailable(),
+                    language=target,
                 )
             else:
                 await bot.send_message(chat_id, texts.discovery_unavailable())
@@ -217,6 +229,7 @@ def build_router() -> Router:
                     own=own,
                     engine=engine,
                     note=texts.more_needs_topic(),
+                    language=target,
                 )
             else:
                 await bot.send_message(chat_id, texts.discovery_needs_context())
@@ -230,6 +243,7 @@ def build_router() -> Router:
                 seeds=seeds,
                 count=response.count,
                 exclude=exclude,
+                language=target,
                 user_id=user.id,
             )
         except LlmGlobalBudgetExceededError as exc:
@@ -245,6 +259,7 @@ def build_router() -> Router:
                     own=own,
                     engine=engine,
                     note=texts.more_unavailable(),
+                    language=target,
                 )
             else:
                 await bot.send_message(chat_id, texts.model_busy())
@@ -261,6 +276,7 @@ def build_router() -> Router:
                     own=own,
                     engine=engine,
                     note=texts.more_quota_exceeded(),
+                    language=target,
                 )
             else:
                 await bot.send_message(chat_id, texts.quota_exceeded())
@@ -275,6 +291,7 @@ def build_router() -> Router:
                     own=own,
                     engine=engine,
                     note=texts.more_unavailable(),
+                    language=target,
                 )
             else:
                 await bot.send_message(chat_id, texts.discovery_unavailable())
@@ -293,6 +310,7 @@ def build_router() -> Router:
                     own=own,
                     engine=engine,
                     note=texts.more_found_nothing(),
+                    language=target,
                 )
             else:
                 await bot.send_message(
@@ -311,6 +329,7 @@ def build_router() -> Router:
             count=result.requested,
             context=context,
             deck_name=deck.name,
+            language=target,
         )
 
     async def _ask_clarification(
@@ -337,6 +356,7 @@ def build_router() -> Router:
                 # for and what the topic was before the question interrupted.
                 TOPIC_KEY: response.topic,
                 COUNT_KEY: response.count,
+                LANGUAGE_KEY: response.language,
             }
         )
         await bot.send_message(
@@ -358,6 +378,7 @@ def build_router() -> Router:
         count: int | None = None,
         context: str | None = None,
         deck_name: str | None = None,
+        language: str | None = None,
     ) -> None:
         """Show a batch for confirmation and remember it for the save button.
 
@@ -371,6 +392,7 @@ def build_router() -> Router:
             await bot.send_message(chat_id, texts.nothing_to_save())
             return
 
+        target = language or (found.language if found is not None else DEFAULT_LANGUAGE)
         await state.set_state(AddWords.confirming)
         await state.update_data(
             {
@@ -380,6 +402,7 @@ def build_router() -> Router:
                 TOPIC_KEY: topic,
                 COUNT_KEY: count,
                 CONTEXT_KEY: context,
+                LANGUAGE_KEY: target,
             }
         )
 
@@ -501,6 +524,7 @@ def build_router() -> Router:
         await edit_or_send(query, texts.clarification_skipped(), bot=bot)
         await query.answer()
 
+        language = data.get(LANGUAGE_KEY)
         await run_discovery(
             bot=bot,
             chat_id=callback_chat_id(query),
@@ -511,6 +535,7 @@ def build_router() -> Router:
                 intent=Intent.EXPAND,
                 topic=data.get(TOPIC_KEY) or None,
                 count=data.get(COUNT_KEY) or None,
+                language=language if isinstance(language, str) else DEFAULT_LANGUAGE,
             ),
             source_text="",
             settings=services.settings.discovery,
@@ -575,6 +600,7 @@ def build_router() -> Router:
         own_raw = data.get(OWN_KEY) or []
         topic = data.get(TOPIC_KEY)
         context = data.get(CONTEXT_KEY)
+        language = data.get(LANGUAGE_KEY)
 
         await edit_or_send(query, texts.looking_for_more(), bot=bot)
         await query.answer()
@@ -588,6 +614,7 @@ def build_router() -> Router:
                 intent=Intent.EXPAND,
                 topic=topic if isinstance(topic, str) else None,
                 count=data.get(COUNT_KEY) if isinstance(data.get(COUNT_KEY), int) else None,
+                language=language if isinstance(language, str) else DEFAULT_LANGUAGE,
             ),
             source_text=context if isinstance(context, str) else "",
             settings=services.settings.discovery,
