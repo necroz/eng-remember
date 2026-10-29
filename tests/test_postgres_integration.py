@@ -22,13 +22,14 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 import eng_remember.models  # noqa: F401  — registers tables on Base.metadata
 from eng_remember.config import Settings
 from eng_remember.db import Base, create_engine, create_session_factory
-from eng_remember.domain.enums import CardState, ReviewRating
+from eng_remember.domain.enums import CardDirection, CardState, ReviewRating
 from eng_remember.models.card import Card
 from eng_remember.models.user import User
 from eng_remember.repositories.cards import CardDraft
 from eng_remember.repositories.users import TelegramProfile
 from eng_remember.services.container import Services, build_services
 from eng_remember.utils.time import utcnow
+from tests.factories import schedule
 
 pytestmark = pytest.mark.integration
 
@@ -97,6 +98,31 @@ async def test_timestamps_come_back_timezone_aware(
     assert reloaded.due_at.tzinfo is not None
     assert reloaded.created_at.tzinfo is not None
     assert reloaded.schedule.due_at.tzinfo is not None
+
+
+async def test_the_unique_constraint_includes_the_language(
+    pg_services: Services, pg_session: AsyncSession, pg_user: User
+) -> None:
+    """``hotel`` may be English and French, but not twice in the same language."""
+    french = await pg_services.card_service.add_draft(
+        pg_user, CardDraft(term="hotel", translation="отель", language="fra")
+    )
+    english = await pg_services.card_service.add_draft(
+        pg_user, CardDraft(term="hotel", translation="отель", language="eng")
+    )
+    await pg_session.commit()
+
+    assert {french.language, english.language} == {"fra", "eng"}
+
+    with pytest.raises(IntegrityError):
+        await pg_services.cards.add(
+            user_id=pg_user.id,
+            deck_id=french.deck_id,
+            draft=CardDraft(term="hotel", translation="отель", language="fra"),
+            schedule=schedule(0),
+            direction=CardDirection.FORWARD,
+        )
+    await pg_session.rollback()
 
 
 async def test_the_review_flow_survives_a_real_scheduler(

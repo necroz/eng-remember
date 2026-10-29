@@ -105,6 +105,52 @@ class TestCardService:
         with pytest.raises(DuplicateCardError):
             await services.card_service.add_draft(user, shouted)
 
+    async def test_a_saved_card_keeps_its_language(self, services: Services, user: User) -> None:
+        card = await services.card_service.add_draft(
+            user, CardDraft(term="bonjour", translation="здравствуйте", language="fr")
+        )
+        twin = await services.cards.find_twin(card)
+
+        assert card.language == "fra"
+        assert twin is not None
+        assert twin.language == "fra"
+
+    async def test_the_same_word_in_another_language_is_allowed(
+        self, services: Services, user: User
+    ) -> None:
+        english = await services.card_service.add_draft(
+            user, CardDraft(term="hotel", translation="отель", language="eng")
+        )
+        french = await services.card_service.add_draft(
+            user, CardDraft(term="hotel", translation="отель", language="fra")
+        )
+
+        assert english.language == "eng"
+        assert french.language == "fra"
+        found = await services.cards.find_by_term(user.id, "hotel", language="fra")
+        assert found is not None
+        assert found.id == french.id
+
+    async def test_a_batch_groups_duplicates_by_language(
+        self, services: Services, user: User
+    ) -> None:
+        await services.card_service.add_draft(
+            user, CardDraft(term="chat", translation="кот", language="eng")
+        )
+
+        outcome = await services.card_service.add_drafts(
+            user,
+            [
+                CardDraft(term="chat", translation="кот", language="eng"),
+                CardDraft(term="chat", translation="кот", language="fra"),
+                CardDraft(term="chat", translation="кот", language="fra"),
+            ],
+        )
+
+        assert [(card.term, card.language) for card in outcome.added] == [("chat", "fra")]
+        assert outcome.skipped_existing == ["chat"]
+        assert outcome.skipped_in_batch == ["chat"]
+
     async def test_a_batch_reports_instead_of_failing(self, services: Services, user: User) -> None:
         await services.card_service.add_draft(user, CardDraft(term="run", translation="бежать"))
 

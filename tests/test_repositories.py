@@ -7,7 +7,8 @@ from datetime import timedelta
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from eng_remember.domain.enums import CardState, ReviewRating
+from eng_remember.domain.enums import CardDirection, CardState, ReviewRating
+from eng_remember.domain.languages import DEFAULT_LANGUAGE
 from eng_remember.models.card import Card
 from eng_remember.models.review import Review
 from eng_remember.models.user import User
@@ -53,13 +54,16 @@ async def add(
     reps: int = 0,
     lapses: int = 0,
     source: str = "manual",
+    language: str = DEFAULT_LANGUAGE,
+    direction: CardDirection = CardDirection.FORWARD,
 ) -> Card:
     card = await cards.add(
         user_id=user.id,
         deck_id=deck_id,
-        draft=CardDraft(term=term, translation=f"{term} по-русски"),
+        draft=CardDraft(term=term, translation=f"{term} по-русски", language=language),
         schedule=schedule(due_in_days, state=state, reps=reps, lapses=lapses),
         source=source,
+        direction=direction,
     )
     await session.commit()
     return card
@@ -128,6 +132,17 @@ class TestDecks:
         assert await decks.get(deck.id, user_id=user.id) is None
 
 
+def test_normalized_draft_keeps_and_resolves_its_language() -> None:
+    assert CardDraft(term=" run ", translation=" бежать ").normalized().language == "eng"
+    assert (
+        CardDraft(term="bonjour", translation="здравствуйте", language="fr").normalized().language
+        == "fra"
+    )
+    assert (
+        CardDraft(term="привет", translation="привет", language="ru").normalized().language == "eng"
+    )
+
+
 class TestCards:
     async def test_term_lookup_ignores_case_and_padding(
         self, cards: CardRepository, session: AsyncSession, user: User, deck: int
@@ -135,6 +150,58 @@ class TestCards:
         await add(cards, session, user, deck, "ubiquitous")
 
         assert await cards.find_by_term(user.id, "  UBIQUITOUS ") is not None
+
+    async def test_a_card_remembers_its_language(
+        self, cards: CardRepository, session: AsyncSession, user: User, deck: int
+    ) -> None:
+        card = await add(cards, session, user, deck, "bonjour", language="fra")
+        card_id = card.id
+        user_id = user.id
+        session.expire_all()
+
+        reloaded = await cards.get(card_id, user_id=user_id)
+        assert reloaded is not None
+        assert reloaded.language == "fra"
+
+    async def test_term_lookup_is_scoped_by_language(
+        self, cards: CardRepository, session: AsyncSession, user: User, deck: int
+    ) -> None:
+        await add(cards, session, user, deck, "hotel", language="fra")
+
+        assert await cards.find_by_term(user.id, "hotel", language="fra") is not None
+        assert await cards.find_by_term(user.id, "hotel", language="eng") is None
+        assert await cards.find_by_term(user.id, "hotel") is None
+
+    async def test_the_same_term_can_exist_in_two_languages(
+        self, cards: CardRepository, session: AsyncSession, user: User, deck: int
+    ) -> None:
+        await add(cards, session, user, deck, "hotel", language="eng")
+        await add(cards, session, user, deck, "hotel", language="fra")
+
+        listed = await cards.list_for_user(user.id, direction=CardDirection.FORWARD)
+
+        assert sorted((card.term, card.language) for card in listed) == [
+            ("hotel", "eng"),
+            ("hotel", "fra"),
+        ]
+
+    async def test_twin_lookup_is_scoped_by_language(
+        self, cards: CardRepository, session: AsyncSession, user: User, deck: int
+    ) -> None:
+        french_forward = await add(cards, session, user, deck, "hotel", language="fra")
+        french_reverse = await add(
+            cards,
+            session,
+            user,
+            deck,
+            "hotel",
+            language="fra",
+            direction=CardDirection.REVERSE,
+        )
+        english_forward = await add(cards, session, user, deck, "hotel", language="eng")
+
+        assert await cards.find_twin(french_forward) == french_reverse
+        assert await cards.find_twin(english_forward) is None
 
     async def test_existing_terms_is_case_insensitive(
         self, cards: CardRepository, session: AsyncSession, user: User, deck: int
@@ -144,6 +211,26 @@ class TestCards:
         found = await cards.existing_terms(user.id, ["run", "jump"])
 
         assert found == {"run"}
+
+    async def test_existing_terms_are_casefolded(
+        self, cards: CardRepository, session: AsyncSession, user: User, deck: int
+    ) -> None:
+        await add(cards, session, user, deck, "Straße", language="deu")
+
+        found = await cards.existing_terms(user.id, ["Straße"], language="deu")
+
+        assert found == {"strasse"}
+
+    async def test_known_terms_can_be_filtered_by_language(
+        self, cards: CardRepository, session: AsyncSession, user: User, deck: int
+    ) -> None:
+        await add(cards, session, user, deck, "chat", language="fra")
+        await add(cards, session, user, deck, "dog", language="eng")
+
+        assert await cards.all_terms(user.id, language="fra") == {"chat"}
+        assert await cards.all_terms(user.id) == {"chat", "dog"}
+        assert await cards.existing_terms(user.id, ["chat"], language="fra") == {"chat"}
+        assert await cards.existing_terms(user.id, ["chat"], language="eng") == set()
 
     async def test_card_lookup_is_scoped_to_the_owner(
         self, cards: CardRepository, session: AsyncSession, user: User, deck: int

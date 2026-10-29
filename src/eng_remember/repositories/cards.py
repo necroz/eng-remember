@@ -20,6 +20,7 @@ from sqlalchemy.orm import aliased
 
 from eng_remember.domain.enums import CardDirection
 from eng_remember.domain.examples import merge_examples
+from eng_remember.domain.languages import DEFAULT_LANGUAGE, resolve_target_language
 from eng_remember.domain.srs import CardSchedule
 from eng_remember.models.card import Card
 from eng_remember.utils.time import ensure_utc
@@ -58,6 +59,7 @@ class CardDraft:
     tags: tuple[str, ...] = field(default_factory=tuple)
     cefr: str | None = None
     frequency: str | None = None
+    language: str = DEFAULT_LANGUAGE
 
     def normalized(self) -> CardDraft:
         """Trim whitespace; a trailing space must not create a duplicate card.
@@ -78,6 +80,7 @@ class CardDraft:
             tags=tuple(tag.strip() for tag in self.tags if tag.strip()),
             cefr=_clean(self.cefr),
             frequency=_clean(self.frequency),
+            language=resolve_target_language(self.language),
         )
 
 
@@ -111,6 +114,7 @@ class CardRepository:
             deck_id=deck_id,
             term=cleaned.term,
             translation=cleaned.translation,
+            language=cleaned.language,
             transcription=cleaned.transcription,
             part_of_speech=cleaned.part_of_speech,
             example=cleaned.example,
@@ -132,10 +136,13 @@ class CardRepository:
         stmt = select(Card).where(Card.id == card_id, Card.user_id == user_id)
         return await self._session.scalar(stmt)
 
-    async def find_by_term(self, user_id: int, term: str) -> Card | None:
+    async def find_by_term(
+        self, user_id: int, term: str, language: str = DEFAULT_LANGUAGE
+    ) -> Card | None:
         stmt = select(Card).where(
             Card.user_id == user_id,
             func.lower(Card.term) == term.strip().lower(),
+            Card.language == resolve_target_language(language),
         )
         return await self._session.scalar(stmt)
 
@@ -145,22 +152,34 @@ class CardRepository:
             Card.user_id == card.user_id,
             Card.deck_id == card.deck_id,
             Card.term == card.term,
+            Card.language == card.language,
             Card.direction == card.direction.flipped,
         )
         return await self._session.scalar(stmt)
 
-    async def all_terms(self, user_id: int, *, limit: int = 5000) -> set[str]:
-        """Every term the learner has, lower-cased.
+    async def all_terms(
+        self, user_id: int, *, limit: int = 5000, language: str | None = None
+    ) -> set[str]:
+        """Every term the learner has, case-folded.
 
         Used to filter suggestions. Personal collections are in the hundreds, so
         reading them once per discovery is cheaper than a per-suggestion query
-        and gives exact de-duplication instead of approximate.
+        and gives exact de-duplication instead of approximate. A language limits
+        the set to the words that would collide with a new card.
         """
-        stmt = select(func.lower(Card.term)).where(Card.user_id == user_id).limit(limit)
-        return set((await self._session.scalars(stmt)).all())
+        stmt = select(func.lower(Card.term)).where(Card.user_id == user_id)
+        if language is not None:
+            stmt = stmt.where(Card.language == resolve_target_language(language))
+        stmt = stmt.limit(limit)
+        return {term.casefold() for term in (await self._session.scalars(stmt)).all()}
 
-    async def existing_terms(self, user_id: int, terms: Sequence[str]) -> set[str]:
-        """Lower-cased terms the user already has, for bulk duplicate filtering."""
+    async def existing_terms(
+        self,
+        user_id: int,
+        terms: Sequence[str],
+        language: str | None = None,
+    ) -> set[str]:
+        """Case-folded terms the user already has, for bulk duplicate filtering."""
         if not terms:
             return set()
         lowered = [term.strip().lower() for term in terms]
@@ -168,7 +187,9 @@ class CardRepository:
             Card.user_id == user_id,
             func.lower(Card.term).in_(lowered),
         )
-        return set((await self._session.scalars(stmt)).all())
+        if language is not None:
+            stmt = stmt.where(Card.language == resolve_target_language(language))
+        return {term.casefold() for term in (await self._session.scalars(stmt)).all()}
 
     async def list_due(
         self,

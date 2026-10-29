@@ -95,7 +95,10 @@ class CardService:
             raise DuplicateCardError(cleaned.term or "<empty>")
 
         target = deck or await self.default_deck(user)
-        if await self._cards.find_by_term(user.id, cleaned.term) is not None:
+        if (
+            await self._cards.find_by_term(user.id, cleaned.term, language=cleaned.language)
+            is not None
+        ):
             raise DuplicateCardError(cleaned.term)
 
         schedule = self._first_schedule(user, now=now)
@@ -134,19 +137,27 @@ class CardService:
         """
         target = deck or await self.default_deck(user)
         outcome = ImportOutcome()
-        seen: set[str] = set()
+        seen: set[tuple[str, str]] = set()
 
-        known = await self._cards.existing_terms(user.id, [d.term for d in drafts])
+        cleaned_drafts = [draft.normalized() for draft in drafts]
+        terms_by_language: dict[str, list[str]] = {}
+        for cleaned in cleaned_drafts:
+            if cleaned.term and cleaned.translation:
+                terms_by_language.setdefault(cleaned.language, []).append(cleaned.term)
+        known: dict[str, set[str]] = {
+            language: await self._cards.existing_terms(user.id, terms, language=language)
+            for language, terms in terms_by_language.items()
+        }
 
-        for draft in drafts:
-            cleaned = draft.normalized()
-            key = cleaned.term.lower()
+        for cleaned in cleaned_drafts:
             if not cleaned.term or not cleaned.translation:
                 continue
+            folded = cleaned.term.casefold()
+            key = (cleaned.language, folded)
             if key in seen:
                 outcome.skipped_in_batch.append(cleaned.term)
                 continue
-            if key in known:
+            if folded in known.get(cleaned.language, set()):
                 outcome.skipped_existing.append(cleaned.term)
                 continue
 

@@ -23,6 +23,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from eng_remember.db.base import Base, TimestampMixin, UtcDateTime
 from eng_remember.domain.enums import CardDirection, CardState
+from eng_remember.domain.languages import DEFAULT_LANGUAGE
 from eng_remember.domain.srs import CardSchedule
 from eng_remember.utils.time import ensure_utc
 
@@ -60,8 +61,9 @@ class Card(Base, TimestampMixin):
             "user_id",
             "deck_id",
             "term",
+            "language",
             "direction",
-            name="uq_cards_user_id_deck_id_term_direction",
+            name="uq_cards_user_id_deck_id_term_language_direction",
         ),
         Index("ix_cards_user_id_due_at", "user_id", "due_at"),
         Index("ix_cards_deck_id_due_at", "deck_id", "due_at"),
@@ -72,8 +74,16 @@ class Card(Base, TimestampMixin):
     deck_id: Mapped[int] = mapped_column(ForeignKey("decks.id", ondelete="CASCADE"), index=True)
 
     # --- content -----------------------------------------------------------
-    term: Mapped[str] = mapped_column(String(255), index=True, doc="English word or phrase")
+    term: Mapped[str] = mapped_column(
+        String(255), index=True, doc="Word or phrase in the studied language"
+    )
     translation: Mapped[str] = mapped_column(Text, doc="Russian meaning")
+    language: Mapped[str] = mapped_column(
+        String(8),
+        default=DEFAULT_LANGUAGE,
+        server_default=DEFAULT_LANGUAGE,
+        doc="ISO 639-3 code of the studied language",
+    )
     transcription: Mapped[str | None] = mapped_column(String(128))
     part_of_speech: Mapped[str | None] = mapped_column(String(32))
     example: Mapped[str | None] = mapped_column(Text)
