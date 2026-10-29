@@ -12,6 +12,27 @@ def test_normalize_ignores_case_yo_punctuation_and_hyphens() -> None:
     assert normalize("  Вездесущий, Ёлка! По-русски…  ") == "вездесущий елка по русски"
 
 
+def test_normalize_folds_yo_only_for_russian() -> None:
+    assert normalize("Ёлка") == "елка"
+    assert normalize("Ёлка", "eng") == "ёлка"
+
+
+def test_normalize_arabic_removes_harakat_and_unifies_letters() -> None:
+    assert normalize("كِتَابٌ", "arb") == "كتاب"
+    assert normalize("كــتاب", "arb") == "كتاب"
+    assert normalize("آأإٱ", "arb") == "اااا"
+    assert normalize("ىئ", "arb") == "يي"
+
+
+def test_matches_keeps_latin_diacritics_significant() -> None:
+    assert matches("café", "café", "fra")
+    assert not matches("cafe", "café", "fra")
+
+
+def test_normalize_does_not_convert_chinese_variants() -> None:
+    assert normalize("书", "cmn") != normalize("書", "cmn")
+
+
 def test_translation_variants_split_on_commas_semicolons_and_slashes() -> None:
     assert translation_variants("ужасный, страшный; жуткий/кошмарный") == [
         "ужасный страшный жуткий кошмарный",

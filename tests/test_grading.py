@@ -159,3 +159,59 @@ async def test_a_reverse_synonym_escalates_to_the_model(services: Services, user
     assert outcome.verdict is Verdict.ALMOST
     assert outcome.rating is ReviewRating.HARD
     assert "<expected_term>run</expected_term>" in client.calls[-1]["user"]
+
+
+async def test_a_reverse_french_card_accepts_an_accented_answer(
+    services: Services, user: User
+) -> None:
+    forward = await services.card_service.add_draft(
+        user, CardDraft(term="café", translation="кафе", language="fra")
+    )
+    twin = await services.cards.find_twin(forward)
+    assert twin is not None
+
+    outcome = await build(services, None).grade(user, twin, typed="café", duration_seconds=1.0)
+
+    assert outcome.verdict is Verdict.CORRECT
+
+
+async def test_a_reverse_french_card_rejects_a_missing_accent_without_a_model(
+    services: Services, user: User
+) -> None:
+    forward = await services.card_service.add_draft(
+        user, CardDraft(term="café", translation="кафе", language="fra")
+    )
+    twin = await services.cards.find_twin(forward)
+    assert twin is not None
+
+    outcome = await build(services, None).grade(user, twin, typed="cafe", duration_seconds=1.0)
+
+    assert outcome.verdict is Verdict.WRONG
+
+
+async def test_a_forward_french_card_still_uses_russian_variants(
+    services: Services, user: User
+) -> None:
+    forward = await services.card_service.add_draft(
+        user, CardDraft(term="café", translation="кафе, кофейня", language="fra")
+    )
+
+    outcome = await build(services, None).grade(
+        user, forward, typed="кофейня", duration_seconds=1.0
+    )
+
+    assert outcome.verdict is Verdict.CORRECT
+
+
+async def test_a_reverse_french_card_does_not_split_its_term_on_commas(
+    services: Services, user: User
+) -> None:
+    forward = await services.card_service.add_draft(
+        user, CardDraft(term="café, bar", translation="кафе, бар", language="fra")
+    )
+    twin = await services.cards.find_twin(forward)
+    assert twin is not None
+
+    outcome = await build(services, None).grade(user, twin, typed="bar", duration_seconds=1.0)
+
+    assert outcome.verdict is Verdict.WRONG

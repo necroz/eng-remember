@@ -193,7 +193,7 @@ def build_router() -> Router:
         # front's buttons, and «Не знаю» must survive the hint.
         await rendering.edit_or_send(
             query,
-            texts.card_front(card, hint=cloze(example, card.term)),
+            texts.card_front(card, hint=cloze(example, card.term, card.language)),
             bot=bot,
             reply_markup=keyboards.review_prompt(card.id, hint=True),
         )

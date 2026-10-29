@@ -113,7 +113,7 @@
 - [ ] **Step 1: Write the failing tests.**
   - `test_domain_answers.py`: `ё→е` только для `rus`; `normalize` для `arb` снимает харакаты/татвиль и унифицирует алиф/йа; `matches("café", "café", "fra")` истинно, `matches("cafe", "café", "fra")` ложно; русские варианты через запятую по-прежнему работают при языке по умолчанию; `normalize("书", "cmn") != normalize("書", "cmn")`.
   - `test_domain_cloze.py`: китайская подстрока (`"我正在学习中文。"` → `"我正在学习____。"`), японская подстрока, арабское слово с диакритикой, французский `hôtel` внутри `l’hôtel` → `"Il a réservé l’____."`, отсутствие совпадения возвращает пример нетронутым.
-  - `test_term_match.py`: `contains_term("中文", "我正在学习中文。", "cmn")`; арабская диакритика; латинский стем (`negotiate` в `negotiating`); `hôtel` не находится в `hotel`; пустой термин/текст — `False`.
+  - `test_term_match.py`: `contains_term("我正在学习中文。", "中文", "cmn")`; арабская диакритика; латинский стем (`negotiate` в `negotiating`); `hôtel` не находится в `hotel`; пустой термин/текст — `False`.
   - `test_grading.py`: обратная французская карточка принимает `café` точным совпадением и не принимает `cafe` без модели; прямое направление остаётся русским.
 - [ ] **Step 2: Run** `uv run pytest tests/test_domain_answers.py tests/test_domain_cloze.py tests/test_term_match.py tests/test_grading.py -q` → FAIL.
 - [ ] **Step 3: Implement.**

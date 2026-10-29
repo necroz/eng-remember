@@ -14,6 +14,7 @@ import structlog
 
 from eng_remember.domain.answers import Verdict, matches, rating_for
 from eng_remember.domain.enums import CardDirection, ReviewRating
+from eng_remember.domain.languages import NATIVE_LANGUAGE
 from eng_remember.errors import LlmError
 from eng_remember.models.card import Card
 from eng_remember.models.user import User
@@ -73,8 +74,10 @@ class AnswerGradingService:
         """Simple match first, then the model, then a conservative "wrong"."""
         if typed is None:
             return Verdict.WRONG
-        expected = card.term if card.direction is CardDirection.REVERSE else card.translation
-        if matches(typed, expected):
+        reverse = card.direction is CardDirection.REVERSE
+        expected = card.term if reverse else card.translation
+        language = card.language if reverse else NATIVE_LANGUAGE
+        if matches(typed, expected, language):
             return Verdict.CORRECT
         if not self._checker.available:
             return Verdict.WRONG

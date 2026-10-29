@@ -27,3 +27,19 @@ def test_absent_word_leaves_example_untouched() -> None:
 
 def test_punctuation_is_preserved() -> None:
     assert cloze("A landlord, obviously!", "landlord") == "A ____, obviously!"
+
+
+def test_chinese_term_is_found_inside_unspaced_text() -> None:
+    assert cloze("我正在学习中文。", "中文", "cmn") == "我正在学习____。"
+
+
+def test_japanese_term_is_found_inside_unspaced_text() -> None:
+    assert cloze("私は日本語を勉強します。", "日本語", "jpn") == "私は____を勉強します。"
+
+
+def test_arabic_diacritics_are_part_of_the_hidden_word() -> None:
+    assert cloze("هذا كِتَابٌ جديد", "كتاب", "arb") == "هذا ____ جديد"
+
+
+def test_french_apostrophe_is_a_token_separator() -> None:
+    assert cloze("Il a réservé l’hôtel.", "hôtel", "fra") == "Il a réservé l’____."
