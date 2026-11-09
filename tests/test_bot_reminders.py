@@ -249,6 +249,61 @@ class TestNotifier:
         assert "ubiquitous" in sent
         assert "🟨" in sent
 
+    async def test_a_digest_also_reminds_what_is_waiting(
+        self, bot: Bot, recording: RecordingSession, user: User
+    ) -> None:
+        """The Monday message takes the morning slot, so it must carry its nudge."""
+        digest = WeeklyDigest(
+            days=(0,) * 28,
+            total=12,
+            correct=9,
+            new_words=5,
+            weak=(),
+            due_now=2,
+            due_week=7,
+        )
+        plan = ReminderPlan(
+            user=user,
+            kind=ReminderKind.DIGEST,
+            local_day=date(2026, 5, 14),
+            due_now=2,
+            new_available=3,
+            streak_days=6,
+            digest=digest,
+        )
+
+        await BotNotifier(bot).send_reminder(plan)
+
+        sent = recording.last_text()
+        assert "новых в очереди: <b>3</b>" in sent
+        assert texts.BTN_REVIEW in sent
+
+    async def test_a_digest_with_nothing_waiting_does_not_ask_to_review(
+        self, bot: Bot, recording: RecordingSession, user: User
+    ) -> None:
+        digest = WeeklyDigest(
+            days=(0,) * 28,
+            total=0,
+            correct=0,
+            new_words=0,
+            weak=(),
+            due_now=0,
+            due_week=0,
+        )
+        plan = ReminderPlan(
+            user=user,
+            kind=ReminderKind.DIGEST,
+            local_day=date(2026, 5, 14),
+            due_now=0,
+            new_available=0,
+            streak_days=0,
+            digest=digest,
+        )
+
+        await BotNotifier(bot).send_reminder(plan)
+
+        assert texts.BTN_REVIEW not in recording.last_text()
+
     async def test_a_blocked_bot_is_reported_as_unreachable(
         self, bot: Bot, recording: RecordingSession, user: User
     ) -> None:

@@ -27,7 +27,11 @@ class BotNotifier:
 
     async def send_reminder(self, plan: ReminderPlan) -> None:
         if plan.kind is ReminderKind.DIGEST and plan.digest is not None:
-            body = texts.weekly_digest(plan.digest, streak_days=plan.streak_days)
+            body = texts.weekly_digest(
+                plan.digest,
+                streak_days=plan.streak_days,
+                new_available=plan.new_available,
+            )
         elif plan.kind is ReminderKind.EVENING:
             body = texts.evening_reminder(
                 streak_days=plan.streak_days,

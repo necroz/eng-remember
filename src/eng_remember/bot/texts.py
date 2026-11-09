@@ -842,8 +842,17 @@ def heatmap_grid(days: Sequence[int]) -> str:
     return "\n".join("".join(cells[index : index + 7]) for index in range(0, HEATMAP_DAYS, 7))
 
 
-def weekly_digest(digest: WeeklyDigest, *, streak_days: int) -> str:
-    """The Monday summary: the week's figures, the hard words, the heatmap."""
+def weekly_digest(
+    digest: WeeklyDigest,
+    *,
+    streak_days: int,
+    new_available: int = 0,
+) -> str:
+    """The Monday summary: the week's figures, the hard words, the heatmap.
+
+    It takes the morning slot, so it also carries that slot's job: what is
+    waiting right now and the call to review it.
+    """
     lines = ["📅 <b>Итоги недели</b>", ""]
     lines.append(f"Отвечено: <b>{digest.total}</b> · верно: <b>{digest.correct}</b>")
     lines.append(f"Новых слов: <b>{digest.new_words}</b>")
@@ -852,10 +861,16 @@ def weekly_digest(digest: WeeklyDigest, *, streak_days: int) -> str:
     if digest.weak:
         weak = ", ".join(f"<b>{escape(term)}</b> ({count})" for term, count in digest.weak)
         lines += ["", f"Трудные слова: {weak}"]
+
+    queue = f"К повторению сейчас: <b>{digest.due_now}</b>"
+    if new_available:
+        queue += f" · новых в очереди: <b>{new_available}</b>"
+    queue += f" · в ближайшую неделю: <b>{digest.due_week}</b>"
+    lines += ["", queue]
+    if digest.due_now or new_available:
+        lines.append(f"<i>Нажмите «{BTN_REVIEW}», когда будет минута.</i>")
+
     lines += [
-        "",
-        f"К повторению сейчас: <b>{digest.due_now}</b> · "
-        f"в ближайшую неделю: <b>{digest.due_week}</b>",
         "",
         heatmap_grid(digest.days),
         "<i>Ответы за последние 4 недели.</i>",
