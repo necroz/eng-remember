@@ -70,8 +70,20 @@ class LlmSettings(BaseModel):
     api_key: SecretStr | None = None
     model: str = "gpt-4o-mini"
     temperature: float = Field(default=0.0, ge=0.0, le=2.0)
-    timeout_seconds: float = Field(default=30.0, gt=0)
-    max_output_tokens: int = Field(default=1500, ge=1)
+    # Structured JSON tasks do not need chain-of-thought, and reasoning tokens
+    # count against max_output_tokens. "none" keeps the whole budget for the
+    # answer; a provider that rejects the parameter disables it automatically.
+    # Set to "low"/"medium"/"high" to keep some thinking, or leave empty to
+    # let the provider decide.
+    reasoning_effort: str | None = Field(default="none")
+    # Reasoning models spend part of this timeout thinking before they write a
+    # single character; a discovery batch of 28 cards takes tens of seconds.
+    timeout_seconds: float = Field(default=120.0, gt=0)
+    max_output_tokens: int = Field(
+        default=8000,
+        ge=1,
+        description="Output cap, reasoning tokens included",
+    )
     retries: int = Field(default=2, ge=0, description="Extra attempts after a bad answer")
     max_calls_per_day: int = Field(
         default=60,

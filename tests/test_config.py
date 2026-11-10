@@ -19,6 +19,20 @@ def test_free_tier_llm_limits_are_daily() -> None:
     assert llm.global_alert_percent == 80
 
 
+def test_llm_budget_fits_reasoning_and_a_full_discovery_batch() -> None:
+    """Reasoning tokens count against the output limit.
+
+    A 20-word request is oversampled to 28 cards; the model used in production
+    spent about 4.5k completion tokens on that (reasoning plus JSON), so 1500
+    cut it off mid-answer and every retry failed the same way.
+    """
+    llm = LlmSettings()
+
+    assert llm.max_output_tokens >= 8000
+    assert llm.timeout_seconds >= 90
+    assert llm.reasoning_effort == "none"
+
+
 def test_inbound_guards_have_safe_defaults() -> None:
     bot = BotSettings()
 

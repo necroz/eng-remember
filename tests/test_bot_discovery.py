@@ -390,6 +390,7 @@ class TestAWordAndWordsAroundIt:
         sent = recording.last_text()
         assert "arrangement" in sent
         assert "Дополнительные слова" in sent
+        assert "нужна подключённая модель" not in sent
 
     async def test_an_empty_search_says_so_under_the_word(
         self,
@@ -618,17 +619,37 @@ class TestDiscoveryGuardrails:
 
         assert "Ничего нового" in recording.last_text()
 
-    async def test_a_failing_model_degrades_to_a_message(
+    async def test_a_failing_model_is_not_reported_as_a_missing_one(
         self,
         discovery_dispatcher: Dispatcher,
         bot: Bot,
         recording: RecordingSession,
         llm: ScriptedClient,
     ) -> None:
+        """A connected model that fails is not a model that was never set up."""
+        from eng_remember.bot import texts
         from eng_remember.errors import LlmResponseError
 
         llm.push_parse(parse_payload(intent="expand", topic="медицина"))
         llm.push_expand(LlmResponseError("provider is down"))
+
+        await send(discovery_dispatcher, bot, "ещё слов про медицину")
+
+        sent = recording.last_text()
+        assert texts.llm_failed() in sent
+        assert "нужна подключённая модель" not in sent
+
+    async def test_an_unconfigured_model_is_reported_as_missing(
+        self,
+        discovery_dispatcher: Dispatcher,
+        bot: Bot,
+        recording: RecordingSession,
+        llm: ScriptedClient,
+    ) -> None:
+        from eng_remember.errors import LlmNotConfiguredError
+
+        llm.push_parse(parse_payload(intent="expand", topic="медицина"))
+        llm.push_expand(LlmNotConfiguredError("no key"))
 
         await send(discovery_dispatcher, bot, "ещё слов про медицину")
 

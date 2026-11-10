@@ -147,6 +147,15 @@ async def test_json_mode_is_requested() -> None:
     assert fake.endpoint.calls[0]["temperature"] == 0.0
 
 
+async def test_reasoning_is_disabled_by_default() -> None:
+    """Structured JSON needs the output budget, not chain-of-thought."""
+    client, fake = make_client([completion('{"intent": "unknown"}')])
+
+    await complete(client)
+
+    assert fake.endpoint.calls[0]["reasoning_effort"] == "none"
+
+
 async def test_fenced_answer_is_accepted() -> None:
     client, _ = make_client([completion('```json\n{"intent": "unknown"}\n```')])
 
@@ -203,6 +212,36 @@ async def test_retries_are_bounded_and_reported() -> None:
     assert len(sink.records) == 3
 
 
+@pytest.mark.parametrize(
+    "content",
+    [
+        "",  # reasoning ate the whole budget and no answer started
+        '{"intent": "add_cards", "cards": [{"term": "run", "trans',  # cut mid-JSON
+    ],
+)
+async def test_truncated_answer_names_the_output_limit(content: str) -> None:
+    """A cut-off answer is a budget problem, not a malformed model answer.
+
+    Retrying with the same ``max_tokens`` cannot fix it, and the repair prompt
+    would only spend more reasoning tokens on an answer that never finished.
+    """
+    sink = Sink()
+    client, fake = make_client(
+        [completion(content, finish_reason="length")],
+        sink=sink,
+        max_output_tokens=1234,
+    )
+
+    with pytest.raises(LlmResponseError, match="1234"):
+        await complete(client)
+
+    assert len(fake.endpoint.calls) == 1
+    assert len(sink.records) == 1
+    assert sink.records[0].success is False
+    assert "max_output_tokens=1234" in (sink.records[0].error or "")
+    assert "finish_reason=length" in (sink.records[0].error or "")
+
+
 async def test_provider_without_json_mode_still_works() -> None:
     """Ollama and friends reject response_format; the call must survive it."""
     client, fake = make_client(
@@ -218,6 +257,41 @@ async def test_provider_without_json_mode_still_works() -> None:
     assert len(fake.endpoint.calls) == 2
     assert "response_format" in fake.endpoint.calls[0]
     assert "response_format" not in fake.endpoint.calls[1]
+
+
+async def test_provider_without_reasoning_effort_still_works() -> None:
+    """Older endpoints do not know the parameter; one 400 must teach us that."""
+    client, fake = make_client(
+        [
+            api_error("bad_request", "Unsupported parameter: reasoning_effort", 400),
+            completion('{"intent": "unknown"}'),
+        ]
+    )
+
+    result = await complete(client)
+
+    assert result.intent.value == "unknown"
+    assert len(fake.endpoint.calls) == 2
+    assert fake.endpoint.calls[0]["reasoning_effort"] == "none"
+    assert "reasoning_effort" not in fake.endpoint.calls[1]
+
+
+async def test_both_optional_parameters_degrade_in_one_call() -> None:
+    """A provider may reject both; each rejection must not end the request."""
+    client, fake = make_client(
+        [
+            api_error("bad_request", "Unsupported parameter: reasoning_effort", 400),
+            api_error("bad_request", "Unsupported parameter: response_format", 400),
+            completion('{"intent": "unknown"}'),
+        ]
+    )
+
+    result = await complete(client)
+
+    assert result.intent.value == "unknown"
+    assert len(fake.endpoint.calls) == 3
+    assert "reasoning_effort" not in fake.endpoint.calls[2]
+    assert "response_format" not in fake.endpoint.calls[2]
 
 
 async def test_json_mode_is_not_retried_twice() -> None:

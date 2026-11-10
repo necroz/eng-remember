@@ -134,6 +134,7 @@ def completion(
     *,
     prompt_tokens: int = 11,
     completion_tokens: int = 7,
+    finish_reason: str = "stop",
 ) -> ChatCompletion:
     """A well-formed chat completion, as the OpenAI SDK would parse it."""
     return ChatCompletion.model_validate(
@@ -145,7 +146,7 @@ def completion(
             "choices": [
                 {
                     "index": 0,
-                    "finish_reason": "stop",
+                    "finish_reason": finish_reason,
                     "message": {"role": "assistant", "content": content},
                 }
             ],

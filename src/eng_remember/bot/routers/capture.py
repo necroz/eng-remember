@@ -53,6 +53,7 @@ from eng_remember.domain.languages import DEFAULT_LANGUAGE, resolve_target_langu
 from eng_remember.errors import (
     LlmError,
     LlmGlobalBudgetExceededError,
+    LlmNotConfiguredError,
     LlmQuotaExceededError,
     ParseError,
 )
@@ -286,8 +287,10 @@ def build_router() -> Router:
             else:
                 await bot.send_message(chat_id, texts.quota_exceeded())
             return
-        except LlmError as exc:
-            log.warning("discovery_failed", user_id=user.id, error=str(exc))
+        except LlmNotConfiguredError as exc:
+            # No key, or the provider rejected it. "Connect a model" is the
+            # honest answer here; for every other failure it is not.
+            log.warning("discovery_unavailable", user_id=user.id, error=str(exc))
             if own:
                 await _present(
                     bot=bot,
@@ -300,6 +303,24 @@ def build_router() -> Router:
                 )
             else:
                 await bot.send_message(chat_id, texts.discovery_unavailable())
+            return
+        except LlmError as exc:
+            # The model is configured but did not produce a usable answer. It
+            # may be down, out of output budget, or rate-limited upstream; none
+            # of that means the learner has to add a key.
+            log.warning("discovery_failed", user_id=user.id, error=str(exc))
+            if own:
+                await _present(
+                    bot=bot,
+                    chat_id=chat_id,
+                    state=state,
+                    own=own,
+                    engine=engine,
+                    note=texts.more_failed(),
+                    language=target,
+                )
+            else:
+                await bot.send_message(chat_id, texts.llm_failed())
             return
 
         # Persist the audit rows before anything else can fail: a discovery that

@@ -90,6 +90,7 @@ __all__ = [
     "llm_required",
     "looking_for_more",
     "model_busy",
+    "more_failed",
     "more_found_nothing",
     "more_needs_topic",
     "more_quota_exceeded",
@@ -738,6 +739,10 @@ def more_needs_topic() -> str:
 
 def more_unavailable() -> str:
     return "<i>Дополнительные слова подобрать не удалось: нужна подключённая модель.</i>"
+
+
+def more_failed() -> str:
+    return "<i>Дополнительные слова подобрать не удалось: модель не ответила.</i>"
 
 
 def more_quota_exceeded() -> str:

@@ -116,6 +116,9 @@ class OpenAiCompatibleClient:
         # Flipped off for the lifetime of the client the first time a provider
         # rejects ``response_format``; small self-hosted servers often do.
         self._json_mode = True
+        # Same idea for reasoning control: not every OpenAI-compatible endpoint
+        # knows the parameter, and one rejected request is enough to learn that.
+        self._reasoning_effort = (settings.reasoning_effort or "").strip() or None
 
     @property
     def model_name(self) -> str:
@@ -188,6 +191,31 @@ class OpenAiCompatibleClient:
             content = (choice.message.content if choice else None) or ""
             usage = response.usage
 
+            if choice is not None and choice.finish_reason == "length":
+                # The cap covers reasoning tokens too. A reasoning model can
+                # spend all of it thinking and return an empty or half-written
+                # answer; a repair prompt would only spend more of the same
+                # budget. Say what to raise instead of blaming the model.
+                last_error = (
+                    "response was cut off: "
+                    f"finish_reason=length, max_output_tokens={self._settings.max_output_tokens}; "
+                    "raise LLM__MAX_OUTPUT_TOKENS or ask for fewer words"
+                )
+                await self._report(
+                    purpose=purpose,
+                    user_id=user_id,
+                    attempt=attempt,
+                    started=started,
+                    success=False,
+                    request_text=user,
+                    response_text=content,
+                    prompt_tokens=getattr(usage, "prompt_tokens", None),
+                    completion_tokens=getattr(usage, "completion_tokens", None),
+                    total_tokens=getattr(usage, "total_tokens", None),
+                    error=last_error,
+                )
+                raise LlmResponseError(last_error)
+
             try:
                 payload = json.loads(extract_json_object(content))
                 result = schema.model_validate(payload)
@@ -245,14 +273,24 @@ class OpenAiCompatibleClient:
         }
         if self._json_mode:
             kwargs["response_format"] = {"type": "json_object"}
-        try:
-            return await api.chat.completions.create(**kwargs)
-        except BadRequestError as exc:
-            if self._json_mode and "response_format" in str(exc):
-                self._json_mode = False
-                kwargs.pop("response_format", None)
+        if self._reasoning_effort:
+            kwargs["reasoning_effort"] = self._reasoning_effort
+        while True:
+            try:
                 return await api.chat.completions.create(**kwargs)
-            raise
+            except BadRequestError as exc:
+                message = str(exc)
+                changed = False
+                if self._json_mode and "response_format" in message:
+                    self._json_mode = False
+                    kwargs.pop("response_format", None)
+                    changed = True
+                if self._reasoning_effort and "reasoning" in message.lower():
+                    self._reasoning_effort = None
+                    kwargs.pop("reasoning_effort", None)
+                    changed = True
+                if not changed:
+                    raise
 
     def _api(self) -> OpenAiLike:
         client = self._client
