@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -78,15 +79,26 @@ class ReviewService:
         reviews: ReviewRepository,
         scheduler: SrsScheduler,
         streak: StreakService,
-        reviews_per_session: int = 50,
+        review_session_min_cards: int = 15,
+        review_session_max_cards: int = 20,
         new_cards_per_day: int = 20,
     ) -> None:
         self._cards = cards
         self._reviews = reviews
         self._scheduler = scheduler
         self._streak = streak
-        self._reviews_per_session = reviews_per_session
+        self._session_min = max(1, review_session_min_cards)
+        self._session_max = max(self._session_min, review_session_max_cards)
         self._new_cards_per_day = new_cards_per_day
+
+    def session_size(self) -> int:
+        """How many cards the next review run may show.
+
+        A fresh random size per run keeps a large backlog from turning every
+        review into an endless sitting: the learner gets a short portion and
+        decides to continue rather than being handed all forty cards at once.
+        """
+        return random.randint(self._session_min, self._session_max)
 
     async def build_queue(
         self,
@@ -103,7 +115,7 @@ class ReviewService:
         per-day budget, measured against the user's own midnight.
         """
         moment = ensure_utc(now) or utcnow()
-        session_limit = limit or min(user.new_cards_per_day * 2, self._reviews_per_session)
+        session_limit = limit or self._session_max
         per_day = user.new_cards_per_day or self._new_cards_per_day
 
         due_cards = await self._cards.list_due(
@@ -124,7 +136,7 @@ class ReviewService:
             candidates = await self._cards.list_new(
                 user.id,
                 now=moment,
-                limit=min(self._reviews_per_session, max(2, wanted * 2)),
+                limit=min(self._session_max, max(2, wanted * 2)),
                 deck_id=deck_id,
                 bury_reviewed_since=local_day_start(user.timezone, now=moment),
             )

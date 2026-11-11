@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import pytest
+from pydantic import ValidationError
+
 from eng_remember.config import BotSettings, LlmSettings
 
 
@@ -40,3 +43,15 @@ def test_inbound_guards_have_safe_defaults() -> None:
     assert bot.callbacks_per_minute == 30
     assert bot.duplicate_message_ttl_seconds == 60.0
     assert bot.admin_chat_id is None
+
+
+def test_a_review_run_is_a_short_random_portion() -> None:
+    bot = BotSettings()
+
+    assert bot.review_session_min_cards == 15
+    assert bot.review_session_max_cards == 20
+
+
+def test_the_session_range_must_be_ordered() -> None:
+    with pytest.raises(ValidationError):
+        BotSettings(review_session_min_cards=20, review_session_max_cards=15)

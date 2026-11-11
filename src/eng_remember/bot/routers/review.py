@@ -32,6 +32,7 @@ from eng_remember.bot.states import (
     FRONT_MESSAGE_KEY,
     HINT_USED_KEY,
     SESSION_KEY,
+    SESSION_LIMIT_KEY,
     SHOWN_AT_KEY,
     SHOWN_CARD_KEY,
     Review,
@@ -74,9 +75,16 @@ def build_router() -> Router:
         state: FSMContext,
     ) -> None:
         await state.clear()
-        await state.update_data({ANSWERED_KEY: 0, SESSION_KEY: utcnow().isoformat()})
+        session_limit = services.review_service.session_size()
+        await state.update_data(
+            {
+                ANSWERED_KEY: 0,
+                SESSION_KEY: utcnow().isoformat(),
+                SESSION_LIMIT_KEY: session_limit,
+            }
+        )
 
-        queue = await services.review_service.build_queue(user)
+        queue = await services.review_service.build_queue(user, limit=session_limit)
         if not queue.cards:
             next_due = await services.cards.next_due_at(user.id, now=utcnow())
             # An empty queue is the moment practice exists for; it is only
@@ -429,9 +437,13 @@ def build_router() -> Router:
     async def _advance(
         bot: Bot, chat_id: int, user: User, services: Services, state: FSMContext
     ) -> None:
-        next_card = await services.review_service.get_next(user)
+        data = await state.get_data()
+        answered = int(data.get(ANSWERED_KEY, 0))
+        goal = data.get(SESSION_LIMIT_KEY)
+        reached_goal = isinstance(goal, int) and answered >= goal
+
+        next_card = None if reached_goal else await services.review_service.get_next(user)
         if next_card is None:
-            answered = int((await state.get_data()).get(ANSWERED_KEY, 0))
             await state.clear()
             await bot.send_message(
                 chat_id,

@@ -31,6 +31,7 @@ __all__ = [
     "QUESTION_KEY",
     "ROUND_KEY",
     "SESSION_KEY",
+    "SESSION_LIMIT_KEY",
     "SHOWN_AT_KEY",
     "SHOWN_CARD_KEY",
     "TOPIC_KEY",
@@ -76,6 +77,10 @@ FRONT_MESSAGE_KEY = "front_message"
 ANSWERING_KEY = "answering"
 ANSWERED_KEY = "answered"
 SESSION_KEY = "review_session"
+# How many cards this run may answer. Chosen when the run starts and kept for
+# its whole life: the queue is rebuilt after every answer, so without a stored
+# goal a backlog would keep feeding the loop until it is empty.
+SESSION_LIMIT_KEY = "review_limit"
 EXAMPLE_KEY = "review_example"
 HINT_USED_KEY = "hint_used"
 

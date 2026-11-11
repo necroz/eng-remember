@@ -23,7 +23,10 @@ from eng_remember.models.card import Card
 from eng_remember.models.deck import Deck
 from eng_remember.models.review import Review
 from eng_remember.models.user import User
+from eng_remember.repositories.cards import CardDraft
+from eng_remember.services.container import Services
 from eng_remember.services.llm.schema import AnswerCheckResponse
+from eng_remember.services.review import ReviewService
 from eng_remember.utils.time import utcnow
 from tests.conftest import RecordingSession, make_due
 from tests.factories import (
@@ -323,6 +326,41 @@ class TestReview:
         assert recording.last_button_data() == [
             ReviewCB(action="dont_know", card_id=card_id).pack()
         ]
+
+    async def test_a_review_run_stops_at_its_portion(
+        self,
+        dispatcher: Dispatcher,
+        bot: Bot,
+        recording: RecordingSession,
+        session_factory: async_sessionmaker[AsyncSession],
+        services: Services,
+        user: User,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A backlog must not turn one run into an endless sitting.
+
+        Two cards are the chosen portion while three are waiting: after the
+        second answer the run ends, and `/review` starts a fresh one for the
+        rest instead of silently showing the third card.
+        """
+        for term in ("alpha", "beta", "gamma"):
+            await services.card_service.add_draft(
+                user, CardDraft(term=term, translation=f"перевод-{term}")
+            )
+        await services.commit()
+        await make_due(session_factory)
+        monkeypatch.setattr(ReviewService, "session_size", lambda self: 2)
+
+        await send(dispatcher, bot, "/review", update_id=20)
+        assert "alpha" in recording.last_text()
+        await send(dispatcher, bot, "перевод-alpha", update_id=21, date=utcnow())
+        assert "beta" in recording.last_text()
+        await send(dispatcher, bot, "перевод-beta", update_id=22, date=utcnow())
+
+        assert "Повторение завершено" in recording.last_text()
+
+        await send(dispatcher, bot, "/review", update_id=23)
+        assert "gamma" in recording.last_text()
 
     async def test_a_fast_correct_answer_is_graded_easy(
         self,

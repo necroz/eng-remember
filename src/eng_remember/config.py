@@ -14,7 +14,7 @@ from datetime import time
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ParseModeName = Literal["HTML", "MarkdownV2", "Markdown"]
@@ -27,7 +27,10 @@ class BotSettings(BaseModel):
     default_deck_name: str = "Основная колода"
     default_timezone: str = "UTC"
     new_cards_per_day: int = Field(default=20, ge=0)
-    reviews_per_session: int = Field(default=50, ge=1)
+    # One review run is a short portion, not the whole backlog: the size is
+    # picked at random inside this range every time the learner starts.
+    review_session_min_cards: int = Field(default=15, ge=1)
+    review_session_max_cards: int = Field(default=20, ge=1)
     practice_size: int = Field(default=10, ge=4, le=50, description="Questions per practice quiz")
     request_timeout_seconds: float = Field(default=10.0, gt=0)
     drop_pending_updates: bool = False
@@ -55,6 +58,12 @@ class BotSettings(BaseModel):
         default=None,
         description="Telegram chat that receives global budget alerts",
     )
+
+    @model_validator(mode="after")
+    def _session_range_is_ordered(self) -> BotSettings:
+        if self.review_session_min_cards > self.review_session_max_cards:
+            raise ValueError("review_session_min_cards must not exceed review_session_max_cards")
+        return self
 
 
 class LlmSettings(BaseModel):

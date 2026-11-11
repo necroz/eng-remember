@@ -96,7 +96,8 @@ def build_services(session: AsyncSession, settings: Settings) -> Services:
         reviews=reviews,
         scheduler=scheduler,
         streak=streak_service,
-        reviews_per_session=settings.bot.reviews_per_session,
+        review_session_min_cards=settings.bot.review_session_min_cards,
+        review_session_max_cards=settings.bot.review_session_max_cards,
         new_cards_per_day=settings.bot.new_cards_per_day,
     )
     answer_checker = AnswerChecker(llm)

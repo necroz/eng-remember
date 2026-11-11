@@ -268,6 +268,26 @@ class TestReviewService:
         assert queue.due_total == 2
         assert queue.new_total == 2
 
+    async def test_a_queue_can_be_capped_to_a_session_portion(
+        self, services: Services, session: AsyncSession, user: User, deck_id: int
+    ) -> None:
+        await self.queue_cards(services, session, user, deck_id, due=30)
+
+        queue = await services.review_service.build_queue(user, limit=17)
+
+        assert len(queue.cards) == 17
+        assert queue.due_total == 30
+
+    def test_the_session_size_is_random_inside_the_configured_range(
+        self, services: Services
+    ) -> None:
+        sizes = {services.review_service.session_size() for _ in range(300)}
+
+        assert sizes
+        assert min(sizes) >= 15
+        assert max(sizes) <= 20
+        assert len(sizes) > 1
+
     async def test_new_cards_are_capped_by_the_daily_budget(
         self, services: Services, session: AsyncSession, user: User, deck_id: int
     ) -> None:
