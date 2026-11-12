@@ -49,9 +49,11 @@ async def grade(
 ) -> None:
     """Answer the card the way the new flow asks for.
 
-    A correct answer typed immediately is Easy; the same answer "typed" ten
-    seconds later is Good — that delay is how the speed rule is exercised
-    without sleeping. «Не знаю» is the Again path.
+    A correct answer typed immediately is Easy; the same answer "typed" well
+    past the easy threshold is Good — that delay is how the speed rule is
+    exercised without sleeping. The delay must stay above the threshold even
+    after Telegram truncates the message date to whole seconds. «Не знаю» is
+    the Again path.
     """
     await make_due(session_factory)
     await send(dispatcher, bot, "/review", update_id=update_id)
@@ -63,7 +65,7 @@ async def grade(
             update_id=update_id + 1,
         )
         return
-    delay = 10 if rating is ReviewRating.GOOD else 0
+    delay = 15 if rating is ReviewRating.GOOD else 0
     await send(
         dispatcher,
         bot,

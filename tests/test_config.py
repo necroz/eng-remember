@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from eng_remember.config import BotSettings, LlmSettings
+from eng_remember.config import BotSettings, LlmSettings, ReviewSettings
 
 
 def test_twenty_updates_may_be_in_flight_per_process() -> None:
@@ -55,3 +55,15 @@ def test_a_review_run_is_a_short_random_portion() -> None:
 def test_the_session_range_must_be_ordered() -> None:
     with pytest.raises(ValidationError):
         BotSettings(review_session_min_cards=20, review_session_max_cards=15)
+
+
+def test_the_easy_threshold_leaves_room_for_typing() -> None:
+    """The grade must reward recall, not typing speed.
+
+    Production answers showed a 5-second bar caught only 1.6% of correct
+    answers: the timer runs from the card appearing to the message being sent,
+    so it includes reading the front and typing the whole word on a phone.
+    The median correct answer took ~14s and the fastest quartile ~10s, so the
+    bar sits at the fast-quartile mark instead of below the whole distribution.
+    """
+    assert ReviewSettings().easy_threshold_seconds == 10.0

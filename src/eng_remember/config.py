@@ -148,7 +148,7 @@ class ReviewSettings(BaseModel):
     """How a typed answer turns into a grade."""
 
     easy_threshold_seconds: float = Field(
-        default=5.0,
+        default=10.0,
         gt=0,
         description="A correct answer faster than this earns the easy grade",
     )

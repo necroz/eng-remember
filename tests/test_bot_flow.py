@@ -397,7 +397,7 @@ class TestReview:
     ) -> None:
         await send(dispatcher, bot, "/review", update_id=20)
         await send(
-            dispatcher, bot, "вездесущий", update_id=21, date=utcnow() + timedelta(seconds=10)
+            dispatcher, bot, "вездесущий", update_id=21, date=utcnow() + timedelta(seconds=15)
         )
 
         async with session_factory() as check:
