@@ -7,6 +7,7 @@ than by mocking the repository.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from typing import Any
 
@@ -353,6 +354,49 @@ async def test_the_global_total_is_shared_by_wrapper_instances(
 
     await make_anonymous_call(first)
     await make_anonymous_call(second)
+
+    assert calls.global_queries == 1
+
+
+class SlowGlobalCalls(LlmCallRepository):
+    """A repository whose global SUM yields so concurrent callers can pile up."""
+
+    def __init__(self, session: AsyncSession, *, tokens: int = 10) -> None:
+        super().__init__(session)
+        self.global_queries = 0
+        self._tokens = tokens
+
+    async def global_usage_since(self, *, since: datetime) -> dict[str, int]:
+        self.global_queries += 1
+        # The SUM is slow relative to the check, so without single-flight every
+        # waiter sees the cold cache and starts its own query.
+        await asyncio.sleep(0)
+        return {"calls": 1, "tokens": self._tokens}
+
+
+async def test_concurrent_cold_reads_issue_exactly_one_sum(
+    session: AsyncSession,
+) -> None:
+    """One SUM per TTL even when every handler misses the cache together."""
+    calls = SlowGlobalCalls(session)
+    settings = LlmSettings(
+        max_calls_per_day=0,
+        max_tokens_per_day=0,
+        max_tokens_per_day_global=1_000_000,
+    )
+    # Production builds a wrapper per request; all of them share the process
+    # cache, and a burst after the TTL must still produce one aggregate query.
+    clients = [
+        QuotaLimitedClient(
+            RecordingModel(),
+            calls=calls,
+            settings=settings,
+            budget=GlobalBudgetMonitor(),
+        )
+        for _ in range(10)
+    ]
+
+    await asyncio.gather(*(make_anonymous_call(client) for client in clients))
 
     assert calls.global_queries == 1
 

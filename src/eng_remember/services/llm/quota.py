@@ -26,6 +26,7 @@ of every model call would make the gate the bottleneck it exists to prevent.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Callable
 from datetime import timedelta
@@ -72,12 +73,20 @@ class GlobalUsageCache:
     would run every time. The cache therefore lives at module level and is shared
     by every wrapper in the process (each replica has its own), like the budget
     monitor it feeds.
+
+    The lock is what makes the TTL a bound on queries rather than a bound on
+    misses: a burst of handlers that all see the cold cache queues on it, and
+    only the first one queries. ``asyncio.Lock`` binds to the loop that first
+    uses it, and tests run every case in a fresh loop, so the cache hands out one
+    lock per loop instead of holding a single module-level one.
     """
 
     def __init__(self, ttl: float = GLOBAL_USAGE_TTL_SECONDS) -> None:
         self._ttl = ttl
         self._tokens: int | None = None
         self._read_at = 0.0
+        self._lock: asyncio.Lock | None = None
+        self._lock_loop: asyncio.AbstractEventLoop | None = None
 
     def read(self, now: float) -> int | None:
         """The cached total, or ``None`` when it is missing or older than the TTL."""
@@ -93,6 +102,14 @@ class GlobalUsageCache:
         """Forget the cached total."""
         self._tokens = None
         self._read_at = 0.0
+
+    def lock(self) -> asyncio.Lock:
+        """The single-flight lock for the running event loop."""
+        loop = asyncio.get_running_loop()
+        if self._lock is None or self._lock_loop is not loop:
+            self._lock = asyncio.Lock()
+            self._lock_loop = loop
+        return self._lock
 
 
 global_usage_cache = GlobalUsageCache()
@@ -231,16 +248,28 @@ class QuotaLimitedClient:
             )
 
     async def _global_tokens(self) -> int:
-        """The bot-wide token total, from the cache or one SUM when it is stale."""
+        """The bot-wide token total, from the cache or one SUM when it is stale.
+
+        The miss path is single-flight: every reader that finds the cache cold
+        queues on one lock, the first one queries and remembers, and the rest
+        find its value on the second check. A burst therefore costs one SUM per
+        process and TTL, not one per waiting handler.
+        """
         now = self._clock()
         cached = self._usage_cache.read(now)
         if cached is not None:
             return cached
 
-        usage = await self._calls.global_usage_since(since=utcnow() - WINDOW)
-        tokens = usage["tokens"]
-        self._usage_cache.remember(tokens, now)
-        return tokens
+        async with self._usage_cache.lock():
+            now = self._clock()
+            cached = self._usage_cache.read(now)
+            if cached is not None:
+                return cached
+
+            usage = await self._calls.global_usage_since(since=utcnow() - WINDOW)
+            tokens = usage["tokens"]
+            self._usage_cache.remember(tokens, now)
+            return tokens
 
     @staticmethod
     def _refuse(user_id: int, window: str, used: int, limit: int) -> NoReturn:
