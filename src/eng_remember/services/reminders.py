@@ -31,7 +31,13 @@ from eng_remember.repositories.reviews import ReviewRepository
 from eng_remember.repositories.streaks import StreakRepository
 from eng_remember.repositories.users import UserRepository
 from eng_remember.services.digest import bucket_by_local_day, local_midnight
-from eng_remember.utils.time import ensure_utc, local_date, local_day_start, utcnow
+from eng_remember.utils.time import (
+    ensure_utc,
+    local_date,
+    local_day_start,
+    resolve_timezone,
+    utcnow,
+)
 
 __all__ = ["Notifier", "ReminderPlan", "ReminderRun", "ReminderService", "build_reminder_service"]
 
@@ -109,6 +115,7 @@ class ReminderService:
         self._notifier = notifier
         self._reminders: ReminderSettings = settings.reminders
         self._streak_settings = settings.streak
+        self._new_cards_per_day = settings.bot.new_cards_per_day
 
     async def run(self, *, now: datetime | None = None) -> ReminderRun:
         """One pass over everyone who might be owed a reminder."""
@@ -138,7 +145,7 @@ class ReminderService:
             run.candidates += len(batch)
 
             for plan in await self._plan(batch, now=moment):
-                await self._deliver(plan, run)
+                await self._deliver(plan, run, now=moment)
 
         if run.sent_count or run.failed or run.unreachable:
             log.info(
@@ -157,6 +164,7 @@ class ReminderService:
         """Decide the whole batch, with the counting queries batched as well."""
         user_ids = [user.id for user in batch]
         counts = await self._cards.queue_counts(user_ids, now=now)
+        introduced = await self._introduced_today(batch, now=now)
         streak_states = await self._streaks.by_user_ids(user_ids)
         answered = await self._answered_today(batch, now=now)
 
@@ -167,6 +175,12 @@ class ReminderService:
             queue = counts.get(user.id)
             if queue is None:  # pragma: no cover - the query returns every id
                 continue
+
+            # The queue counts are raw; the promise must match what a session
+            # would actually serve, which is bounded by the daily budget.
+            per_day = user.new_cards_per_day or self._new_cards_per_day
+            allowance = max(0, per_day - introduced.get(user.id, 0))
+            new_available = min(queue.new, allowance)
 
             # Settled in memory only. A tick must not write to the streak just to
             # look at it, and the answer and statistics paths persist the same
@@ -187,7 +201,7 @@ class ReminderService:
                 # is a guarantee rather than a fresh lookup.
                 has_cards=True,
                 due_now=queue.due,
-                new_available=queue.new,
+                new_available=new_available,
                 answered_today=answered.get(user.id, 0) > 0,
                 streak_alive=streak.state.is_alive,
                 streak_days=streak.state.current,
@@ -207,7 +221,7 @@ class ReminderService:
                     kind=kind,
                     local_day=today_by_user[user.id],
                     due_now=queue.due,
-                    new_available=queue.new,
+                    new_available=new_available,
                     streak_days=streak.state.current,
                     streak_warning=kind is ReminderKind.EVENING and at_risk,
                     digest=digest,
@@ -279,7 +293,19 @@ class ReminderService:
             answered.update(await self._reviews.counts_since(user_ids, since=boundary))
         return answered
 
-    async def _deliver(self, plan: ReminderPlan, run: ReminderRun) -> None:
+    async def _introduced_today(self, batch: list[User], *, now: datetime) -> dict[int, int]:
+        """Cards introduced per learner since their own midnight.
+
+        The reminder tick needs the day's introductions to apply the new-card
+        budget; the repository groups the batch by shared day boundary so this
+        stays one query per boundary rather than one per learner.
+        """
+        since_by_user = {user.id: local_day_start(user.timezone, now=now) for user in batch}
+        return await self._reviews.introduced_counts(
+            list(since_by_user), since_by_user=since_by_user
+        )
+
+    async def _deliver(self, plan: ReminderPlan, run: ReminderRun, *, now: datetime) -> None:
         try:
             await self._notifier.send_reminder(plan)
         except RecipientUnreachable as exc:
@@ -287,7 +313,7 @@ class ReminderService:
             # used — otherwise every tick would try the same dead chat forever.
             log.info("reminder_unreachable", user_id=plan.user.id, error=str(exc))
             await self._users.set_blocked(plan.user, blocked=True)
-            await self._users.record_reminder(plan.user, kind=plan.kind, on=plan.local_day)
+            await self._mark_slots_used(plan, now=now)
             run.unreachable.append(plan.user.id)
             return
         except Exception as exc:
@@ -296,14 +322,38 @@ class ReminderService:
             run.failed.append(plan.user.id)
             return
 
-        await self._users.record_reminder(plan.user, kind=plan.kind, on=plan.local_day)
+        await self._mark_slots_used(plan, now=now)
         run.sent.append(plan)
+
+    async def _mark_slots_used(self, plan: ReminderPlan, *, now: datetime) -> None:
+        """Record which slots this message settled.
+
+        The digest always covers the morning. When it arrives after the evening
+        hour it covers the evening too: it already carries the queue, and
+        leaving that slot open would send a second message minutes later,
+        repeating the queue right after the long summary.
+        """
+        await self._users.record_reminder(plan.user, kind=plan.kind, on=plan.local_day)
+        if plan.kind is ReminderKind.DIGEST and _evening_has_come(
+            plan.user, now=now, settings=self._reminders
+        ):
+            await self._users.record_reminder(
+                plan.user, kind=ReminderKind.EVENING, on=plan.local_day
+            )
 
 
 def _evening_at(user: User, settings: ReminderSettings) -> time | None:
     if not user.evening_reminder:
         return None
     return user.evening_reminder_time or settings.default_streak_time
+
+
+def _evening_has_come(user: User, *, now: datetime, settings: ReminderSettings) -> bool:
+    """Whether the learner's evening hour has already passed at ``now``."""
+    evening_at = _evening_at(user, settings)
+    if evening_at is None:
+        return False
+    return now.astimezone(resolve_timezone(user.timezone)).time() >= evening_at
 
 
 def build_reminder_service(

@@ -470,6 +470,57 @@ class TestReviewLog:
 
         assert introduced == 1
 
+    async def test_introductions_are_counted_per_learner_in_one_pass(
+        self,
+        reviews: ReviewRepository,
+        cards: CardRepository,
+        decks: DeckRepository,
+        session: AsyncSession,
+        user: User,
+        deck: int,
+    ) -> None:
+        """The reminder tick counts a whole batch against different midnights.
+
+        Each learner gets their own boundary, so one call answers "how many
+        introductions today" for everyone without a query per account.
+        """
+        other, _ = await UserRepository(session).get_or_create(
+            TelegramProfile(telegram_id=200200, first_name="Other")
+        )
+        other_deck = (await decks.get_or_create_default(other.id, name="Основная колода")).id
+        now = utcnow()
+
+        async def introduce(learner: User, deck_id: int, term: str, hours_ago: float) -> None:
+            card = await add(cards, session, learner, deck_id, term)
+            await reviews.add(
+                Review(
+                    card_id=card.id,
+                    user_id=learner.id,
+                    rating=ReviewRating.GOOD,
+                    reviewed_at=now - timedelta(hours=hours_ago),
+                    state_before=CardState.LEARNING,
+                    state_after=CardState.LEARNING,
+                )
+            )
+
+        # One fresh card each, plus a card each learner already knew before
+        # their own boundary: only the fresh ones are introductions.
+        await introduce(user, deck, "fresh", 0.1)
+        await introduce(user, deck, "known", 30)
+        await introduce(other, other_deck, "fresh", 0.1)
+        await introduce(other, other_deck, "known", 2)
+        await session.commit()
+
+        counted = await reviews.introduced_counts(
+            [user.id, other.id],
+            since_by_user={
+                user.id: now - timedelta(hours=12),
+                other.id: now - timedelta(hours=1),
+            },
+        )
+
+        assert counted == {user.id: 1, other.id: 1}
+
     async def test_a_card_seen_before_today_is_not_a_new_introduction(
         self,
         reviews: ReviewRepository,

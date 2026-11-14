@@ -133,6 +133,7 @@ def build_services(
             reviews=reviews,
             scheduler=scheduler,
             default_deck_name=settings.bot.default_deck_name,
+            new_cards_per_day=settings.bot.new_cards_per_day,
         ),
         review_service=review_service,
         answer_checker=answer_checker,
