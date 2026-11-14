@@ -14,7 +14,7 @@ from datetime import time
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import BaseModel, Field, SecretStr, model_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ParseModeName = Literal["HTML", "MarkdownV2", "Markdown"]
@@ -23,6 +23,10 @@ ParseModeName = Literal["HTML", "MarkdownV2", "Markdown"]
 class BotSettings(BaseModel):
     """How the Telegram side behaves."""
 
+    # Every text the bot sends is HTML: values are escaped where they are
+    # interpolated and the emphasis is written as tags. Another parse mode would
+    # show those tags to the learner, so it is a startup error rather than an
+    # option. The type stays wide for compatibility; the validator narrows it.
     parse_mode: ParseModeName = "HTML"
     default_deck_name: str = "Основная колода"
     default_timezone: str = "UTC"
@@ -64,6 +68,13 @@ class BotSettings(BaseModel):
         if self.review_session_min_cards > self.review_session_max_cards:
             raise ValueError("review_session_min_cards must not exceed review_session_max_cards")
         return self
+
+    @field_validator("parse_mode")
+    @classmethod
+    def _html_only(cls, value: ParseModeName) -> ParseModeName:
+        if value != "HTML":
+            raise ValueError("bot texts are HTML-only: parse_mode must be 'HTML'")
+        return value
 
 
 class LlmSettings(BaseModel):

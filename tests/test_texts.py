@@ -198,3 +198,12 @@ def test_import_preview_short_batch_has_no_cap_note() -> None:
 
     assert "Показаны" not in preview
     assert "word2" in preview
+
+
+def test_a_preview_packs_entries_by_utf16_units() -> None:
+    """Emoji in the content must not push the message past Telegram's limit."""
+    heavy = [CardDraft(term="word", translation="🇬🇧" * 900) for _ in range(6)]
+
+    rendered = texts.import_preview(heavy, "rules")
+
+    assert rendering.text_units(rendered) <= rendering.TELEGRAM_TEXT_LIMIT

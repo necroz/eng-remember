@@ -18,6 +18,7 @@ __all__ = [
     "edit_or_send",
     "fit_text",
     "require_state",
+    "text_units",
 ]
 
 log = structlog.get_logger(__name__)
@@ -32,6 +33,27 @@ _ENTITY_TAIL = re.compile(r"&[a-zA-Z#][a-zA-Z0-9]*$")
 _VOID_TAGS = frozenset({"br", "hr"})
 
 
+def text_units(text: str) -> int:
+    """How long Telegram considers this text: UTF-16 code units, not characters.
+
+    A code point outside the BMP — most emoji, and every flag badge the bot
+    draws — takes two units on the wire while ``len`` counts it as one. Budgets
+    measured in code points therefore let a message through that Telegram then
+    rejects, which is exactly the failure the cap exists to prevent.
+    """
+    return len(text.encode("utf-16-le")) // 2
+
+
+def _cut_index(text: str, budget: int) -> int:
+    """The largest prefix length whose UTF-16 length fits ``budget`` units."""
+    units = 0
+    for index, char in enumerate(text):
+        units += 2 if ord(char) > 0xFFFF else 1
+        if units > budget:
+            return index
+    return len(text)
+
+
 def fit_text(text: str, limit: int = TELEGRAM_TEXT_LIMIT) -> str:
     """Make a rendered message fit into one Telegram message.
 
@@ -39,16 +61,18 @@ def fit_text(text: str, limit: int = TELEGRAM_TEXT_LIMIT) -> str:
     entity split in half would turn the rest of the message into visible
     garbage. Tags left open by the cut are closed, so the suffix and everything
     before it stay valid HTML. An extremely long single line is still cut, just
-    without the line-boundary courtesy.
+    without the line-boundary courtesy. Every length here is counted in UTF-16
+    units — the same measure Telegram uses.
     """
-    if len(text) <= limit:
+    if text_units(text) <= limit:
         return text
-    if limit <= len(_TRUNCATED):
-        return _TRUNCATED[: max(limit, 0)]
+    if limit <= text_units(_TRUNCATED):
+        return _TRUNCATED[: _cut_index(_TRUNCATED, max(limit, 0))]
 
-    budget = limit - len(_TRUNCATED)
-    boundary = text.rfind("\n", 0, budget)
-    end = boundary if boundary > 0 else budget
+    budget = limit - text_units(_TRUNCATED)
+    room = _cut_index(text, budget)
+    boundary = text.rfind("\n", 0, room)
+    end = boundary if boundary > 0 else room
 
     while end > 0:
         prefix = text[:end]
@@ -64,14 +88,14 @@ def fit_text(text: str, limit: int = TELEGRAM_TEXT_LIMIT) -> str:
             continue
 
         closing = _closing_tags(prefix)
-        if len(prefix) + len(closing) <= budget:
+        if text_units(prefix) + text_units(closing) <= budget:
             return prefix.rstrip() + closing + _TRUNCATED
 
         # The closing tags must fit too: move the cut to the previous boundary.
         previous = text.rfind("\n", 0, end)
         end = previous if previous > 0 else end - 1
 
-    return _TRUNCATED[:limit]
+    return _TRUNCATED[: _cut_index(_TRUNCATED, limit)]
 
 
 def _unclosed_tag_start(prefix: str) -> int | None:

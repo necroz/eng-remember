@@ -12,7 +12,7 @@ from collections.abc import Callable, Sequence
 from datetime import datetime
 from html import escape
 
-from eng_remember.bot.rendering import TELEGRAM_TEXT_LIMIT, fit_text
+from eng_remember.bot.rendering import TELEGRAM_TEXT_LIMIT, fit_text, text_units
 from eng_remember.domain.answers import Verdict
 from eng_remember.domain.digest import HEATMAP_DAYS
 from eng_remember.domain.digest import heatmap as digest_heatmap
@@ -44,8 +44,12 @@ PREVIEW_PAUSED = 20
 
 
 def _joined_length(lines: Sequence[str]) -> int:
-    """Length of the one message these lines join to, newlines included."""
-    return sum(len(line) for line in lines) + max(0, len(lines) - 1)
+    """Length of the one message these lines join to, in Telegram's units.
+
+    Newlines take one UTF-16 unit each; the content is measured with
+    :func:`text_units`, so emoji cannot quietly eat the budget.
+    """
+    return sum(text_units(line) for line in lines) + max(0, len(lines) - 1)
 
 
 def _fit_entries(
@@ -140,6 +144,7 @@ __all__ = [
     "file_import_unreadable",
     "global_error",
     "heatmap_grid",
+    "help_text",
     "hint_unavailable",
     "import_cancelled",
     "import_preview",
@@ -227,6 +232,39 @@ def welcome_new(first_name: str | None, deck_name: str) -> str:
         "Если слово никак не даётся, я сам предложу помощь, а приостановленные "
         "слова ждут в /paused. Хочется просто погонять слова — /practice.\n"
         "Выгрузить или загрузить свой список файлом — /export и /import."
+    )
+
+
+def help_text() -> str:
+    """The single help screen behind ``/help`` and the «Помощь» button.
+
+    Every command the bot answers has a line here: a command missing from the
+    help is a command the learner never finds.
+    """
+    return (
+        "❓ <b>Помощь</b>\n\n"
+        "<b>Учёба</b>\n"
+        f"/review — повторить слова, которые пора вспомнить "
+        f"(кнопка «{BTN_REVIEW}»)\n"
+        "/practice — тренировка: выбрать перевод из четырёх\n"
+        "/add — добавить слова\n"
+        "/stats — статистика и серия\n"
+        "/decks — колоды\n"
+        "/paused — слова на паузе\n\n"
+        "<b>Слова файлом</b>\n"
+        "/import — загрузить CSV со словами\n"
+        "/export — выгрузить коллекцию в CSV\n\n"
+        "<b>Настройки</b>\n"
+        "/level — уровень языка (A1–C2)\n"
+        "/remind — напоминания\n"
+        "/tz — часовой пояс\n"
+        "/limit — сколько новых слов в день\n"
+        "/settings — текущие настройки\n\n"
+        "<b>Прочее</b>\n"
+        "/start — приветствие и главное меню\n"
+        "/cancel — отменить текущее действие\n"
+        "/help — эта справка\n\n"
+        "Можно просто написать слово с переводом: <code>bonjour — здравствуйте</code>."
     )
 
 
