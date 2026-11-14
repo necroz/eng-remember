@@ -31,7 +31,13 @@ from eng_remember.repositories.reviews import ReviewRepository
 from eng_remember.repositories.streaks import StreakRepository
 from eng_remember.repositories.users import UserRepository
 from eng_remember.services.digest import bucket_by_local_day, local_midnight
-from eng_remember.utils.time import ensure_utc, local_date, local_day_start, utcnow
+from eng_remember.utils.time import (
+    ensure_utc,
+    local_date,
+    local_day_start,
+    resolve_timezone,
+    utcnow,
+)
 
 __all__ = ["Notifier", "ReminderPlan", "ReminderRun", "ReminderService", "build_reminder_service"]
 
@@ -139,7 +145,7 @@ class ReminderService:
             run.candidates += len(batch)
 
             for plan in await self._plan(batch, now=moment):
-                await self._deliver(plan, run)
+                await self._deliver(plan, run, now=moment)
 
         if run.sent_count or run.failed or run.unreachable:
             log.info(
@@ -299,7 +305,7 @@ class ReminderService:
             list(since_by_user), since_by_user=since_by_user
         )
 
-    async def _deliver(self, plan: ReminderPlan, run: ReminderRun) -> None:
+    async def _deliver(self, plan: ReminderPlan, run: ReminderRun, *, now: datetime) -> None:
         try:
             await self._notifier.send_reminder(plan)
         except RecipientUnreachable as exc:
@@ -307,7 +313,7 @@ class ReminderService:
             # used — otherwise every tick would try the same dead chat forever.
             log.info("reminder_unreachable", user_id=plan.user.id, error=str(exc))
             await self._users.set_blocked(plan.user, blocked=True)
-            await self._users.record_reminder(plan.user, kind=plan.kind, on=plan.local_day)
+            await self._mark_slots_used(plan, now=now)
             run.unreachable.append(plan.user.id)
             return
         except Exception as exc:
@@ -316,14 +322,38 @@ class ReminderService:
             run.failed.append(plan.user.id)
             return
 
-        await self._users.record_reminder(plan.user, kind=plan.kind, on=plan.local_day)
+        await self._mark_slots_used(plan, now=now)
         run.sent.append(plan)
+
+    async def _mark_slots_used(self, plan: ReminderPlan, *, now: datetime) -> None:
+        """Record which slots this message settled.
+
+        The digest always covers the morning. When it arrives after the evening
+        hour it covers the evening too: it already carries the queue, and
+        leaving that slot open would send a second message minutes later,
+        repeating the queue right after the long summary.
+        """
+        await self._users.record_reminder(plan.user, kind=plan.kind, on=plan.local_day)
+        if plan.kind is ReminderKind.DIGEST and _evening_has_come(
+            plan.user, now=now, settings=self._reminders
+        ):
+            await self._users.record_reminder(
+                plan.user, kind=ReminderKind.EVENING, on=plan.local_day
+            )
 
 
 def _evening_at(user: User, settings: ReminderSettings) -> time | None:
     if not user.evening_reminder:
         return None
     return user.evening_reminder_time or settings.default_streak_time
+
+
+def _evening_has_come(user: User, *, now: datetime, settings: ReminderSettings) -> bool:
+    """Whether the learner's evening hour has already passed at ``now``."""
+    evening_at = _evening_at(user, settings)
+    if evening_at is None:
+        return False
+    return now.astimezone(resolve_timezone(user.timezone)).time() >= evening_at
 
 
 def build_reminder_service(

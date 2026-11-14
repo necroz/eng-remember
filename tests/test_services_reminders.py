@@ -666,6 +666,33 @@ class TestDigestPlanning:
         assert digest.new_words == 1
         assert digest.weak == (("run", 4),)
 
+    async def test_a_late_digest_closes_the_evening_slot(
+        self,
+        services: Services,
+        session: AsyncSession,
+        settings: Settings,
+        user: User,
+        notifier: RecordingNotifier,
+    ) -> None:
+        """A digest sent after the evening hour carries the queue itself.
+
+        Leaving the evening slot open would send a second message ten minutes
+        later — the same information, reworded, right after the long summary.
+        """
+        settings.reminders.digest_enabled = True
+        settings.reminders.digest_weekday = TODAY.weekday()
+        service = build_reminder_service(session, settings, notifier)
+        await give_work(services, user)
+        user.evening_reminder_time = time(18, 0)
+        await session.commit()
+
+        first = await service.run(now=moment(19, 0))
+        second = await service.run(now=moment(19, 10))
+
+        assert [plan.kind for plan in notifier.sent] == [ReminderKind.DIGEST]
+        assert first.sent_count == 1
+        assert second.sent_count == 0
+
     async def test_the_digest_marks_both_watermarks(
         self,
         services: Services,
