@@ -312,11 +312,14 @@ No prose, no markdown fences.
 def build_user_prompt(text: str) -> str:
     """Wrap the raw message so a stray instruction inside it stays data.
 
-    The message is the most untrusted string the bot handles: flattening it
-    keeps it from closing ``<message>`` or starting a line of its own, exactly
-    like every other free-form value that enters a prompt.
+    The message is the most untrusted string the bot handles: angle brackets are
+    removed so it cannot close ``<message>``, exactly like every other free-form
+    value that enters a prompt. Line breaks are kept, because a vocabulary list
+    typed one word per line is a normal request and its structure is meaning; a
+    newline inside the wrapper cannot start prompt structure, and the rule-based
+    parser already reads the original message line by line.
     """
-    safe_text = flatten_line(text, limit=MESSAGE_LIMIT, strip_brackets=True)
+    safe_text = flatten_line(text, limit=MESSAGE_LIMIT, strip_brackets=True, keep_newlines=True)
     return f"Parse the message between the markers.\n<message>\n{safe_text}\n</message>"
 
 
@@ -347,11 +350,15 @@ def build_clarified_prompt(original: str, question: str, answer: str) -> str:
     The original text is repeated on purpose: the answer alone ("бизнес") says
     nothing about what was being asked, and a model that has to guess tends to
     invent the missing half. All three values are human or model text, so each
-    is flattened before it is wrapped.
+    is sanitised before it is wrapped. The original request and the answer keep
+    their line breaks — they are the learner's own message text; the question is
+    a single generated line by schema contract.
     """
-    safe_original = flatten_line(original, limit=MESSAGE_LIMIT, strip_brackets=True)
+    safe_original = flatten_line(
+        original, limit=MESSAGE_LIMIT, strip_brackets=True, keep_newlines=True
+    )
     safe_question = flatten_line(question, limit=CHECK_FIELD_LIMIT, strip_brackets=True)
-    safe_answer = flatten_line(answer, limit=MESSAGE_LIMIT, strip_brackets=True)
+    safe_answer = flatten_line(answer, limit=MESSAGE_LIMIT, strip_brackets=True, keep_newlines=True)
     return (
         "The learner was asked for one detail and has answered.\n"
         "<original_request>\n"

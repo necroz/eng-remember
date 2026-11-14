@@ -49,8 +49,12 @@ __all__ = [
 ]
 
 # Control characters (including newlines and tabs) become spaces; everything
-# else keeps its meaning.
+# else keeps its meaning. The second variant is for free text whose line
+# structure is the input itself (a list typed one word per line): the newline
+# survives as a separator, every other control character still becomes a space.
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+_CONTROL_CHARS_EXCEPT_NEWLINES = re.compile(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]")
+_HORIZONTAL_WHITESPACE = re.compile(r"[ \t\f\v]+")
 _ANGLE_BRACKETS = re.compile(r"[<>]")
 
 # Caps are generous for the field they guard: a term is a word or a short
@@ -105,13 +109,36 @@ _FREQUENCY_ALIASES: dict[str, str] = {
 }
 
 
-def flatten_line(value: str, *, limit: int, strip_brackets: bool = False) -> str:
-    """One line, whitespace collapsed, capped at ``limit``.
+def flatten_line(
+    value: str,
+    *,
+    limit: int,
+    strip_brackets: bool = False,
+    keep_newlines: bool = False,
+) -> str:
+    """Sanitise free text, capped at ``limit``.
+
+    By default everything becomes one line with whitespace collapsed — the rule
+    for a value that is stored (a term, a topic, an option) or placed inside a
+    wrapper where a newline would be structure. ``keep_newlines`` is for a whole
+    message whose line breaks are the learner's own formatting, such as a
+    vocabulary list typed one word per line: newlines survive as separators,
+    every other control character is neutralised, runs of horizontal whitespace
+    collapse to one space, each line is stripped, and only the outer edges are
+    trimmed after the cap.
 
     ``strip_brackets`` is for values that will be interpolated into a prompt
     wrapper or a Telegram message: with ``<`` and ``>`` gone the value cannot
     imitate the tags around it.
     """
+    if keep_newlines:
+        text = value.replace("\r\n", "\n").replace("\r", "\n")
+        text = _CONTROL_CHARS_EXCEPT_NEWLINES.sub(" ", text)
+        if strip_brackets:
+            text = _ANGLE_BRACKETS.sub("", text)
+        lines = (_HORIZONTAL_WHITESPACE.sub(" ", line).strip() for line in text.split("\n"))
+        return "\n".join(lines).strip()[:limit].strip()
+
     flat = _CONTROL_CHARS.sub(" ", value)
     if strip_brackets:
         flat = _ANGLE_BRACKETS.sub("", flat)
