@@ -18,6 +18,7 @@ from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eng_remember.config import LlmSettings, Settings
+from eng_remember.errors import LlmResponseError
 from eng_remember.services.container import build_services
 from eng_remember.services.llm import client as client_module
 from eng_remember.services.llm.client import LlmTransport, OpenAiCompatibleClient
@@ -227,6 +228,41 @@ async def test_concurrent_rejections_of_reasoning_effort_both_degrade() -> None:
     assert [result.intent for result in results] == [Intent.UNKNOWN, Intent.UNKNOWN]
     assert sum("reasoning_effort" in call for call in endpoint.calls) == 2
     assert len(endpoint.calls) == 4
+    assert transport._reasoning_effort is None
+
+
+async def test_unrelated_reasoning_word_does_not_disable_the_knob() -> None:
+    """A 400 may mention reasoning tokens for an unrelated reason.
+
+    Only a rejection of the parameter itself (its name or the structured
+    ``param``/``code`` in the error body) is a lesson about support.
+    """
+    fake = FakeOpenAi([bad_request("max_tokens must be greater than reasoning tokens")])
+    transport = LlmTransport(llm_settings(reasoning_effort="low"), client=fake)
+    client = OpenAiCompatibleClient(llm_settings(reasoning_effort="low"), transport=transport)
+
+    with pytest.raises(LlmResponseError):
+        await complete(client)
+
+    assert len(fake.endpoint.calls) == 1
+    assert transport._reasoning_effort == "low"
+
+
+async def test_rejection_body_param_is_enough_to_disable_the_knob() -> None:
+    """Providers often put the parameter name in the structured body only."""
+    error = openai.BadRequestError(
+        "invalid value",
+        response=http_response(400),
+        body={"error": {"message": "invalid value", "param": "reasoning_effort"}},
+    )
+    fake = FakeOpenAi([error, completion('{"intent": "unknown"}')])
+    transport = LlmTransport(llm_settings(reasoning_effort="low"), client=fake)
+    client = OpenAiCompatibleClient(llm_settings(reasoning_effort="low"), transport=transport)
+
+    await complete(client)
+
+    assert fake.endpoint.calls[0]["reasoning_effort"] == "low"
+    assert "reasoning_effort" not in fake.endpoint.calls[1]
     assert transport._reasoning_effort is None
 
 

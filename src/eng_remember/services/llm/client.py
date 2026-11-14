@@ -17,7 +17,9 @@ Two design points worth keeping:
 
 from __future__ import annotations
 
+import asyncio
 import json
+import re
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol, TypeVar, runtime_checkable
@@ -86,6 +88,49 @@ _RETRIABLE = (APIConnectionError, APITimeoutError, RateLimitError)
 # Failures where a retry is guaranteed to fail the same way.
 _FATAL = (AuthenticationError,)
 
+# The model's own bad answer is echoed back for repair, but only this much of
+# it: a runaway 5000-character reply costs tokens on every later attempt without
+# helping the model fix the shape.
+_REPAIR_ECHO_LIMIT = 2000
+_REPAIR_TRUNCATED_MARK = " …(обрезано)"
+
+# A rejection is a lesson only when it names the parameter itself. Matching a
+# bare word like "reasoning" would disable the knob for the whole process after
+# an unrelated error such as "max_tokens must be greater than reasoning tokens".
+_REASONING_EFFORT_REJECTION = re.compile(r"reasoning[_\s-]?effort")
+_RESPONSE_FORMAT_REJECTION = re.compile(r"response[_\s-]?format")
+
+
+def _rejection_text(exc: BadRequestError) -> str:
+    """Everything the provider said about a rejection, lowercased.
+
+    The human message is not the only place a parameter can be named: OpenAI
+    and compatible providers often put a machine-readable ``param`` or ``code``
+    in the structured body while the message stays generic.
+    """
+    parts = [str(exc)]
+    body = exc.body
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict):
+            parts.extend(
+                value
+                for key in ("message", "param", "code", "type")
+                if isinstance(value := error.get(key), str)
+            )
+        parts.extend(
+            value for key in ("message", "param", "code") if isinstance(value := body.get(key), str)
+        )
+    return " ".join(parts).lower()
+
+
+def _echo_for_repair(content: str) -> str:
+    """The model's answer as it goes back into the repair conversation."""
+    if len(content) <= _REPAIR_ECHO_LIMIT:
+        return content
+    keep = _REPAIR_ECHO_LIMIT - len(_REPAIR_TRUNCATED_MARK)
+    return f"{content[:keep]}{_REPAIR_TRUNCATED_MARK}"
+
 
 @runtime_checkable
 class JsonChatClient(Protocol):
@@ -139,7 +184,12 @@ class LlmTransport:
         if client is not None:
             await client.close()
 
-    async def create(self, messages: list[ChatCompletionMessageParam]) -> Any:
+    async def create(
+        self,
+        messages: list[ChatCompletionMessageParam],
+        *,
+        schema: type[BaseModel] | None = None,
+    ) -> Any:
         """Call the endpoint, degrading gracefully when optional knobs are rejected."""
         api = self._api()
         kwargs: dict[str, Any] = {
@@ -156,17 +206,20 @@ class LlmTransport:
             try:
                 return await api.chat.completions.create(**kwargs)
             except BadRequestError as exc:
-                message = str(exc)
+                rejection = _rejection_text(exc)
                 changed = False
                 # Degrade on what *this* request sent, not on the transport's
                 # current flags: a concurrent request may have taught the
                 # transport already, while our own kwargs still carry the
                 # rejected parameter. The retry must drop it here too.
-                if "response_format" in kwargs and "response_format" in message:
+                response_format = kwargs.get("response_format")
+                if isinstance(response_format, dict) and _RESPONSE_FORMAT_REJECTION.search(
+                    rejection
+                ):
                     self._json_mode = False
                     kwargs.pop("response_format", None)
                     changed = True
-                if "reasoning_effort" in kwargs and "reasoning" in message.lower():
+                if "reasoning_effort" in kwargs and _REASONING_EFFORT_REJECTION.search(rejection):
                     self._reasoning_effort = None
                     kwargs.pop("reasoning_effort", None)
                     changed = True
@@ -198,6 +251,13 @@ class OpenAiCompatibleClient:
     lessons. Without an explicit transport it builds its own, which is what
     tests and isolated callers want; such a client closes that transport in
     :meth:`aclose`. A client given a shared transport never closes it.
+
+    Invariant: a client's settings must agree with its transport's settings on
+    everything that reaches the wire (``model``, ``temperature``,
+    ``max_output_tokens``, ``timeout_seconds`` and ``reasoning_effort``). The
+    request parameters and the learned flags live on the transport, while
+    :attr:`model_name` and the audit row are read from this client; differing
+    settings would make the audit name a model the request never used.
     """
 
     def __init__(
@@ -237,7 +297,13 @@ class OpenAiCompatibleClient:
         schema: type[ModelT],
         user_id: int | None = None,
     ) -> ModelT:
-        """Ask the model for a JSON object matching ``schema``."""
+        """Ask the model for a JSON object matching ``schema``.
+
+        The whole repair loop runs inside one deadline. The SDK's per-attempt
+        timeout is not enough on its own: a hanging provider would otherwise
+        hold the caller for ``retries × timeout``, and the user waits for the
+        answer in a chat.
+        """
         if not self.available:
             raise LlmNotConfiguredError("LLM is disabled or has no API key")
 
@@ -247,111 +313,133 @@ class OpenAiCompatibleClient:
         ]
         attempts = self._settings.retries + 1
         last_error = "no attempt was made"
+        attempt = 0
+        started = time.perf_counter()
 
-        for attempt in range(1, attempts + 1):
-            started = time.perf_counter()
-            try:
-                response = await self._create(messages)
-            except _FATAL as exc:
-                await self._report(
-                    purpose=purpose,
-                    user_id=user_id,
-                    attempt=attempt,
-                    started=started,
-                    success=False,
-                    error=f"{type(exc).__name__}: {exc}",
-                )
-                raise LlmNotConfiguredError(str(exc)) from exc
-            except (BadRequestError, APIStatusError, OpenAIError) as exc:
-                await self._report(
-                    purpose=purpose,
-                    user_id=user_id,
-                    attempt=attempt,
-                    started=started,
-                    success=False,
-                    error=f"{type(exc).__name__}: {exc}",
-                )
-                last_error = f"{type(exc).__name__}: {exc}"
-                if isinstance(exc, _RETRIABLE) and attempt < attempts:
-                    continue
-                if (
-                    isinstance(exc, APIStatusError)
-                    and 500 <= exc.status_code < 600
-                    and attempt < attempts
-                ):
-                    continue
-                raise LlmResponseError(last_error) from exc
+        try:
+            async with asyncio.timeout(self._settings.timeout_seconds):
+                for attempt in range(1, attempts + 1):
+                    attempt_started = time.perf_counter()
+                    try:
+                        response = await self._create(messages)
+                    except _FATAL as exc:
+                        await self._report(
+                            purpose=purpose,
+                            user_id=user_id,
+                            attempt=attempt,
+                            started=attempt_started,
+                            success=False,
+                            error=f"{type(exc).__name__}: {exc}",
+                        )
+                        raise LlmNotConfiguredError(str(exc)) from exc
+                    except (BadRequestError, APIStatusError, OpenAIError) as exc:
+                        await self._report(
+                            purpose=purpose,
+                            user_id=user_id,
+                            attempt=attempt,
+                            started=attempt_started,
+                            success=False,
+                            error=f"{type(exc).__name__}: {exc}",
+                        )
+                        last_error = f"{type(exc).__name__}: {exc}"
+                        if isinstance(exc, _RETRIABLE) and attempt < attempts:
+                            continue
+                        if (
+                            isinstance(exc, APIStatusError)
+                            and 500 <= exc.status_code < 600
+                            and attempt < attempts
+                        ):
+                            continue
+                        raise LlmResponseError(last_error) from exc
 
-            choice = response.choices[0] if response.choices else None
-            content = (choice.message.content if choice else None) or ""
-            usage = response.usage
+                    choice = response.choices[0] if response.choices else None
+                    content = (choice.message.content if choice else None) or ""
+                    usage = response.usage
 
-            if choice is not None and choice.finish_reason == "length":
-                # The cap covers reasoning tokens too. A reasoning model can
-                # spend all of it thinking and return an empty or half-written
-                # answer; a repair prompt would only spend more of the same
-                # budget. Say what to raise instead of blaming the model.
-                last_error = (
-                    "response was cut off: "
-                    f"finish_reason=length, max_output_tokens={self._settings.max_output_tokens}; "
-                    "raise LLM__MAX_OUTPUT_TOKENS or ask for fewer words"
-                )
-                await self._report(
-                    purpose=purpose,
-                    user_id=user_id,
-                    attempt=attempt,
-                    started=started,
-                    success=False,
-                    request_text=user,
-                    response_text=content,
-                    prompt_tokens=getattr(usage, "prompt_tokens", None),
-                    completion_tokens=getattr(usage, "completion_tokens", None),
-                    total_tokens=getattr(usage, "total_tokens", None),
-                    error=last_error,
-                )
-                raise LlmResponseError(last_error)
+                    if choice is not None and choice.finish_reason == "length":
+                        # The cap covers reasoning tokens too. A reasoning model can
+                        # spend all of it thinking and return an empty or half-written
+                        # answer; a repair prompt would only spend more of the same
+                        # budget. Say what to raise instead of blaming the model.
+                        last_error = (
+                            "response was cut off: "
+                            f"finish_reason=length, "
+                            f"max_output_tokens={self._settings.max_output_tokens}; "
+                            "raise LLM__MAX_OUTPUT_TOKENS or ask for fewer words"
+                        )
+                        await self._report(
+                            purpose=purpose,
+                            user_id=user_id,
+                            attempt=attempt,
+                            started=attempt_started,
+                            success=False,
+                            request_text=user,
+                            response_text=content,
+                            prompt_tokens=getattr(usage, "prompt_tokens", None),
+                            completion_tokens=getattr(usage, "completion_tokens", None),
+                            total_tokens=getattr(usage, "total_tokens", None),
+                            error=last_error,
+                        )
+                        raise LlmResponseError(last_error)
 
-            try:
-                payload = json.loads(extract_json_object(content))
-                result = schema.model_validate(payload)
-            except (json.JSONDecodeError, ValidationError) as exc:
-                last_error = f"{type(exc).__name__}: {exc}"
-                await self._report(
-                    purpose=purpose,
-                    user_id=user_id,
-                    attempt=attempt,
-                    started=started,
-                    success=False,
-                    request_text=user,
-                    response_text=content,
-                    prompt_tokens=getattr(usage, "prompt_tokens", None),
-                    completion_tokens=getattr(usage, "completion_tokens", None),
-                    total_tokens=getattr(usage, "total_tokens", None),
-                    error=last_error,
-                )
-                if attempt >= attempts:
-                    break
-                # Show the model its own answer and the exact complaint.
-                messages = [
-                    *messages,
-                    {"role": "assistant", "content": content},
-                    {"role": "user", "content": REPAIR_TEMPLATE.format(error=last_error)},
-                ]
-                continue
+                    try:
+                        payload = json.loads(extract_json_object(content))
+                        result = schema.model_validate(payload)
+                    except (json.JSONDecodeError, ValidationError) as exc:
+                        last_error = f"{type(exc).__name__}: {exc}"
+                        await self._report(
+                            purpose=purpose,
+                            user_id=user_id,
+                            attempt=attempt,
+                            started=attempt_started,
+                            success=False,
+                            request_text=user,
+                            response_text=content,
+                            prompt_tokens=getattr(usage, "prompt_tokens", None),
+                            completion_tokens=getattr(usage, "completion_tokens", None),
+                            total_tokens=getattr(usage, "total_tokens", None),
+                            error=last_error,
+                        )
+                        if attempt >= attempts:
+                            break
+                        # Show the model its own answer and the exact complaint.
+                        messages = [
+                            *messages,
+                            {"role": "assistant", "content": _echo_for_repair(content)},
+                            {
+                                "role": "user",
+                                "content": REPAIR_TEMPLATE.format(error=last_error),
+                            },
+                        ]
+                        continue
 
+                    await self._report(
+                        purpose=purpose,
+                        user_id=user_id,
+                        attempt=attempt,
+                        started=attempt_started,
+                        success=True,
+                        request_text=user,
+                        response_text=content,
+                        prompt_tokens=getattr(usage, "prompt_tokens", None),
+                        completion_tokens=getattr(usage, "completion_tokens", None),
+                        total_tokens=getattr(usage, "total_tokens", None),
+                    )
+                    return result
+        except TimeoutError as exc:
+            last_error = (
+                f"LLM call deadline of {self._settings.timeout_seconds}s exceeded "
+                f"after {max(attempt, 1)} attempt(s)"
+            )
             await self._report(
                 purpose=purpose,
                 user_id=user_id,
-                attempt=attempt,
+                attempt=max(attempt, 1),
                 started=started,
-                success=True,
-                request_text=user,
-                response_text=content,
-                prompt_tokens=getattr(usage, "prompt_tokens", None),
-                completion_tokens=getattr(usage, "completion_tokens", None),
-                total_tokens=getattr(usage, "total_tokens", None),
+                success=False,
+                error=last_error,
             )
-            return result
+            raise LlmResponseError(last_error) from exc
 
         raise LlmResponseError(
             f"model did not return valid JSON after {attempts} attempts: {last_error}"

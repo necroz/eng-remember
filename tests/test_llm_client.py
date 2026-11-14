@@ -8,6 +8,8 @@ that make a bad parse debuggable.
 
 from __future__ import annotations
 
+import asyncio
+import time
 from typing import Any
 
 import httpx2
@@ -51,6 +53,19 @@ class FakeOpenAi:
 
     async def close(self) -> None:
         self.closed = True
+
+
+class HangingEndpoint(FakeEndpoint):
+    """An endpoint that never answers inside the test's budget."""
+
+    def __init__(self, delay: float) -> None:
+        super().__init__([])
+        self._delay = delay
+
+    async def create(self, **kwargs: Any) -> Any:
+        self.calls.append(kwargs)
+        await asyncio.sleep(self._delay)
+        return completion('{"intent": "unknown"}')
 
 
 def http_response(status: int, text: str = "{}") -> httpx2.Response:
@@ -185,6 +200,25 @@ async def test_malformed_answer_is_sent_back_with_the_error() -> None:
     assert [record.attempt for record in sink.records] == [1, 2]
 
 
+async def test_repair_echoes_truncated_bad_answer() -> None:
+    """A runaway answer is not sent back in full: the repair prompt stays cheap."""
+    client, fake = make_client(
+        [
+            completion("x" * 5000),
+            completion('{"intent": "add_cards", "cards": []}'),
+        ]
+    )
+
+    await complete(client)
+
+    repair_messages = fake.endpoint.calls[1]["messages"]
+    echoed = repair_messages[-2]
+    assert echoed["role"] == "assistant"
+    assert len(echoed["content"]) <= 2000
+    assert "(обрезано)" in echoed["content"]
+    assert echoed["content"].startswith("x")
+
+
 async def test_schema_violation_also_triggers_a_repair() -> None:
     """A syntactically valid answer with unusable content must not be trusted."""
     client, fake = make_client(
@@ -210,6 +244,34 @@ async def test_retries_are_bounded_and_reported() -> None:
     assert len(fake.endpoint.calls) == 3  # retries=2 → three attempts
     assert all(not record.success for record in sink.records)
     assert len(sink.records) == 3
+
+
+async def test_total_deadline_bounds_retries() -> None:
+    """A hanging provider must not block for retries × timeout.
+
+    The per-attempt timeout belongs to the SDK; the caller-level deadline is
+    what keeps the whole repair loop inside one user-visible budget.
+    """
+    sink = Sink()
+    fake = FakeOpenAi([])
+    endpoint = HangingEndpoint(delay=30.0)
+    fake.endpoint = endpoint
+    fake.chat = FakeChat(endpoint)
+    client = OpenAiCompatibleClient(
+        llm_settings(retries=3, timeout_seconds=0.1),
+        sink=sink,
+        client=fake,
+    )
+
+    started = time.perf_counter()
+    with pytest.raises(LlmResponseError, match="deadline"):
+        await complete(client)
+    elapsed = time.perf_counter() - started
+
+    assert elapsed < 1.0
+    assert len(endpoint.calls) == 1
+    assert sink.records[-1].success is False
+    assert "deadline" in (sink.records[-1].error or "")
 
 
 @pytest.mark.parametrize(
