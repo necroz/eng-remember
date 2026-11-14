@@ -25,6 +25,7 @@ from eng_remember.services.discovery import DiscoveryService
 from eng_remember.services.enrichment import EnrichmentService
 from eng_remember.services.grading import AnswerGradingService
 from eng_remember.services.llm.checker import AnswerChecker
+from eng_remember.services.llm.client import LlmTransport
 from eng_remember.services.llm.enricher import CardEnricher
 from eng_remember.services.llm.explorer import WordExplorer
 from eng_remember.services.llm.factory import build_llm_client
@@ -74,7 +75,19 @@ class Services:
         await self.session.commit()
 
 
-def build_services(session: AsyncSession, settings: Settings) -> Services:
+def build_services(
+    session: AsyncSession,
+    settings: Settings,
+    *,
+    llm_transport: LlmTransport | None = None,
+) -> Services:
+    """Wire this request's services, optionally through a process-wide transport.
+
+    The transport is the one thing that must outlive a single update: it owns
+    the provider connection and the lessons learned from rejected parameters.
+    Callers that omit it get an isolated transport, which is convenient for
+    tests but not what the bot does.
+    """
     users = UserRepository(session)
     decks = DeckRepository(session)
     cards = CardRepository(session)
@@ -86,7 +99,7 @@ def build_services(session: AsyncSession, settings: Settings) -> Services:
 
     # One client for every LLM-facing service, so a per-call audit sink and the
     # retry policy cannot differ between the parser and the explorer.
-    llm = build_llm_client(session, settings)
+    llm = build_llm_client(session, settings, transport=llm_transport)
     parser = MessageParser(llm=llm)
     explorer = WordExplorer(llm)
 

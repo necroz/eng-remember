@@ -16,6 +16,7 @@ from eng_remember.config import Settings
 from eng_remember.db.engine import SessionFactory, session_scope
 from eng_remember.services.container import build_services
 from eng_remember.services.enrichment import _QUEUE
+from eng_remember.services.llm.client import LlmTransport
 
 __all__ = ["enrichment_worker"]
 
@@ -29,8 +30,14 @@ async def enrichment_worker(
     session_factory: SessionFactory,
     settings: Settings,
     stopping: asyncio.Event,
+    *,
+    transport: LlmTransport | None = None,
 ) -> None:
-    """Consume backfill requests until asked to stop."""
+    """Consume backfill requests until asked to stop.
+
+    The transport is the process-wide one from the entry point: the worker
+    outlives requests, so it must not build a connection of its own.
+    """
     while not stopping.is_set():
         try:
             user_id, card_id = await asyncio.wait_for(_QUEUE.get(), timeout=POLL_SECONDS)
@@ -38,7 +45,7 @@ async def enrichment_worker(
             continue
         except asyncio.CancelledError:
             raise
-        await _enrich_card(session_factory, settings, user_id, card_id)
+        await _enrich_card(session_factory, settings, user_id, card_id, transport=transport)
 
 
 async def _enrich_card(
@@ -46,6 +53,8 @@ async def _enrich_card(
     settings: Settings,
     user_id: int,
     card_id: int,
+    *,
+    transport: LlmTransport | None = None,
 ) -> bool:
     """Top up one card's examples in a session of its own.
 
@@ -55,7 +64,7 @@ async def _enrich_card(
     """
     try:
         async with session_scope(session_factory) as session:
-            services = build_services(session, settings)
+            services = build_services(session, settings, llm_transport=transport)
             card = await services.cards.get(card_id, user_id=user_id)
             if card is None or not services.enrichment.needs_examples(card):
                 return False

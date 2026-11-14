@@ -27,6 +27,7 @@ from eng_remember.config import get_settings, require_bot_token
 from eng_remember.db.engine import create_engine, create_session_factory
 from eng_remember.errors import ConfigurationError
 from eng_remember.logging_setup import configure_logging
+from eng_remember.services.llm.client import LlmTransport
 from eng_remember.services.reminders import build_reminder_service
 
 log = structlog.get_logger(__name__)
@@ -38,6 +39,10 @@ async def main() -> int:
 
     engine = create_engine(settings)
     session_factory = create_session_factory(engine)
+    # A reminder tick makes no model call today, but a process entry point owns
+    # one transport and closes it at shutdown, so a future digest that asks the
+    # model reuses the connection instead of leaking one per tick.
+    llm_transport = LlmTransport(settings.llm) if settings.llm.is_configured else None
     bot = Bot(
         token=require_bot_token(settings),
         default=DefaultBotProperties(parse_mode=ParseMode(settings.bot.parse_mode)),
@@ -49,6 +54,8 @@ async def main() -> int:
             run = await service.run()
             await session.commit()
     finally:
+        if llm_transport is not None:
+            await llm_transport.aclose()
         await bot.session.close()
         await engine.dispose()
 

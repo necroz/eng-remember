@@ -147,13 +147,13 @@ async def test_json_mode_is_requested() -> None:
     assert fake.endpoint.calls[0]["temperature"] == 0.0
 
 
-async def test_reasoning_is_disabled_by_default() -> None:
-    """Structured JSON needs the output budget, not chain-of-thought."""
+async def test_reasoning_is_not_sent_by_default() -> None:
+    """An unset parameter is not sent, so every provider accepts the request."""
     client, fake = make_client([completion('{"intent": "unknown"}')])
 
     await complete(client)
 
-    assert fake.endpoint.calls[0]["reasoning_effort"] == "none"
+    assert "reasoning_effort" not in fake.endpoint.calls[0]
 
 
 async def test_fenced_answer_is_accepted() -> None:
@@ -265,7 +265,8 @@ async def test_provider_without_reasoning_effort_still_works() -> None:
         [
             api_error("bad_request", "Unsupported parameter: reasoning_effort", 400),
             completion('{"intent": "unknown"}'),
-        ]
+        ],
+        reasoning_effort="none",
     )
 
     result = await complete(client)
@@ -283,7 +284,8 @@ async def test_both_optional_parameters_degrade_in_one_call() -> None:
             api_error("bad_request", "Unsupported parameter: reasoning_effort", 400),
             api_error("bad_request", "Unsupported parameter: response_format", 400),
             completion('{"intent": "unknown"}'),
-        ]
+        ],
+        reasoning_effort="none",
     )
 
     result = await complete(client)

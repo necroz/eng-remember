@@ -21,6 +21,7 @@ from eng_remember.errors import ConfigurationError
 from eng_remember.logging_setup import configure_logging
 from eng_remember.services.enrichment_worker import enrichment_worker
 from eng_remember.services.llm.budget import BudgetAlert, global_budget
+from eng_remember.services.llm.client import LlmTransport
 from eng_remember.services.reminders import build_reminder_service
 
 log = structlog.get_logger(__name__)
@@ -48,7 +49,10 @@ async def main() -> None:
 
     engine = create_engine(settings)
     session_factory = create_session_factory(engine)
-    dispatcher = build_dispatcher(settings, session_factory)
+    # One connection owner for the whole process: every update's client is a
+    # thin view over it, and what a provider rejects is learned only once.
+    llm_transport = LlmTransport(settings.llm) if settings.llm.is_configured else None
+    dispatcher = build_dispatcher(settings, session_factory, llm_transport=llm_transport)
 
     bot = Bot(
         token=require_bot_token(settings),
@@ -93,7 +97,7 @@ async def main() -> None:
     # nothing to generate, so the worker is not started at all.
     enrichment = (
         asyncio.create_task(
-            enrichment_worker(session_factory, settings, stopping),
+            enrichment_worker(session_factory, settings, stopping, transport=llm_transport),
             name="enrichment-worker",
         )
         if settings.llm.is_configured
@@ -116,6 +120,8 @@ async def main() -> None:
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
         await bot.session.close()
+        if llm_transport is not None:
+            await llm_transport.aclose()
         await engine.dispose()
         log.info("bot_stopped")
 
