@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from aiogram import Dispatcher
+from aiogram import Dispatcher, F
 from aiogram.fsm.storage.memory import MemoryStorage
 
 from eng_remember.bot.middlewares.db import DbSessionMiddleware
@@ -32,6 +32,10 @@ def build_dispatcher(settings: Settings, session_factory: SessionFactory) -> Dis
     that order: the rate limit and duplicate guard run before a session is
     opened, then the session, then the user lookup.
 
+    The bot serves private chats only. The chat-type filter is registered on the
+    dispatcher's observers, which is checked before any middleware runs, so a
+    group or channel update never opens a database session.
+
     FSM storage is in-memory, which is enough for a single process — a pending
     import confirmation is lost on restart, and nothing else depends on it.
     Swapping in a Redis storage is a one-line change here when the bot is scaled
@@ -53,6 +57,11 @@ def build_dispatcher(settings: Settings, session_factory: SessionFactory) -> Dis
         observer.middleware(duplicate_middleware)
         observer.middleware(session_middleware)
         observer.middleware(user_middleware)
+
+    # Filters are checked before middlewares, so a group or channel update is
+    # dropped before a session is opened and no stranger gets a user row.
+    dispatcher.message.filter(F.chat.type == "private")
+    dispatcher.callback_query.filter(F.message.chat.type == "private")
 
     dispatcher.include_router(errors.build_router())
     dispatcher.include_router(start.build_router())
