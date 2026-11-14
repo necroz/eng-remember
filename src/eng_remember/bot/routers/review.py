@@ -56,6 +56,27 @@ log = structlog.get_logger(__name__)
 CLOCK_TOLERANCE = timedelta(seconds=1)
 
 
+async def _show_leech_error(
+    query: CallbackQuery,
+    card: Card,
+    message: str,
+    *,
+    bot: Bot,
+) -> None:
+    """Replace «Готовлю…» with the explanation and the menu's buttons.
+
+    The preparing edit takes the menu away before the model call, so every
+    failure has to put it back: the message is the only place «Пауза» and
+    «Оставить как есть» live, and a failed action must not strand the learner.
+    """
+    await rendering.edit_or_send(
+        query,
+        message,
+        bot=bot,
+        reply_markup=keyboards.leech_menu(card.id),
+    )
+
+
 def build_router() -> Router:
     """Create the router and register its handlers.
 
@@ -310,7 +331,7 @@ def build_router() -> Router:
                 confirmation = texts.leech_example_done(card, example)
         except LlmNotConfiguredError:
             await query.answer(texts.llm_required(), show_alert=True)
-            await rendering.edit_or_send(query, texts.llm_required(), bot=bot)
+            await _show_leech_error(query, card, texts.llm_required(), bot=bot)
             return
         except LlmError as exc:
             log.warning(
@@ -320,8 +341,14 @@ def build_router() -> Router:
                 error=str(exc),
             )
             await query.answer(texts.llm_failed(), show_alert=True)
-            await rendering.edit_or_send(query, texts.llm_failed(), bot=bot)
+            await _show_leech_error(query, card, texts.llm_failed(), bot=bot)
             return
+        except Exception:
+            # Not a failure the bot knows how to explain: the global handler
+            # apologises. Before it does, the message must stop saying
+            # «Готовлю…» and give the menu's decisions back.
+            await _show_leech_error(query, card, texts.llm_failed(), bot=bot)
+            raise
 
         await services.commit()
         await query.answer()

@@ -10,6 +10,7 @@ from aiogram.methods import AnswerCallbackQuery, SendMessage
 from aiogram.types import InlineKeyboardMarkup
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from eng_remember.bot import texts
 from eng_remember.bot.callbacks import LeechCB, ReviewCB
 from eng_remember.models.card import Card
 from eng_remember.services.llm.schema import MnemonicResponse
@@ -57,6 +58,13 @@ def last_callback_answer(recording: RecordingSession) -> AnswerCallbackQuery:
     answers = [m for m in recording.requests if isinstance(m, AnswerCallbackQuery)]
     assert answers, recording.requests
     return answers[-1]
+
+
+def assert_leech_menu_is_back(recording: RecordingSession) -> None:
+    """The outcome message still offers the remaining decisions."""
+    data = recording.last_button_data()
+    assert any(item.startswith("lc:pause") for item in data), data
+    assert any(item.startswith("lc:leave") for item in data), data
 
 
 async def test_the_menu_appears_on_the_fourth_failure(
@@ -205,6 +213,79 @@ async def test_model_actions_alert_when_no_model_is_configured(
     )
 
     assert last_callback_answer(recording).show_alert
+
+
+async def test_mnemonic_failure_keeps_the_leech_menu_without_a_model(
+    dispatcher: Dispatcher,
+    bot: Bot,
+    recording: RecordingSession,
+    saved_card: Card,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """An offline model fails one action, not the whole menu.
+
+    The «Готовлю…» edit takes the buttons away before the call, so the failure
+    path has to put them back: otherwise «Пауза» and «Оставить как есть» are
+    lost for a card the menu was shown for.
+    """
+    for round_no in range(4):
+        await fail_card(dispatcher, bot, saved_card.id, session_factory, round_no=round_no)
+
+    await tap(
+        dispatcher,
+        bot,
+        LeechCB(action="mnemonic", card_id=saved_card.id).pack(),
+        update_id=300,
+    )
+
+    assert texts.llm_required() in recording.last_text()
+    assert_leech_menu_is_back(recording)
+
+
+async def test_example_failure_keeps_the_leech_menu_without_a_model(
+    dispatcher: Dispatcher,
+    bot: Bot,
+    recording: RecordingSession,
+    saved_card: Card,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    for round_no in range(4):
+        await fail_card(dispatcher, bot, saved_card.id, session_factory, round_no=round_no)
+
+    await tap(
+        dispatcher,
+        bot,
+        LeechCB(action="example", card_id=saved_card.id).pack(),
+        update_id=300,
+    )
+
+    assert texts.llm_required() in recording.last_text()
+    assert_leech_menu_is_back(recording)
+
+
+async def test_an_unexpected_error_still_restores_the_leech_menu(
+    llm_dispatcher: Dispatcher,
+    llm: ScriptedClient,
+    bot: Bot,
+    recording: RecordingSession,
+    saved_card: Card,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A crash in the model call must not leave the message on «Готовлю…»."""
+    llm.push_mnemonic(RuntimeError("model exploded"))
+    for round_no in range(4):
+        await fail_card(llm_dispatcher, bot, saved_card.id, session_factory, round_no=round_no)
+
+    await tap(
+        llm_dispatcher,
+        bot,
+        LeechCB(action="mnemonic", card_id=saved_card.id).pack(),
+        update_id=300,
+    )
+
+    assert texts.leech_preparing() not in recording.last_text()
+    assert texts.llm_failed() in recording.last_text()
+    assert_leech_menu_is_back(recording)
 
 
 async def test_double_mnemonic_tap_single_call(
