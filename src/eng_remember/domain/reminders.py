@@ -78,17 +78,18 @@ def decide(
     today = local_date(context.timezone, now=now)
     local_clock = now.astimezone(resolve_timezone(context.timezone)).time()
 
+    # The digest owns its whole day, so it is decided before the evening slot:
+    # a bot whose first tick came after the evening hour would otherwise skip
+    # the week. It already settles the morning slot through covers_morning.
+    if _digest_owed(context, today=today, local_clock=local_clock, settings=settings):
+        return ReminderKind.DIGEST
+
     if context.evening_at is not None and local_clock >= context.evening_at:
         return ReminderKind.EVENING if _evening_owed(context, today=today) else None
 
-    # The digest settles the morning slot for the day, whatever else is marked.
+    # A digest already sent today settles the morning slot, whatever is marked.
     if context.last_digest_on == today:
         return None
-
-    # The digest replaces the morning reminder on its day; it is worth sending
-    # even when the queue is empty, because a quiet week is still a week.
-    if _digest_owed(context, today=today, local_clock=local_clock, settings=settings):
-        return ReminderKind.DIGEST
 
     if context.last_morning_on == today:
         return None
