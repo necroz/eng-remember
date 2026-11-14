@@ -104,6 +104,24 @@ def test_parse_accepts_comma_and_tab_delimiters() -> None:
     assert [row.term for row in tab.rows] == ["run", "swim"]
 
 
+def test_sniff_semicolon_with_commas_in_translation() -> None:
+    """Commas inside translations must not turn a semicolon file into a comma one."""
+    parsed = parse_cards_csv(
+        "hello;привет, здравствуйте, дорогой\nrun;бежать, спешить\nhouse;дом, жилище\n"
+    )
+
+    assert [row.term for row in parsed.rows] == ["hello", "run", "house"]
+    assert parsed.rows[0].translation == "привет, здравствуйте, дорогой"
+    assert parsed.rows[1].translation == "бежать, спешить"
+
+
+def test_sniff_prefers_semicolon_when_counts_tie() -> None:
+    parsed = parse_cards_csv("first;one,two\nsecond;three,four\n")
+
+    assert [row.term for row in parsed.rows] == ["first", "second"]
+    assert parsed.rows[0].translation == "one,two"
+
+
 def test_parse_handles_bom_and_header() -> None:
     parsed = parse_cards_csv("\ufeffterm;translation;notes\nrun;бежать;спорт\n")
 

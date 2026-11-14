@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import csv
 import io
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
@@ -47,6 +48,12 @@ _HEADER = (
 # real word waiting for its meaning, not a header.
 _HEADER_TERMS = {"term", "слово"}
 _HEADER_TRANSLATIONS = {"translation", "перевод"}
+
+# Delimiters the sniffer considers, in tie-break order.
+_SNIFF_DELIMITERS = (";", ",", "\t")
+# How many non-empty lines vote on the delimiter. A single line is easy to
+# mislead with a punctuation-heavy translation, a handful is not.
+_SNIFF_SAMPLE_LINES = 10
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,15 +134,37 @@ def parse_cards_csv(text: str) -> CsvParseResult:
 
 
 def _sniff(text: str) -> str:
-    """The delimiter that appears most in the first non-empty line.
+    """The delimiter that gives a stable column count across the sample lines.
 
     ``csv.Sniffer`` gets confused by commas inside a semicolon-delimited row
-    (tags like "sport,basic"), so the choice is deliberate and predictable.
+    (tags like "sport,basic"), and one line can be misleading when a
+    translation holds other punctuation. So up to ten non-empty lines vote:
+    the delimiter that splits most of them into the same number of columns
+    above one wins. Ties keep the order ``;``, ``,``, tab.
     """
-    first = next((line for line in text.splitlines() if line.strip()), "")
-    counts = {delimiter: first.count(delimiter) for delimiter in (";", ",", "\t")}
-    best = max(counts, key=lambda delimiter: counts[delimiter])
-    return best if counts[best] > 0 else CSV_DELIMITER
+    lines = [line for line in text.splitlines() if line.strip()][:_SNIFF_SAMPLE_LINES]
+    best = CSV_DELIMITER
+    best_votes = 0
+    for delimiter in _SNIFF_DELIMITERS:
+        votes = _stable_split_votes(lines, delimiter)
+        if votes > best_votes:
+            best = delimiter
+            best_votes = votes
+    return best
+
+
+def _stable_split_votes(lines: list[str], delimiter: str) -> int:
+    """How many sample lines share the most common column count above one."""
+    counts: list[int] = []
+    for line in lines:
+        try:
+            counts.append(len(next(csv.reader([line], delimiter=delimiter))))
+        except csv.Error:
+            continue
+    if not counts:
+        return 0
+    mode = Counter(counts).most_common(1)[0][0]
+    return counts.count(mode) if mode > 1 else 0
 
 
 def _is_header(raw: list[str]) -> bool:
