@@ -41,7 +41,13 @@ from eng_remember.repositories.llm_calls import LlmCallRecord
 from eng_remember.services.llm.prompts import REPAIR_TEMPLATE
 from eng_remember.services.llm.schema import extract_json_object
 
-__all__ = ["JsonChatClient", "LlmCallSink", "OpenAiCompatibleClient", "OpenAiLike"]
+__all__ = [
+    "JsonChatClient",
+    "LlmCallSink",
+    "LlmTransport",
+    "OpenAiCompatibleClient",
+    "OpenAiLike",
+]
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
 LlmCallSink = Callable[[LlmCallRecord], Awaitable[None]]
@@ -102,23 +108,108 @@ class JsonChatClient(Protocol):
     ) -> ModelT: ...
 
 
+class LlmTransport:
+    """The process-wide HTTP side of the model: one client, one set of lessons.
+
+    Created once at startup and shared by every request, so the (lazily built)
+    ``AsyncOpenAI`` connection pool is reused instead of leaking one client per
+    update. It also owns the flags learned from provider rejections: once a
+    provider says it does not understand ``response_format`` or
+    ``reasoning_effort``, every later request remembers that instead of paying
+    for the same 400 again.
+
+    Tests can pass a ready-made ``client``; production leaves it ``None`` and the
+    real SDK is built on first use.
+    """
+
+    def __init__(self, settings: LlmSettings, *, client: OpenAiLike | None = None) -> None:
+        self._settings = settings
+        self._client = client
+        # Flipped off for the lifetime of the transport the first time a
+        # provider rejects ``response_format``; small self-hosted servers often do.
+        self._json_mode = True
+        # Same idea for reasoning control: not every OpenAI-compatible endpoint
+        # knows the parameter, and one rejected request is enough to learn that.
+        self._reasoning_effort = (settings.reasoning_effort or "").strip() or None
+
+    async def aclose(self) -> None:
+        """Close the underlying client, if one was ever built."""
+        client = self._client
+        self._client = None
+        if client is not None:
+            await client.close()
+
+    async def create(self, messages: list[ChatCompletionMessageParam]) -> Any:
+        """Call the endpoint, degrading gracefully when optional knobs are rejected."""
+        api = self._api()
+        kwargs: dict[str, Any] = {
+            "model": self._settings.model,
+            "messages": messages,
+            "temperature": self._settings.temperature,
+            "max_tokens": self._settings.max_output_tokens,
+        }
+        if self._json_mode:
+            kwargs["response_format"] = {"type": "json_object"}
+        if self._reasoning_effort:
+            kwargs["reasoning_effort"] = self._reasoning_effort
+        while True:
+            try:
+                return await api.chat.completions.create(**kwargs)
+            except BadRequestError as exc:
+                message = str(exc)
+                changed = False
+                if self._json_mode and "response_format" in message:
+                    self._json_mode = False
+                    kwargs.pop("response_format", None)
+                    changed = True
+                if self._reasoning_effort and "reasoning" in message.lower():
+                    self._reasoning_effort = None
+                    kwargs.pop("reasoning_effort", None)
+                    changed = True
+                if not changed:
+                    raise
+
+    def _api(self) -> OpenAiLike:
+        client = self._client
+        if client is None:
+            api_key = self._settings.api_key
+            if api_key is None:
+                raise LlmNotConfiguredError("LLM API key is missing")
+            client = AsyncOpenAI(
+                api_key=api_key.get_secret_value(),
+                base_url=self._settings.base_url,
+                timeout=self._settings.timeout_seconds,
+                # Retries live in complete_json, where they are visible in the log.
+                max_retries=0,
+            )
+            self._client = client
+        return client
+
+
 class OpenAiCompatibleClient:
+    """A per-request view over an :class:`LlmTransport`.
+
+    The client keeps the request-bound concerns — the audit sink, settings for
+    this call — while the transport keeps the connection and the provider
+    lessons. Without an explicit transport it builds its own, which is what
+    tests and isolated callers want; such a client closes that transport in
+    :meth:`aclose`. A client given a shared transport never closes it.
+    """
+
     def __init__(
         self,
         settings: LlmSettings,
         *,
         sink: LlmCallSink | None = None,
+        transport: LlmTransport | None = None,
         client: OpenAiLike | None = None,
     ) -> None:
+        if transport is not None and client is not None:
+            raise ValueError("pass either a transport or a client, not both")
         self._settings = settings
         self._sink = sink
-        self._client = client
-        # Flipped off for the lifetime of the client the first time a provider
-        # rejects ``response_format``; small self-hosted servers often do.
-        self._json_mode = True
-        # Same idea for reasoning control: not every OpenAI-compatible endpoint
-        # knows the parameter, and one rejected request is enough to learn that.
-        self._reasoning_effort = (settings.reasoning_effort or "").strip() or None
+        self._owns_transport = transport is None
+        self._transport = transport or LlmTransport(settings, client=client)
 
     @property
     def model_name(self) -> str:
@@ -129,9 +220,9 @@ class OpenAiCompatibleClient:
         return self._settings.is_configured
 
     async def aclose(self) -> None:
-        if self._client is not None:
-            await self._client.close()
-            self._client = None
+        """Close the connection only if this client created the transport."""
+        if self._owns_transport:
+            await self._transport.aclose()
 
     async def complete_json(
         self,
@@ -263,50 +354,8 @@ class OpenAiCompatibleClient:
         )
 
     async def _create(self, messages: list[ChatCompletionMessageParam]) -> Any:
-        """Call the endpoint, degrading gracefully when JSON mode is unsupported."""
-        api = self._api()
-        kwargs: dict[str, Any] = {
-            "model": self._settings.model,
-            "messages": messages,
-            "temperature": self._settings.temperature,
-            "max_tokens": self._settings.max_output_tokens,
-        }
-        if self._json_mode:
-            kwargs["response_format"] = {"type": "json_object"}
-        if self._reasoning_effort:
-            kwargs["reasoning_effort"] = self._reasoning_effort
-        while True:
-            try:
-                return await api.chat.completions.create(**kwargs)
-            except BadRequestError as exc:
-                message = str(exc)
-                changed = False
-                if self._json_mode and "response_format" in message:
-                    self._json_mode = False
-                    kwargs.pop("response_format", None)
-                    changed = True
-                if self._reasoning_effort and "reasoning" in message.lower():
-                    self._reasoning_effort = None
-                    kwargs.pop("reasoning_effort", None)
-                    changed = True
-                if not changed:
-                    raise
-
-    def _api(self) -> OpenAiLike:
-        client = self._client
-        if client is None:
-            api_key = self._settings.api_key
-            if api_key is None:
-                raise LlmNotConfiguredError("LLM API key is missing")
-            client = AsyncOpenAI(
-                api_key=api_key.get_secret_value(),
-                base_url=self._settings.base_url,
-                timeout=self._settings.timeout_seconds,
-                # Retries live in complete_json, where they are visible in the log.
-                max_retries=0,
-            )
-            self._client = client
-        return client
+        """Let the shared transport make the call and learn from rejections."""
+        return await self._transport.create(messages)
 
     async def _report(
         self,

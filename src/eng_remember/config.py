@@ -90,12 +90,13 @@ class LlmSettings(BaseModel):
     api_key: SecretStr | None = None
     model: str = "gpt-4o-mini"
     temperature: float = Field(default=0.0, ge=0.0, le=2.0)
-    # Structured JSON tasks do not need chain-of-thought, and reasoning tokens
-    # count against max_output_tokens. "none" keeps the whole budget for the
-    # answer; a provider that rejects the parameter disables it automatically.
-    # Set to "low"/"medium"/"high" to keep some thinking, or leave empty to
-    # let the provider decide.
-    reasoning_effort: str | None = Field(default="none")
+    # Structured JSON tasks do not need chain-of-thought, but not every provider
+    # knows this parameter: "none" is a 400 on gpt-4o-mini. It is therefore
+    # unset by default and not sent at all, letting the provider apply its own
+    # default; a provider that rejects it once is remembered for the process.
+    # Set to "none" to spend the whole output budget on the answer, or to
+    # "low"/"medium"/"high" to keep some thinking.
+    reasoning_effort: str | None = Field(default=None)
     # Reasoning models spend part of this timeout thinking before they write a
     # single character; a discovery batch of 28 cards takes tens of seconds.
     timeout_seconds: float = Field(default=120.0, gt=0)

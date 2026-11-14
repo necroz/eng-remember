@@ -24,13 +24,19 @@ from eng_remember.bot.routers import (
 )
 from eng_remember.config import Settings
 from eng_remember.db.engine import SessionFactory
+from eng_remember.services.llm.client import LlmTransport
 
 __all__ = ["build_dispatcher"]
 
 log = structlog.get_logger(__name__)
 
 
-def build_dispatcher(settings: Settings, session_factory: SessionFactory) -> Dispatcher:
+def build_dispatcher(
+    settings: Settings,
+    session_factory: SessionFactory,
+    *,
+    llm_transport: LlmTransport | None = None,
+) -> Dispatcher:
     """Wire the dispatcher.
 
     Middlewares are registered on both ``message`` and ``callback_query``, in
@@ -55,7 +61,7 @@ def build_dispatcher(settings: Settings, session_factory: SessionFactory) -> Dis
     duplicate_middleware = DuplicateMessageMiddleware(
         ttl_seconds=settings.bot.duplicate_message_ttl_seconds,
     )
-    session_middleware = DbSessionMiddleware(session_factory, settings)
+    session_middleware = DbSessionMiddleware(session_factory, settings, llm_transport=llm_transport)
     user_middleware = UserMiddleware()
     for observer in (dispatcher.message, dispatcher.callback_query):
         observer.middleware(rate_limit_middleware)

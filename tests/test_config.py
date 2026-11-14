@@ -33,7 +33,10 @@ def test_llm_budget_fits_reasoning_and_a_full_discovery_batch() -> None:
 
     assert llm.max_output_tokens >= 8000
     assert llm.timeout_seconds >= 90
-    assert llm.reasoning_effort == "none"
+    # Off by default: an unset parameter is not sent at all, so providers that
+    # do not know it never reject a request, and a reasoning model keeps its
+    # own default unless the operator asks otherwise.
+    assert llm.reasoning_effort is None
 
 
 def test_inbound_guards_have_safe_defaults() -> None:

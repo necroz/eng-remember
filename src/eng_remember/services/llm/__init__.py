@@ -1,4 +1,4 @@
-from eng_remember.services.llm.client import JsonChatClient, OpenAiCompatibleClient
+from eng_remember.services.llm.client import JsonChatClient, LlmTransport, OpenAiCompatibleClient
 from eng_remember.services.llm.explorer import WordExplorer
 from eng_remember.services.llm.factory import build_llm_client
 from eng_remember.services.llm.fallback import FallbackParser, parse_text
@@ -11,6 +11,7 @@ __all__ = [
     "FallbackParser",
     "Intent",
     "JsonChatClient",
+    "LlmTransport",
     "MessageParser",
     "OpenAiCompatibleClient",
     "ParseOutcome",
