@@ -71,6 +71,17 @@ class DuplicateCardError(DomainError):
         self.term = term
 
 
+class EmptyDraftError(DomainError):
+    """A draft has no term or no translation, so there is nothing to save.
+
+    Distinct from :class:`DuplicateCardError`: the learner did not already have
+    this word, the word was not there at all.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("a card needs both a term and a translation")
+
+
 class CardNotFoundError(DomainError):
     """A card referenced by id does not exist or is not owned by the user."""
 

@@ -7,7 +7,8 @@ from datetime import datetime
 
 from eng_remember.domain.enums import CardDirection
 from eng_remember.domain.srs import CardSchedule, SrsScheduler
-from eng_remember.errors import DuplicateCardError
+from eng_remember.domain.term_match import fold_term
+from eng_remember.errors import DuplicateCardError, EmptyDraftError
 from eng_remember.models.card import Card
 from eng_remember.models.deck import Deck
 from eng_remember.models.user import User
@@ -92,7 +93,7 @@ class CardService:
         """
         cleaned = draft.normalized()
         if not cleaned.term or not cleaned.translation:
-            raise DuplicateCardError(cleaned.term or "<empty>")
+            raise EmptyDraftError()
 
         target = deck or await self.default_deck(user)
         if (
@@ -152,7 +153,7 @@ class CardService:
         for cleaned in cleaned_drafts:
             if not cleaned.term or not cleaned.translation:
                 continue
-            folded = cleaned.term.casefold()
+            folded = fold_term(cleaned.term)
             key = (cleaned.language, folded)
             if key in seen:
                 outcome.skipped_in_batch.append(cleaned.term)

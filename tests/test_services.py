@@ -9,7 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from eng_remember.domain.enums import CardDirection, CardState, ReviewRating
-from eng_remember.errors import DuplicateCardError, ScheduleConflictError
+from eng_remember.errors import DuplicateCardError, EmptyDraftError, ScheduleConflictError
 from eng_remember.models.card import Card
 from eng_remember.models.review import Review
 from eng_remember.models.user import User
@@ -553,6 +553,18 @@ class TestCardPairs:
 
         assert len(outcome.added) == 2
         assert await services.cards.count_for_user(user.id) == 4
+
+    async def test_an_empty_draft_is_a_draft_error_not_a_duplicate(
+        self, services: Services, user: User
+    ) -> None:
+        """Nothing to save is its own error: it is not a word the user already has."""
+        with pytest.raises(EmptyDraftError):
+            await services.card_service.add_draft(
+                user, CardDraft(term="   ", translation="перевод")
+            )
+
+        with pytest.raises(EmptyDraftError):
+            await services.card_service.add_draft(user, CardDraft(term="word", translation="  "))
 
     async def test_a_duplicate_is_still_rejected_per_word(
         self, services: Services, user: User, draft: CardDraft

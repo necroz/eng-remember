@@ -9,6 +9,7 @@ from datetime import datetime
 from eng_remember.domain.enums import CardState, ReviewRating
 from eng_remember.domain.gamification import StreakTransition
 from eng_remember.domain.srs import SrsScheduler
+from eng_remember.domain.term_match import fold_term
 from eng_remember.models.card import Card
 from eng_remember.models.review import Review
 from eng_remember.models.user import User
@@ -33,7 +34,7 @@ def _one_per_term(cards: list[Card]) -> list[Card]:
     seen: set[tuple[str, str]] = set()
     kept: list[Card] = []
     for card in cards:
-        key = (card.language, card.term.casefold())
+        key = (card.language, fold_term(card.term))
         if key in seen:
             continue
         seen.add(key)

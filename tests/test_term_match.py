@@ -1,4 +1,10 @@
-from eng_remember.domain.term_match import contains_term, term_spans
+from eng_remember.domain.term_match import contains_term, fold_term, term_spans
+
+
+def test_fold_term_casefold_german() -> None:
+    """One spelling of a German word must produce one de-duplication key."""
+    assert fold_term("Straße") == fold_term("STRASSE")
+    assert fold_term("  Straße  ") == fold_term("straße")
 
 
 def test_chinese_term_is_a_substring() -> None:

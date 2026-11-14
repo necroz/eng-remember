@@ -24,6 +24,7 @@ from eng_remember.domain.enums import CardDirection
 from eng_remember.domain.examples import merge_examples
 from eng_remember.domain.languages import DEFAULT_LANGUAGE, resolve_target_language
 from eng_remember.domain.srs import CardSchedule
+from eng_remember.domain.term_match import fold_term
 from eng_remember.errors import ScheduleConflictError
 from eng_remember.models.card import Card
 from eng_remember.utils.time import ensure_utc
@@ -205,7 +206,7 @@ class CardRepository:
         if language is not None:
             stmt = stmt.where(Card.language == resolve_target_language(language))
         stmt = stmt.limit(limit)
-        return {term.casefold() for term in (await self._session.scalars(stmt)).all()}
+        return {fold_term(term) for term in (await self._session.scalars(stmt)).all()}
 
     async def existing_terms(
         self,
@@ -223,7 +224,7 @@ class CardRepository:
         )
         if language is not None:
             stmt = stmt.where(Card.language == resolve_target_language(language))
-        return {term.casefold() for term in (await self._session.scalars(stmt)).all()}
+        return {fold_term(term) for term in (await self._session.scalars(stmt)).all()}
 
     async def list_due(
         self,

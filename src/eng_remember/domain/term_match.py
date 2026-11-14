@@ -14,7 +14,7 @@ import unicodedata
 from eng_remember.domain.answers import normalize
 from eng_remember.domain.languages import DEFAULT_LANGUAGE, resolve_language
 
-__all__ = ["contains_term", "term_spans"]
+__all__ = ["contains_term", "fold_term", "term_spans"]
 
 _SUBSTRING_LANGUAGES = frozenset({"cmn", "jpn", "tha"})
 _STEM_LANGUAGES = frozenset(
@@ -25,6 +25,19 @@ _STEM_LANGUAGES = frozenset(
 # characters have to agree before two words count as forms of each other.
 _STEM = 4
 _MIN_STEM_LENGTH = 2
+
+
+def fold_term(term: str) -> str:
+    """The de-duplication key of a term: NFC, case-folded, trimmed.
+
+    Every Python-side duplicate check uses this key, so ``Straße`` and
+    ``STRASSE`` are one word rather than two. SQL still compares with
+    ``lower()``: PostgreSQL folds ``ß`` to ``ß`` where ``casefold`` gives ``ss``,
+    so the two paths can disagree on that one letter — the functional index
+    task closes that gap, and until then the casefolded key is the stricter of
+    the two.
+    """
+    return unicodedata.normalize("NFC", term).strip().casefold()
 
 
 def term_spans(text: str, term: str, language: str = DEFAULT_LANGUAGE) -> list[tuple[int, int]]:
