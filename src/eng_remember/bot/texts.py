@@ -452,7 +452,11 @@ def practice_unavailable() -> str:
     return "Для тренировки нужно хотя бы 4 слова в повторениях."
 
 
-def file_export_caption(total: int) -> str:
+def file_export_caption(shown: int, total: int) -> str:
+    """What the file holds; a capped export says plainly what was left out."""
+    if total > shown:
+        word = _plural(total, "слова", "слов", "слов")
+        return f"📄 Показаны {shown} из {total} {word}: остальные не поместились в файл."
     word = _plural(total, "слово", "слова", "слов")
     return f"📄 В файле {total} {word}."
 

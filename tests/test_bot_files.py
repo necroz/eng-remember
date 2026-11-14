@@ -48,9 +48,18 @@ async def send_file(
     bot: Bot,
     *,
     file_name: str = "words.csv",
+    file_size: int | None = None,
     update_id: int = 5,
 ) -> None:
-    await dispatcher.feed_update(bot, make_document_update(file_name, update_id=update_id))
+    update = make_document_update(file_name, update_id=update_id)
+    if file_size is not None:
+        message = update.message
+        assert message is not None and message.document is not None
+        document = message.document.model_copy(update={"file_size": file_size})
+        update = update.model_copy(
+            update={"message": message.model_copy(update={"document": document})}
+        )
+    await dispatcher.feed_update(bot, update)
 
 
 def button_data(recording: RecordingSession, needle: str) -> str:
@@ -93,6 +102,26 @@ async def test_export_sends_a_csv_file(
     assert "run;бежать" in content
     assert content.count("run;бежать") == 1  # one row per word, not per card
     assert "Бег" in content
+
+
+async def test_export_caption_mentions_truncation(
+    dispatcher: Dispatcher,
+    bot: Bot,
+    recording: RecordingSession,
+    services: Services,
+    user: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for term in ("one", "two", "three"):
+        await services.card_service.add_draft(user, CardDraft(term=term, translation=term))
+    await services.commit()
+    monkeypatch.setattr("eng_remember.bot.routers.files.EXPORT_LIMIT", 2)
+
+    await send(dispatcher, bot, "/export", update_id=100)
+
+    method = recording.requests[-1]
+    assert isinstance(method, SendDocument)
+    assert "из 3" in (method.caption or "")
 
 
 async def test_import_command_explains_the_format(
@@ -382,6 +411,54 @@ async def test_a_too_big_file_is_refused(
     assert "большой" in recording.last_text()
     async with session_factory() as check:
         assert (await check.scalars(select(Card))).all() == []
+
+
+async def test_oversized_document_rejected_before_download(
+    dispatcher: Dispatcher,
+    bot: Bot,
+    recording: RecordingSession,
+    monkeypatch: pytest.MonkeyPatch,
+    services: Services,
+    user: User,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await seed_due_card(services, user, session_factory)
+    await send(dispatcher, bot, "/review", update_id=100)
+    assert "run" in recording.last_text()
+
+    async def fail_read(bot: Bot, document: object) -> bytes:
+        raise AssertionError("an oversized file must not be downloaded")
+
+    monkeypatch.setattr("eng_remember.bot.routers.files._read_document", fail_read)
+
+    await send_file(dispatcher, bot, file_size=MAX_FILE_BYTES + 1, update_id=5)
+
+    assert "большой" in recording.last_text()
+    # The active review must survive a refused import.
+    await send(dispatcher, bot, "бежать", update_id=102, date=utcnow())
+    assert any("Дальше через" in text for text in recording.sent_texts())
+
+
+async def test_an_unreadable_file_does_not_break_a_review(
+    dispatcher: Dispatcher,
+    bot: Bot,
+    recording: RecordingSession,
+    monkeypatch: pytest.MonkeyPatch,
+    services: Services,
+    user: User,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await seed_due_card(services, user, session_factory)
+    await send(dispatcher, bot, "/review", update_id=100)
+    assert "run" in recording.last_text()
+    patch_file(monkeypatch, "run;бежать\n".encode("utf-16"))
+
+    await send_file(dispatcher, bot)
+
+    assert "прочитать" in recording.last_text()
+    # A file that never became an import leaves the review where it was.
+    await send(dispatcher, bot, "бежать", update_id=102, date=utcnow())
+    assert any("Дальше через" in text for text in recording.sent_texts())
 
 
 async def test_an_empty_file_says_so(

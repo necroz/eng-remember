@@ -66,15 +66,22 @@ def build_router() -> Router:
     async def export_cards(message: Message, user: User, services: Services) -> None:
         # Forward cards only: a word is a pair in the database, but one row in
         # the file — a round-trip recreates the pair from the forward side.
+        # One extra card makes truncation visible without a second query.
         cards = await services.cards.list_for_user(
-            user.id, limit=EXPORT_LIMIT, direction=CardDirection.FORWARD
+            user.id, limit=EXPORT_LIMIT + 1, direction=CardDirection.FORWARD
         )
+        total = len(cards)
+        if total > EXPORT_LIMIT:
+            cards = cards[:EXPORT_LIMIT]
+            # A word is a pair of cards, so half the card count is how many
+            # words the collection holds; the caption must not hide the tail.
+            total = (await services.cards.count_for_user(user.id)) // 2
         decks = await services.decks.list_for_user(user.id)
         names = {deck.id: deck.name for deck in decks}
         content = cards_to_csv(cards, deck_names=names).encode("utf-8-sig")
         await message.answer_document(
             BufferedInputFile(content, filename=f"eng-remember-{utcnow():%Y-%m-%d}.csv"),
-            caption=texts.file_export_caption(len(cards)),
+            caption=texts.file_export_caption(len(cards), total),
         )
 
     @router.message(Command("import"))
@@ -97,7 +104,12 @@ def build_router() -> Router:
             await message.answer(texts.file_import_prompt(), reply_markup=keyboards.main_menu())
             return
 
-        await state.clear()
+        # Telegram usually reports the size, and a file this big cannot pass
+        # the limit below — refusing it here avoids a pointless download.
+        if document.file_size is not None and document.file_size > MAX_FILE_BYTES:
+            await message.answer(texts.file_import_too_big(), reply_markup=keyboards.main_menu())
+            return
+
         payload = await _read_document(bot, document)
         if len(payload) > MAX_FILE_BYTES:
             await message.answer(texts.file_import_too_big(), reply_markup=keyboards.main_menu())
@@ -118,6 +130,10 @@ def build_router() -> Router:
             await message.answer(texts.file_import_empty(), reply_markup=keyboards.main_menu())
             return
 
+        # Only a file that made it through validation replaces the current
+        # flow: a refused or unreadable attachment must leave an active review
+        # exactly where it was.
+        await state.clear()
         await state.set_state(ImportFile.confirming)
         await state.update_data(
             {
