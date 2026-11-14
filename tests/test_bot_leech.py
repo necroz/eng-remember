@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+
+import pytest
 from aiogram import Bot, Dispatcher
 from aiogram.methods import AnswerCallbackQuery, SendMessage
 from aiogram.types import InlineKeyboardMarkup
@@ -9,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from eng_remember.bot.callbacks import LeechCB, ReviewCB
 from eng_remember.models.card import Card
+from eng_remember.services.llm.schema import MnemonicResponse
 from tests.conftest import RecordingSession, make_due
 from tests.factories import ScriptedClient
 from tests.test_bot_flow import send, tap
@@ -201,3 +205,62 @@ async def test_model_actions_alert_when_no_model_is_configured(
     )
 
     assert last_callback_answer(recording).show_alert
+
+
+async def test_double_mnemonic_tap_single_call(
+    llm_dispatcher: Dispatcher,
+    llm: ScriptedClient,
+    bot: Bot,
+    recording: RecordingSession,
+    saved_card: Card,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two taps on «Мнемоника» while the model answers buy one call, not two.
+
+    The first tap replaces the menu with «Готовлю…» and takes its buttons away,
+    but the second tap is already on its way; without a reservation it would
+    start a second model call and overwrite the first answer.
+    """
+    llm.push_mnemonic({"mnemonic": "«Юбик» — юбка везде."})
+    for round_no in range(4):
+        await fail_card(llm_dispatcher, bot, saved_card.id, session_factory, round_no=round_no)
+
+    entered = asyncio.Event()
+    gate = asyncio.Event()
+    original = llm.complete_json
+
+    async def gated(
+        *,
+        purpose: str,
+        system: str,
+        user: str,
+        schema: object,
+        user_id: int | None = None,
+    ) -> object:
+        if schema is MnemonicResponse:
+            entered.set()
+            await gate.wait()
+        return await original(
+            purpose=purpose, system=system, user=user, schema=schema, user_id=user_id
+        )
+
+    monkeypatch.setattr(llm, "complete_json", gated)
+    data = LeechCB(action="mnemonic", card_id=saved_card.id).pack()
+    recording.clear()
+
+    first = asyncio.create_task(tap(llm_dispatcher, bot, data, update_id=300))
+    await asyncio.wait_for(entered.wait(), timeout=2)
+    second = asyncio.create_task(tap(llm_dispatcher, bot, data, update_id=301))
+
+    # The second tap must be answered without waiting for the first call: a
+    # blocked tap is the symptom of a second model call being started.
+    done, _ = await asyncio.wait({first, second}, timeout=1)
+    try:
+        assert second in done
+        assert last_callback_answer(recording).show_alert
+    finally:
+        gate.set()
+        await asyncio.gather(first, second, return_exceptions=True)
+
+    assert len([call for call in llm.calls if call["purpose"] == "mnemonic"]) == 1

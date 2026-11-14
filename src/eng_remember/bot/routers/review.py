@@ -65,6 +65,12 @@ def build_router() -> Router:
     """
     router = Router(name="review")
 
+    # One model action per card at a time: a second tap on «Мнемоника» that is
+    # already in flight must not buy a second call. The menu is edited away
+    # before the call, and this set covers the taps that left the client before
+    # that edit landed.
+    preparing: set[tuple[int, str]] = set()
+
     @router.message(Command("review"))
     @router.message(F.text == texts.BTN_REVIEW)
     async def start_review(
@@ -264,10 +270,37 @@ def build_router() -> Router:
         services: Services,
     ) -> None:
         """The two actions that only a configured model can fulfil."""
+        key = (callback_data.card_id, callback_data.action)
+        if key in preparing:
+            await query.answer(texts.stale_button(), show_alert=True)
+            return
+        preparing.add(key)
+        try:
+            await _treat(query, callback_data, bot=bot, user=user, services=services)
+        finally:
+            preparing.discard(key)
+
+    async def _treat(
+        query: CallbackQuery,
+        callback_data: LeechCB,
+        *,
+        bot: Bot,
+        user: User,
+        services: Services,
+    ) -> None:
         card = await services.cards.get(callback_data.card_id, user_id=user.id)
         if card is None:
             await query.answer(texts.card_unavailable(), show_alert=True)
             return
+        # Say the work has started and take the buttons away before the model is
+        # asked: the menu promised one tap per action, and a second tap must not
+        # start a second call.
+        await rendering.edit_or_send(
+            query,
+            texts.leech_preparing(),
+            bot=bot,
+            reply_markup=keyboards.empty_keyboard(),
+        )
         try:
             if callback_data.action == "mnemonic":
                 mnemonic = await services.enrichment.add_mnemonic(card=card, user_id=user.id)
@@ -277,6 +310,7 @@ def build_router() -> Router:
                 confirmation = texts.leech_example_done(card, example)
         except LlmNotConfiguredError:
             await query.answer(texts.llm_required(), show_alert=True)
+            await rendering.edit_or_send(query, texts.llm_required(), bot=bot)
             return
         except LlmError as exc:
             log.warning(
@@ -286,6 +320,7 @@ def build_router() -> Router:
                 error=str(exc),
             )
             await query.answer(texts.llm_failed(), show_alert=True)
+            await rendering.edit_or_send(query, texts.llm_failed(), bot=bot)
             return
 
         await services.commit()

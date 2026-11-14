@@ -149,6 +149,7 @@ __all__ = [
     "leech_mnemonic_done",
     "leech_offer",
     "leech_paused",
+    "leech_preparing",
     "level_invalid",
     "level_menu",
     "level_reset",
@@ -462,6 +463,11 @@ def leech_paused(card: Card) -> str:
         f"⏸ <b>{escape(card.term)}</b> на паузе — из повторений выпало. "
         "Вернуть можно командой /paused."
     )
+
+
+def leech_preparing() -> str:
+    """Shown while the model works: the buttons must not be tappable twice."""
+    return "🧠 Готовлю… Это займёт несколько секунд."
 
 
 def leech_left(card: Card) -> str:
