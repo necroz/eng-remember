@@ -94,6 +94,30 @@ def test_semicolons_and_leading_verb_are_ignored() -> None:
     assert [card.term for card in result.cards] == ["run", "jump"]
 
 
+@pytest.mark.parametrize("term", ["save", "add", "new"])
+def test_colon_form_save_is_a_card(term: str) -> None:
+    """A colon after an ordinary word is a separator, not a label."""
+    result = parse_text(f"{term}: спасать")
+
+    assert len(result.cards) == 1
+    assert result.cards[0].term == term
+    assert result.cards[0].translation == "спасать"
+
+
+def test_noise_label_still_skipped() -> None:
+    result = parse_text("добавь: run - бежать")
+
+    assert [card.term for card in result.cards] == ["run"]
+    assert result.cards[0].translation == "бежать"
+
+
+def test_english_label_with_words_is_still_skipped() -> None:
+    result = parse_text("add new words: run - бежать")
+
+    assert [card.term for card in result.cards] == ["run"]
+    assert result.cards[0].translation == "бежать"
+
+
 def test_transcription_in_brackets_is_extracted() -> None:
     card = parse_text("ubiquitous [juːˈbɪkwɪtəs] — вездесущий").cards[0]
 
@@ -152,3 +176,12 @@ async def test_object_form_matches_the_text_api() -> None:
     outcome = await parser.parse("ubiquitous - вездесущий", user_id=1)
 
     assert outcome.cards[0].term == "ubiquitous"
+
+
+def test_star_import_works() -> None:
+    """Every name in ``__all__`` must exist on the package."""
+    namespace: dict[str, object] = {}
+    exec("from eng_remember.services.llm import *", namespace)
+
+    assert "Clarification" in namespace
+    assert "ExpansionResponse" in namespace
