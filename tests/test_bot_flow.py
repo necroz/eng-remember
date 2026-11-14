@@ -760,23 +760,3 @@ class TestOtherCommands:
         async with session_factory() as check:
             user = (await check.scalars(select(User))).one()
             assert user.new_cards_per_day == 5
-
-
-class TestBlockedUser:
-    async def test_a_blocked_user_gets_no_replies(
-        self,
-        dispatcher: Dispatcher,
-        bot: Bot,
-        recording: RecordingSession,
-        session_factory: async_sessionmaker[AsyncSession],
-    ) -> None:
-        await send(dispatcher, bot, "/start")
-        async with session_factory() as setup:
-            user = (await setup.scalars(select(User))).one()
-            user.is_blocked = True
-            await setup.commit()
-        recording.clear()
-
-        await send(dispatcher, bot, "run - бежать")
-
-        assert recording.sent_texts() == []

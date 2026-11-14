@@ -61,11 +61,12 @@ def message_from(
     message_id: int = 1,
     user_id: int = TEST_USER_ID,
     date: datetime | None = None,
+    chat_type: str = "private",
 ) -> Message:
     return Message(
         message_id=message_id,
         date=date if date is not None else _FIXED_DATE,
-        chat=Chat(id=user_id, type="private"),
+        chat=Chat(id=user_id, type=chat_type),
         from_user=telegram_user(user_id),
         text=text,
     )
@@ -78,10 +79,13 @@ def make_message_update(
     message_id: int = 1,
     user_id: int = TEST_USER_ID,
     date: datetime | None = None,
+    chat_type: str = "private",
 ) -> Update:
     return Update(
         update_id=update_id,
-        message=message_from(text, message_id=message_id, user_id=user_id, date=date),
+        message=message_from(
+            text, message_id=message_id, user_id=user_id, date=date, chat_type=chat_type
+        ),
     )
 
 
@@ -92,6 +96,7 @@ def make_callback_update(
     message_id: int = 1,
     user_id: int = TEST_USER_ID,
     text: str = "card",
+    chat_type: str = "private",
 ) -> Update:
     return Update(
         update_id=update_id,
@@ -100,7 +105,7 @@ def make_callback_update(
             from_user=telegram_user(user_id),
             chat_instance="chat-instance",
             data=data,
-            message=message_from(text, message_id=message_id, user_id=user_id),
+            message=message_from(text, message_id=message_id, user_id=user_id, chat_type=chat_type),
         ),
     )
 
