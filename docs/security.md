@@ -57,7 +57,7 @@
 | `discovery_failed` / `discovery_quota_exceeded` | bot/routers/capture.py | подбор слов не удался, пользователь получил отказ |
 | `handler_failed` | bot/routers/errors.py | необработанное исключение, есть traceback |
 | `reminder_failed` / `reminder_unreachable` | services/reminders.py | напоминание не доставлено |
-| `blocked_user_ignored` | bot/middlewares/user.py | пишет заблокированный аккаунт |
+| `user_unblocked` | bot/middlewares/user.py | ранее недоставляемый аккаунт снова написал боту — флаг снят |
 
 Минимальный алерт: непустой поток `llm_quota_exceeded` и `handler_failed`.
 
@@ -76,8 +76,10 @@
    GROUP BY user_id ORDER BY tokens DESC;
    ```
 
-   Дальше: снизить лимиты (`LLM__MAX_*`), при необходимости заблокировать
-   аккаунт — `UPDATE users SET is_blocked = true WHERE telegram_id = <id>;`.
+   Дальше: снизить лимиты (`LLM__MAX_*`). Ручной бан через
+   `UPDATE users SET is_blocked = true` не удержится: это флаг
+   недоставляемости напоминаний, и первое же входящее событие его снимает.
+   Отдельного механизма блокировки аккаунта пока нет.
 4. **Странный ответ модели** — включить `LOG_LLM_PAYLOADS=true` на время
    разбора, затем выключить: в `llm_calls` начнут писаться тексты пользователя.
 

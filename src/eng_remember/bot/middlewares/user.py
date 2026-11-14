@@ -7,7 +7,7 @@ from typing import Any, cast
 
 import structlog
 from aiogram import BaseMiddleware
-from aiogram.types import Message, TelegramObject
+from aiogram.types import TelegramObject
 from aiogram.types import User as TelegramUser
 
 from eng_remember.models.user import User
@@ -25,6 +25,9 @@ class UserMiddleware(BaseMiddleware):
 
     Runs inside ``DbSessionMiddleware``: it needs the session to exist, and every
     handler below it can then assume ``user`` is present.
+
+    A previously blocked account is restored on any incoming update — the event
+    itself is the proof that Telegram can reach it again.
     """
 
     async def __call__(
@@ -61,16 +64,14 @@ class UserMiddleware(BaseMiddleware):
         data["user"] = user
         data["is_new_user"] = created
 
-        if user.is_blocked and not _is_unblock_command(event):
-            log.info("blocked_user_ignored", telegram_id=from_user.id)
-            return None
+        if user.is_blocked:
+            # Telegram delivers updates only to a bot the account has not blocked,
+            # so this event disproves the flag the reminder loop set. Clear it and
+            # answer as usual: that is what makes a returning learner recoverable.
+            await services.users.set_blocked(user, blocked=False)
+            log.info("user_unblocked", telegram_id=from_user.id)
 
         return await handler(event, data)
-
-
-def _is_unblock_command(event: TelegramObject) -> bool:
-    """``/start`` is allowed through so a blocked user can ask to be restored."""
-    return isinstance(event, Message) and event.text is not None and event.text.startswith("/start")
 
 
 def as_user(data: dict[str, Any]) -> User:
