@@ -22,7 +22,7 @@ from eng_remember.repositories.streaks import StreakRepository
 from eng_remember.repositories.users import UserRepository
 from eng_remember.services.cards import CardService
 from eng_remember.services.discovery import DiscoveryService
-from eng_remember.services.enrichment import EnrichmentService
+from eng_remember.services.enrichment import BackfillQueue, EnrichmentService
 from eng_remember.services.grading import AnswerGradingService
 from eng_remember.services.llm.checker import AnswerChecker
 from eng_remember.services.llm.client import LlmTransport
@@ -80,13 +80,15 @@ def build_services(
     settings: Settings,
     *,
     llm_transport: LlmTransport | None = None,
+    backfill: BackfillQueue | None = None,
 ) -> Services:
-    """Wire this request's services, optionally through a process-wide transport.
+    """Wire this request's services, optionally through process-wide objects.
 
-    The transport is the one thing that must outlive a single update: it owns
-    the provider connection and the lessons learned from rejected parameters.
-    Callers that omit it get an isolated transport, which is convenient for
-    tests but not what the bot does.
+    The transport and the backfill queue outlive a single update: the transport
+    owns the provider connection and the lessons learned from rejected
+    parameters, the queue carries work from handlers to the worker. Callers that
+    omit either get an isolated instance, which is convenient for tests but not
+    what the bot does.
     """
     users = UserRepository(session)
     decks = DeckRepository(session)
@@ -150,6 +152,7 @@ def build_services(
             cards=cards,
             enricher=CardEnricher(llm),
             settings=settings,
+            queue=backfill,
         ),
         practice=PracticeService(cards=cards, settings=settings),
         translator=TermTranslator(llm),

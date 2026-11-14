@@ -15,7 +15,7 @@ import structlog
 from eng_remember.config import Settings
 from eng_remember.db.engine import SessionFactory, session_scope
 from eng_remember.services.container import build_services
-from eng_remember.services.enrichment import _QUEUE
+from eng_remember.services.enrichment import BackfillQueue
 from eng_remember.services.llm.client import LlmTransport
 
 __all__ = ["enrichment_worker"]
@@ -31,16 +31,18 @@ async def enrichment_worker(
     settings: Settings,
     stopping: asyncio.Event,
     *,
+    queue: BackfillQueue,
     transport: LlmTransport | None = None,
 ) -> None:
     """Consume backfill requests until asked to stop.
 
-    The transport is the process-wide one from the entry point: the worker
-    outlives requests, so it must not build a connection of its own.
+    The queue and the transport are the process-wide ones from the entry point:
+    the worker outlives requests, so it must neither build a connection of its
+    own nor look for work in module state.
     """
     while not stopping.is_set():
         try:
-            user_id, card_id = await asyncio.wait_for(_QUEUE.get(), timeout=POLL_SECONDS)
+            user_id, card_id = await asyncio.wait_for(queue.get(), timeout=POLL_SECONDS)
         except TimeoutError:
             continue
         except asyncio.CancelledError:

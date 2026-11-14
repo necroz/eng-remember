@@ -12,7 +12,7 @@ from eng_remember.domain.languages import DEFAULT_LANGUAGE
 from eng_remember.errors import LlmResponseError
 from eng_remember.models.card import Card
 from eng_remember.models.user import User
-from eng_remember.repositories.cards import CardDraft
+from eng_remember.repositories.cards import CardDraft, CardRepository
 from eng_remember.services.container import Services
 from eng_remember.services.enrichment import EnrichmentService
 from eng_remember.services.enrichment_worker import _enrich_card
@@ -158,6 +158,76 @@ async def test_the_backfill_worker_survives_enricher_errors(
     await services.commit()
 
     assert await _enrich_card(session_factory, settings, user.id, card.id) is False
+
+
+async def test_worker_preserves_user_example_added_during_generation(
+    llm: ScriptedClient,
+    services: Services,
+    user: User,
+    settings: Settings,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The learner's own sentence must survive a slow model call.
+
+    The worker holds a snapshot from before the call; the learner can edit the
+    card while the model is thinking. Writing the snapshot back would delete
+    that edit, so the worker merges into what is stored now.
+    """
+    card = await services.card_service.add_draft(user, CardDraft(term="run", translation="бежать"))
+    await services.commit()
+
+    async def user_adds_example() -> None:
+        async with session_factory() as user_session:
+            repository = CardRepository(user_session)
+            fresh = await repository.get(card.id, user_id=user.id)
+            assert fresh is not None
+            await repository.update_examples(fresh, [*fresh.examples, "My own sentence."])
+            await user_session.commit()
+
+    async def examples_while_editing(
+        self: CardEnricher,
+        *,
+        term: str,
+        translation: str,
+        count: int,
+        existing: Sequence[str],
+        user_id: int | None = None,
+        language: str = DEFAULT_LANGUAGE,
+    ) -> list[str]:
+        del self, term, translation, count, existing, user_id, language
+        await user_adds_example()
+        return ["Generated one.", "Generated two."]
+
+    monkeypatch.setattr(CardEnricher, "examples", examples_while_editing)
+    # The scripted client makes the enricher look available; its answers are
+    # never read because the method above replaces the model call.
+    assert llm.available
+
+    assert await _enrich_card(session_factory, settings, user.id, card.id) is True
+
+    async with session_factory() as check:
+        reloaded = await check.get(Card, card.id)
+    assert reloaded is not None
+    assert reloaded.example == "My own sentence."
+    assert reloaded.examples == ["My own sentence.", "Generated one.", "Generated two."]
+
+
+async def test_two_service_instances_have_independent_queues(
+    services: Services, settings: Settings
+) -> None:
+    first = EnrichmentService(
+        cards=services.cards, enricher=FakeEnricher(examples=["One."]), settings=settings
+    )
+    second = EnrichmentService(
+        cards=services.cards, enricher=FakeEnricher(examples=["Two."]), settings=settings
+    )
+
+    assert first.enqueue(user_id=1, card_id=10) is True
+
+    assert first.queue is not second.queue
+    assert len(first.queue) == 1
+    assert len(second.queue) == 0
 
 
 async def test_add_example_appends_one(services: Services, user: User, settings: Settings) -> None:

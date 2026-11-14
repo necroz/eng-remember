@@ -45,7 +45,6 @@ from eng_remember.errors import LlmError, LlmNotConfiguredError
 from eng_remember.models.card import Card
 from eng_remember.models.user import User
 from eng_remember.services.container import Services
-from eng_remember.services.enrichment import enqueue_examples
 from eng_remember.utils.time import ensure_utc, utcnow
 
 log = structlog.get_logger(__name__)
@@ -412,7 +411,7 @@ def build_router() -> Router:
         # Older cards catch up on examples in the background; the current
         # repetition runs on whatever it already has.
         if services.enrichment.needs_examples(card):
-            enqueue_examples(card.user_id, card.id)
+            services.enrichment.enqueue(user_id=card.user_id, card_id=card.id)
 
     async def _complete(
         *,
