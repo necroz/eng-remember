@@ -14,10 +14,20 @@ through :mod:`eng_remember.utils.user_locks`; bounding total update concurrency
 happens in the bot layer. With several replicas the same learner could still get
 one quota check per replica. A shared reservation would be the next step if the
 bot is scaled horizontally.
+
+Some calls have no learner at all (``user_id=None``): there is no account to
+lock and no per-learner quota to apply, so the gate does neither. The bot-wide
+budget still applies — it protects the operator's spend rather than one account
+— so it is checked for every call, with or without a learner. Its usage is read
+from the audit table at most once per :data:`GLOBAL_USAGE_TTL_SECONDS` per
+process: the total only moves as calls complete, and a full-table SUM in front
+of every model call would make the gate the bottleneck it exists to prevent.
 """
 
 from __future__ import annotations
 
+import time
+from collections.abc import Callable
 from datetime import timedelta
 from typing import NoReturn, TypeVar
 
@@ -32,7 +42,12 @@ from eng_remember.services.llm.client import JsonChatClient
 from eng_remember.utils.time import utcnow
 from eng_remember.utils.user_locks import UserLockRegistry, user_locks
 
-__all__ = ["QuotaLimitedClient"]
+__all__ = [
+    "GLOBAL_USAGE_TTL_SECONDS",
+    "GlobalUsageCache",
+    "QuotaLimitedClient",
+    "global_usage_cache",
+]
 
 log = structlog.get_logger(__name__)
 
@@ -42,6 +57,45 @@ WINDOW = timedelta(hours=24)
 # Background example generation gets its own call bucket. Keep this string in
 # sync with services/llm/enricher.py:PURPOSE_EXAMPLES.
 EXAMPLE_PURPOSE = "card_examples"
+
+# Reads of the bot-wide total are reused for this long. A failed call or a burst
+# can then overshoot the budget for up to this window, which is the price of not
+# running an aggregate query in front of every single model call.
+GLOBAL_USAGE_TTL_SECONDS = 30.0
+
+
+class GlobalUsageCache:
+    """The bot-wide token total, fetched from the audit table at most once per TTL.
+
+    The quota wrapper is built per request because it is bound to that request's
+    session, so a per-instance cache would be empty on every request and the SUM
+    would run every time. The cache therefore lives at module level and is shared
+    by every wrapper in the process (each replica has its own), like the budget
+    monitor it feeds.
+    """
+
+    def __init__(self, ttl: float = GLOBAL_USAGE_TTL_SECONDS) -> None:
+        self._ttl = ttl
+        self._tokens: int | None = None
+        self._read_at = 0.0
+
+    def read(self, now: float) -> int | None:
+        """The cached total, or ``None`` when it is missing or older than the TTL."""
+        if self._tokens is None or now - self._read_at >= self._ttl:
+            return None
+        return self._tokens
+
+    def remember(self, tokens: int, now: float) -> None:
+        self._tokens = tokens
+        self._read_at = now
+
+    def clear(self) -> None:
+        """Forget the cached total."""
+        self._tokens = None
+        self._read_at = 0.0
+
+
+global_usage_cache = GlobalUsageCache()
 
 
 class QuotaLimitedClient:
@@ -55,12 +109,16 @@ class QuotaLimitedClient:
         settings: LlmSettings,
         locks: UserLockRegistry | None = None,
         budget: GlobalBudgetMonitor | None = None,
+        usage_cache: GlobalUsageCache | None = None,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         self._inner = inner
         self._calls = calls
         self._settings = settings
         self._locks = locks or user_locks
         self._budget = budget or global_budget
+        self._usage_cache = usage_cache or global_usage_cache
+        self._clock = clock or time.monotonic
 
     @property
     def model_name(self) -> str:
@@ -79,7 +137,10 @@ class QuotaLimitedClient:
         schema: type[ModelT],
         user_id: int | None = None,
     ) -> ModelT:
+        # Without a learner there is nothing to serialize or to count per
+        # account; the bot-wide budget is still enforced inside ``_enforce``.
         if user_id is None:
+            await self._enforce(user_id, purpose)
             return await self._inner.complete_json(
                 purpose=purpose,
                 system=system,
@@ -102,7 +163,7 @@ class QuotaLimitedClient:
                 user_id=user_id,
             )
 
-    async def _enforce(self, user_id: int, purpose: str) -> None:
+    async def _enforce(self, user_id: int | None, purpose: str) -> None:
         if not any(
             (
                 self._settings.max_calls_per_day,
@@ -113,18 +174,13 @@ class QuotaLimitedClient:
         ):
             return
 
-        now = utcnow()
-
         if self._settings.max_tokens_per_day_global:
-            global_usage = await self._calls.global_usage_since(since=now - WINDOW)
-            await self._budget.check(global_usage["tokens"], self._settings)
-            if global_usage["tokens"] >= self._settings.max_tokens_per_day_global:
-                raise LlmGlobalBudgetExceededError(
-                    "global token budget reached: "
-                    f"{global_usage['tokens']} used, "
-                    f"limit {self._settings.max_tokens_per_day_global}"
-                )
+            await self._enforce_global_budget()
 
+        if user_id is None:
+            return
+
+        now = utcnow()
         usage = await self._calls.usage_since(
             user_id,
             since=now - WINDOW,
@@ -163,6 +219,28 @@ class QuotaLimitedClient:
                 usage["tokens"],
                 self._settings.max_tokens_per_day,
             )
+
+    async def _enforce_global_budget(self) -> None:
+        """Alert on and enforce the bot-wide budget, learner or no learner."""
+        limit = self._settings.max_tokens_per_day_global
+        tokens = await self._global_tokens()
+        await self._budget.check(tokens, self._settings)
+        if tokens >= limit:
+            raise LlmGlobalBudgetExceededError(
+                f"global token budget reached: {tokens} used, limit {limit}"
+            )
+
+    async def _global_tokens(self) -> int:
+        """The bot-wide token total, from the cache or one SUM when it is stale."""
+        now = self._clock()
+        cached = self._usage_cache.read(now)
+        if cached is not None:
+            return cached
+
+        usage = await self._calls.global_usage_since(since=utcnow() - WINDOW)
+        tokens = usage["tokens"]
+        self._usage_cache.remember(tokens, now)
+        return tokens
 
     @staticmethod
     def _refuse(user_id: int, window: str, used: int, limit: int) -> NoReturn:
