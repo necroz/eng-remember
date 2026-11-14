@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import csv
 import io
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
@@ -47,6 +48,13 @@ _HEADER = (
 # real word waiting for its meaning, not a header.
 _HEADER_TERMS = {"term", "слово"}
 _HEADER_TRANSLATIONS = {"translation", "перевод"}
+
+# Delimiters the sniffer considers, in tie-break order.
+_SNIFF_DELIMITERS = (";", ",", "\t")
+# How many records vote on the delimiter. A single record is easy to mislead
+# with a punctuation-heavy translation, a handful is not. Records (not physical
+# lines) are counted so a quoted field holding newlines stays whole.
+_SNIFF_SAMPLE_RECORDS = 10
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,15 +135,57 @@ def parse_cards_csv(text: str) -> CsvParseResult:
 
 
 def _sniff(text: str) -> str:
-    """The delimiter that appears most in the first non-empty line.
+    """The delimiter that gives a stable column count across the sample records.
 
     ``csv.Sniffer`` gets confused by commas inside a semicolon-delimited row
-    (tags like "sport,basic"), so the choice is deliberate and predictable.
+    (tags like "sport,basic"), and one record can be misleading when a
+    translation holds other punctuation. So up to ten records vote: the
+    delimiter whose sample has the largest share of records sharing the same
+    column count above one wins. Voting over records rather than raw lines
+    keeps a quoted field holding newlines together; the share, not the raw
+    count, is compared because a wrong delimiter can split one logical row into
+    several records and so collect more votes for itself. Ties keep the order
+    ``;``, ``,``, tab.
     """
-    first = next((line for line in text.splitlines() if line.strip()), "")
-    counts = {delimiter: first.count(delimiter) for delimiter in (";", ",", "\t")}
-    best = max(counts, key=lambda delimiter: counts[delimiter])
-    return best if counts[best] > 0 else CSV_DELIMITER
+    best = CSV_DELIMITER
+    best_votes = 0
+    best_sampled = 0
+    for delimiter in _SNIFF_DELIMITERS:
+        votes, sampled = _split_agreement(text, delimiter)
+        if votes == 0:
+            continue
+        if best_votes == 0 or votes * best_sampled > best_votes * sampled:
+            best = delimiter
+            best_votes = votes
+            best_sampled = sampled
+    return best
+
+
+def _split_agreement(text: str, delimiter: str) -> tuple[int, int]:
+    """Votes for a delimiter as (agreeing records, sampled records).
+
+    The votes are the number of sample records sharing the most common column
+    count above one. Empty records do not vote.
+    """
+    counts: list[int] = []
+    reader = csv.reader(io.StringIO(text), delimiter=delimiter)
+    try:
+        while len(counts) < _SNIFF_SAMPLE_RECORDS:
+            try:
+                record = next(reader)
+            except StopIteration:
+                break
+            if not record or not any(cell.strip() for cell in record):
+                continue
+            counts.append(len(record))
+    except csv.Error:
+        pass
+    if not counts:
+        return 0, 0
+    mode = Counter(counts).most_common(1)[0][0]
+    if mode <= 1:
+        return 0, len(counts)
+    return counts.count(mode), len(counts)
 
 
 def _is_header(raw: list[str]) -> bool:
