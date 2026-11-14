@@ -8,6 +8,7 @@ again in the next.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import httpx2
@@ -20,7 +21,7 @@ from eng_remember.config import LlmSettings, Settings
 from eng_remember.services.container import build_services
 from eng_remember.services.llm import client as client_module
 from eng_remember.services.llm.client import LlmTransport, OpenAiCompatibleClient
-from eng_remember.services.llm.schema import ParseResponse
+from eng_remember.services.llm.schema import Intent, ParseResponse
 from tests.factories import completion
 
 
@@ -52,6 +53,41 @@ class FakeOpenAi:
 
     async def close(self) -> None:
         self.closed = True
+
+
+class GatedRejectionEndpoint:
+    """Reject an optional parameter only once two requests are in flight.
+
+    The first rejected call waits until a second call has recorded its kwargs,
+    so both requests are guaranteed to have built their parameters before the
+    provider's first 400 lands. That is exactly the interleaving where a flag
+    learned by one request used to make the other fail instead of degrading.
+    """
+
+    def __init__(self, parameter: str, message: str) -> None:
+        self._parameter = parameter
+        self._message = message
+        self.calls: list[dict[str, Any]] = []
+        self._rejections = 0
+        self._both_in_flight = asyncio.Event()
+
+    async def create(self, **kwargs: Any) -> Any:
+        self.calls.append(kwargs)
+        if self._parameter in kwargs:
+            self._rejections += 1
+            if self._rejections == 1:
+                await self._both_in_flight.wait()
+            else:
+                self._both_in_flight.set()
+            raise bad_request(self._message)
+        return completion('{"intent": "unknown"}')
+
+
+def fake_with_endpoint(endpoint: Any) -> FakeOpenAi:
+    fake = FakeOpenAi([])
+    fake.endpoint = endpoint
+    fake.chat = FakeChat(endpoint)
+    return fake
 
 
 def llm_settings(**overrides: Any) -> LlmSettings:
@@ -155,6 +191,43 @@ async def test_learned_rejection_persists_between_per_request_clients() -> None:
     assert fake.endpoint.calls[0]["reasoning_effort"] == "none"
     assert "reasoning_effort" not in fake.endpoint.calls[1]
     assert "reasoning_effort" not in fake.endpoint.calls[2]
+
+
+async def test_concurrent_rejections_of_response_format_both_degrade() -> None:
+    """Two updates in flight when the provider first rejects JSON mode.
+
+    One request learns the lesson first; the other sent ``response_format`` too,
+    so it must retry without the parameter rather than surface a 400.
+    """
+    endpoint = GatedRejectionEndpoint("response_format", "Unsupported parameter: response_format")
+    settings = llm_settings()
+    transport = LlmTransport(settings, client=fake_with_endpoint(endpoint))
+    first = OpenAiCompatibleClient(settings, transport=transport)
+    second = OpenAiCompatibleClient(settings, transport=transport)
+
+    results = await asyncio.wait_for(asyncio.gather(complete(first), complete(second)), timeout=5)
+
+    assert [result.intent for result in results] == [Intent.UNKNOWN, Intent.UNKNOWN]
+    # Both original calls carried the parameter; both retries omitted it.
+    assert sum("response_format" in call for call in endpoint.calls) == 2
+    assert len(endpoint.calls) == 4
+    assert transport._json_mode is False
+
+
+async def test_concurrent_rejections_of_reasoning_effort_both_degrade() -> None:
+    """Same interleaving for the reasoning knob."""
+    endpoint = GatedRejectionEndpoint("reasoning_effort", "Unsupported parameter: reasoning_effort")
+    settings = llm_settings(reasoning_effort="low")
+    transport = LlmTransport(settings, client=fake_with_endpoint(endpoint))
+    first = OpenAiCompatibleClient(settings, transport=transport)
+    second = OpenAiCompatibleClient(settings, transport=transport)
+
+    results = await asyncio.wait_for(asyncio.gather(complete(first), complete(second)), timeout=5)
+
+    assert [result.intent for result in results] == [Intent.UNKNOWN, Intent.UNKNOWN]
+    assert sum("reasoning_effort" in call for call in endpoint.calls) == 2
+    assert len(endpoint.calls) == 4
+    assert transport._reasoning_effort is None
 
 
 async def test_default_config_sends_no_reasoning_effort() -> None:

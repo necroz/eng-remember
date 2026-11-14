@@ -158,11 +158,15 @@ class LlmTransport:
             except BadRequestError as exc:
                 message = str(exc)
                 changed = False
-                if self._json_mode and "response_format" in message:
+                # Degrade on what *this* request sent, not on the transport's
+                # current flags: a concurrent request may have taught the
+                # transport already, while our own kwargs still carry the
+                # rejected parameter. The retry must drop it here too.
+                if "response_format" in kwargs and "response_format" in message:
                     self._json_mode = False
                     kwargs.pop("response_format", None)
                     changed = True
-                if self._reasoning_effort and "reasoning" in message.lower():
+                if "reasoning_effort" in kwargs and "reasoning" in message.lower():
                     self._reasoning_effort = None
                     kwargs.pop("reasoning_effort", None)
                     changed = True
