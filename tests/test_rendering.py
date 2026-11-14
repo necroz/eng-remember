@@ -131,3 +131,17 @@ async def test_notifier_fits_long_text(
     sent = recording.last_text()
     assert len(sent) <= rendering.TELEGRAM_TEXT_LIMIT
     assert sent.endswith(SUFFIX)
+
+
+def test_fit_text_measures_utf16_units_with_emoji() -> None:
+    """Telegram counts UTF-16 units, and a flag emoji takes four of them.
+
+    The same text is 4096 characters by ``len`` but 8192 units on the wire, so a
+    code-point budget lets an over-long message through.
+    """
+    text = "\n".join(["🇬🇧🇫🇷🇩🇪🇪🇸" * 25] * 30)
+
+    fitted = rendering.fit_text(text)
+
+    assert rendering.text_units(fitted) <= rendering.TELEGRAM_TEXT_LIMIT
+    assert fitted.endswith(SUFFIX)

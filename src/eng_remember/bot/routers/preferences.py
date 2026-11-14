@@ -259,7 +259,6 @@ def build_router() -> Router:
         )
 
     @router.message(Command("settings"))
-    @router.message(F.text == texts.BTN_HELP)
     async def show_settings(message: Message, user: User, services: Services) -> None:
         morning, evening = _effective(user, services.settings.reminders)
         reminder_state = "🔔 включены" if user.reminders_enabled else "🔕 выключены"
@@ -271,15 +270,14 @@ def build_router() -> Router:
             f"Новых слов в день: <b>{user.new_cards_per_day}</b> — сменить: <code>/limit 30</code>\n"
             f"Напоминания: <b>{reminder_state}</b> — "
             f"утро <code>{humanize_clock(morning)}</code>, вечер <code>{evening_text}</code>\n\n"
-            "<b>Команды</b>\n"
-            "/review — начать повторение\n"
-            "/add — добавить слова\n"
-            "/decks — колоды\n"
-            "/stats — статистика\n"
-            "/level — уровень изучаемого языка\n"
-            "/remind — напоминания\n"
-            "/cancel — отменить текущее действие",
+            "Все команды — /help.",
             reply_markup=keyboards.main_menu(),
         )
+
+    @router.message(F.text == texts.BTN_HELP)
+    async def show_help(message: Message) -> None:
+        # The «Помощь» button and /help render one text: two lists of commands
+        # inevitably drifted, and the button showed the shorter one.
+        await message.answer(texts.help_text(), reply_markup=keyboards.main_menu())
 
     return router

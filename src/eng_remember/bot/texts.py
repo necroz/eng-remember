@@ -12,7 +12,7 @@ from collections.abc import Callable, Sequence
 from datetime import datetime
 from html import escape
 
-from eng_remember.bot.rendering import TELEGRAM_TEXT_LIMIT, fit_text
+from eng_remember.bot.rendering import TELEGRAM_TEXT_LIMIT, fit_text, text_units
 from eng_remember.domain.answers import Verdict
 from eng_remember.domain.digest import HEATMAP_DAYS
 from eng_remember.domain.digest import heatmap as digest_heatmap
@@ -44,8 +44,12 @@ PREVIEW_PAUSED = 20
 
 
 def _joined_length(lines: Sequence[str]) -> int:
-    """Length of the one message these lines join to, newlines included."""
-    return sum(len(line) for line in lines) + max(0, len(lines) - 1)
+    """Length of the one message these lines join to, in Telegram's units.
+
+    Newlines take one UTF-16 unit each; the content is measured with
+    :func:`text_units`, so emoji cannot quietly eat the budget.
+    """
+    return sum(text_units(line) for line in lines) + max(0, len(lines) - 1)
 
 
 def _fit_entries(
@@ -110,6 +114,7 @@ __all__ = [
     "already_checking",
     "answer_accepted",
     "answer_result",
+    "answer_too_early",
     "badge",
     "budget_alert",
     "cannot_parse",
@@ -125,11 +130,13 @@ __all__ = [
     "discovery_preview",
     "discovery_unavailable",
     "duplicate_message",
+    "empty_answer",
     "evening_reminder",
     "explain",
     "file_export_caption",
     "file_import_cancelled",
     "file_import_empty",
+    "file_import_pending",
     "file_import_preview",
     "file_import_prompt",
     "file_import_result",
@@ -137,6 +144,7 @@ __all__ = [
     "file_import_unreadable",
     "global_error",
     "heatmap_grid",
+    "help_text",
     "hint_unavailable",
     "import_cancelled",
     "import_preview",
@@ -146,6 +154,7 @@ __all__ = [
     "leech_mnemonic_done",
     "leech_offer",
     "leech_paused",
+    "leech_preparing",
     "level_invalid",
     "level_menu",
     "level_reset",
@@ -173,11 +182,13 @@ __all__ = [
     "queue_reminder",
     "review_finished",
     "stale_button",
+    "stale_callback",
     "stats",
     "streak_notes",
     "streak_summary",
     "too_many_requests",
     "unknown_command",
+    "unsupported_content",
     "weekly_digest",
     "welcome_back",
     "welcome_new",
@@ -221,6 +232,39 @@ def welcome_new(first_name: str | None, deck_name: str) -> str:
         "Если слово никак не даётся, я сам предложу помощь, а приостановленные "
         "слова ждут в /paused. Хочется просто погонять слова — /practice.\n"
         "Выгрузить или загрузить свой список файлом — /export и /import."
+    )
+
+
+def help_text() -> str:
+    """The single help screen behind ``/help`` and the «Помощь» button.
+
+    Every command the bot answers has a line here: a command missing from the
+    help is a command the learner never finds.
+    """
+    return (
+        "❓ <b>Помощь</b>\n\n"
+        "<b>Учёба</b>\n"
+        f"/review — повторить слова, которые пора вспомнить "
+        f"(кнопка «{BTN_REVIEW}»)\n"
+        "/practice — тренировка: выбрать перевод из четырёх\n"
+        "/add — добавить слова\n"
+        "/stats — статистика и серия\n"
+        "/decks — колоды\n"
+        "/paused — слова на паузе\n\n"
+        "<b>Слова файлом</b>\n"
+        "/import — загрузить CSV со словами\n"
+        "/export — выгрузить коллекцию в CSV\n\n"
+        "<b>Настройки</b>\n"
+        "/level — уровень языка (A1–C2)\n"
+        "/remind — напоминания\n"
+        "/tz — часовой пояс\n"
+        "/limit — сколько новых слов в день\n"
+        "/settings — текущие настройки\n\n"
+        "<b>Прочее</b>\n"
+        "/start — приветствие и главное меню\n"
+        "/cancel — отменить текущее действие\n"
+        "/help — эта справка\n\n"
+        "Можно просто написать слово с переводом: <code>bonjour — здравствуйте</code>."
     )
 
 
@@ -382,8 +426,38 @@ def stale_button() -> str:
     return "Кнопка устарела — начните повторение заново."
 
 
+def stale_callback() -> str:
+    """A button no router recognised: nothing belongs to it any more."""
+    return "Кнопка устарела. Начните действие заново."
+
+
 def already_checking() -> str:
     return "Секунду — уже проверяю предыдущий ответ."
+
+
+def answer_too_early() -> str:
+    """A message sent before the card appeared: not graded, but not ignored.
+
+    Dropping it in silence looks like the answer was lost, so the learner would
+    type it again — and the second copy *would* be graded against the card.
+    """
+    return "Этот ответ пришёл раньше карточки — не засчитываю. Напишите перевод ещё раз."
+
+
+def empty_answer() -> str:
+    return "Пустой ответ не засчитываю — напишите перевод слова."
+
+
+def unsupported_content() -> str:
+    """The message carries no text: a photo, a voice note, a sticker.
+
+    The bot cannot look at any of them, and silence would read as a broken bot.
+    """
+    return (
+        "Я понимаю текст и CSV-файлы. 📄\n\n"
+        "Напишите слово с переводом — например <code>bonjour — здравствуйте</code> — "
+        "или пришлите список слов файлом <code>.csv</code>."
+    )
 
 
 def too_many_requests() -> str:
@@ -427,6 +501,11 @@ def leech_paused(card: Card) -> str:
         f"⏸ <b>{escape(card.term)}</b> на паузе — из повторений выпало. "
         "Вернуть можно командой /paused."
     )
+
+
+def leech_preparing() -> str:
+    """Shown while the model works: the buttons must not be tappable twice."""
+    return "🧠 Готовлю… Это займёт несколько секунд."
 
 
 def leech_left(card: Card) -> str:
@@ -590,6 +669,15 @@ def file_import_result(outcome: ImportOutcome) -> str:
 
 def file_import_cancelled() -> str:
     return "Импорт отменён."
+
+
+def file_import_pending() -> str:
+    """A message typed over a preview that is waiting for its own decision.
+
+    Handing the text to the parser would start a new batch and silently drop
+    the import the learner already prepared.
+    """
+    return "Сначала подтвердите или отмените импорт — файл ждёт решения."
 
 
 def file_import_empty() -> str:

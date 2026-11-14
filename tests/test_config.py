@@ -67,3 +67,13 @@ def test_the_easy_threshold_leaves_room_for_typing() -> None:
     bar sits at the fast-quartile mark instead of below the whole distribution.
     """
     assert ReviewSettings().easy_threshold_seconds == 10.0
+
+
+def test_parse_mode_markdown_rejected() -> None:
+    """The bot's texts are HTML; another parse mode would show raw tags."""
+    with pytest.raises(ValidationError):
+        BotSettings(parse_mode="MarkdownV2")
+
+
+def test_parse_mode_html_is_the_only_accepted_value() -> None:
+    assert BotSettings().parse_mode == "HTML"

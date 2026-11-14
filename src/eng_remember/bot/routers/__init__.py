@@ -7,10 +7,21 @@ handler claimed, so it has to be the fallback rather than a competitor.
 from eng_remember.bot.routers import (
     capture,
     errors,
+    files,
     library,
+    practice,
     preferences,
     review,
     start,
 )
 
-__all__ = ["capture", "errors", "library", "preferences", "review", "start"]
+__all__ = [
+    "capture",
+    "errors",
+    "files",
+    "library",
+    "practice",
+    "preferences",
+    "review",
+    "start",
+]

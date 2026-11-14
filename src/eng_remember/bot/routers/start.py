@@ -49,10 +49,11 @@ def build_router() -> Router:
 
     @router.message(Command("help"))
     @router.message(Command("menu"))
-    async def cmd_help(message: Message, user: User, services: Services) -> None:
-        deck = await services.card_service.default_deck(user)
+    async def cmd_help(message: Message) -> None:
+        # The same screen the «Помощь» button shows: one text, one list of
+        # commands, so neither can drift away from what the bot actually does.
         await message.answer(
-            texts.welcome_new(user.first_name, deck.name),
+            texts.help_text(),
             reply_markup=keyboards.main_menu(),
         )
 

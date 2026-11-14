@@ -56,6 +56,27 @@ log = structlog.get_logger(__name__)
 CLOCK_TOLERANCE = timedelta(seconds=1)
 
 
+async def _show_leech_error(
+    query: CallbackQuery,
+    card: Card,
+    message: str,
+    *,
+    bot: Bot,
+) -> None:
+    """Replace «Готовлю…» with the explanation and the menu's buttons.
+
+    The preparing edit takes the menu away before the model call, so every
+    failure has to put it back: the message is the only place «Пауза» and
+    «Оставить как есть» live, and a failed action must not strand the learner.
+    """
+    await rendering.edit_or_send(
+        query,
+        message,
+        bot=bot,
+        reply_markup=keyboards.leech_menu(card.id),
+    )
+
+
 def build_router() -> Router:
     """Create the router and register its handlers.
 
@@ -64,6 +85,12 @@ def build_router() -> Router:
     dispatcher (a test harness, a second bot) impossible.
     """
     router = Router(name="review")
+
+    # One model action per card at a time: a second tap on «Мнемоника» that is
+    # already in flight must not buy a second call. The menu is edited away
+    # before the call, and this set covers the taps that left the client before
+    # that edit landed.
+    preparing: set[tuple[int, str]] = set()
 
     @router.message(Command("review"))
     @router.message(F.text == texts.BTN_REVIEW)
@@ -126,6 +153,7 @@ def build_router() -> Router:
     ) -> None:
         text = (message.text or "").strip()
         if not text:
+            await message.answer(texts.empty_answer())
             return
 
         data = await state.get_data()
@@ -141,7 +169,8 @@ def build_router() -> Router:
         if sent_at is not None and shown_at is not None and sent_at + CLOCK_TOLERANCE < shown_at:
             # Typed while the previous card was still on screen: that answer was
             # already recorded, and grading this text against the new card would
-            # corrupt both schedules.
+            # corrupt both schedules. Saying so stops the learner from retyping.
+            await message.answer(texts.answer_too_early())
             return
 
         await state.update_data({ANSWERING_KEY: card_id})
@@ -262,10 +291,37 @@ def build_router() -> Router:
         services: Services,
     ) -> None:
         """The two actions that only a configured model can fulfil."""
+        key = (callback_data.card_id, callback_data.action)
+        if key in preparing:
+            await query.answer(texts.stale_button(), show_alert=True)
+            return
+        preparing.add(key)
+        try:
+            await _treat(query, callback_data, bot=bot, user=user, services=services)
+        finally:
+            preparing.discard(key)
+
+    async def _treat(
+        query: CallbackQuery,
+        callback_data: LeechCB,
+        *,
+        bot: Bot,
+        user: User,
+        services: Services,
+    ) -> None:
         card = await services.cards.get(callback_data.card_id, user_id=user.id)
         if card is None:
             await query.answer(texts.card_unavailable(), show_alert=True)
             return
+        # Say the work has started and take the buttons away before the model is
+        # asked: the menu promised one tap per action, and a second tap must not
+        # start a second call.
+        await rendering.edit_or_send(
+            query,
+            texts.leech_preparing(),
+            bot=bot,
+            reply_markup=keyboards.empty_keyboard(),
+        )
         try:
             if callback_data.action == "mnemonic":
                 mnemonic = await services.enrichment.add_mnemonic(card=card, user_id=user.id)
@@ -275,6 +331,7 @@ def build_router() -> Router:
                 confirmation = texts.leech_example_done(card, example)
         except LlmNotConfiguredError:
             await query.answer(texts.llm_required(), show_alert=True)
+            await _show_leech_error(query, card, texts.llm_required(), bot=bot)
             return
         except LlmError as exc:
             log.warning(
@@ -284,7 +341,14 @@ def build_router() -> Router:
                 error=str(exc),
             )
             await query.answer(texts.llm_failed(), show_alert=True)
+            await _show_leech_error(query, card, texts.llm_failed(), bot=bot)
             return
+        except Exception:
+            # Not a failure the bot knows how to explain: the global handler
+            # apologises. Before it does, the message must stop saying
+            # «Готовлю…» and give the menu's decisions back.
+            await _show_leech_error(query, card, texts.llm_failed(), bot=bot)
+            raise
 
         await services.commit()
         await query.answer()

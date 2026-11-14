@@ -7,6 +7,7 @@ linger as a sticky button.
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Sequence
 
 from aiogram.types import (
@@ -38,10 +39,16 @@ __all__ = [
     "level_menu",
     "main_menu",
     "paused_cards",
+    "practice_labels",
     "practice_offer",
     "practice_options",
     "review_prompt",
 ]
+
+# Telegram caps a button's text at 64 bytes, and a label is measured in bytes:
+# two Cyrillic characters take four. 60 leaves room for the numbering suffix.
+OPTION_BYTE_LIMIT = 60
+_ELLIPSIS = "…"
 
 
 def main_menu() -> ReplyKeyboardMarkup:
@@ -177,10 +184,45 @@ def practice_offer() -> InlineKeyboardMarkup:
 def practice_options(options: Sequence[str], *, token: int, question: int) -> InlineKeyboardMarkup:
     """One button per translation; the payload carries indices, not text."""
     builder = InlineKeyboardBuilder()
-    for index, option in enumerate(options):
+    for index, label in enumerate(practice_labels(options)):
         builder.button(
-            text=option[:40],
+            text=label,
             callback_data=PracticeCB(action="answer", token=token, question=question, option=index),
         )
     builder.adjust(1)
     return builder.as_markup()
+
+
+def practice_labels(options: Sequence[str]) -> list[str]:
+    """Button labels that fit Telegram's byte cap and stay distinguishable.
+
+    Two translations that share a long prefix are cut to the same text, which
+    would read as one answer offered twice. A colliding label gets its option
+    number attached, on top of the same cut, so the pair still fits.
+    """
+    labels = [_truncate_utf8(option, OPTION_BYTE_LIMIT) for option in options]
+    counts = Counter(labels)
+    if all(count == 1 for count in counts.values()):
+        return labels
+
+    numbered: list[str] = []
+    seen: Counter[str] = Counter()
+    for option, label in zip(options, labels, strict=True):
+        if counts[label] == 1:
+            numbered.append(label)
+            continue
+        seen[label] += 1
+        suffix = f" ({seen[label]})"
+        budget = OPTION_BYTE_LIMIT - len(suffix.encode("utf-8"))
+        numbered.append(_truncate_utf8(option, budget) + suffix)
+    return numbered
+
+
+def _truncate_utf8(text: str, limit: int) -> str:
+    """Cut ``text`` to at most ``limit`` UTF-8 bytes, never inside a character."""
+    encoded = text.encode("utf-8")
+    if len(encoded) <= limit:
+        return text
+    room = max(0, limit - len(_ELLIPSIS.encode("utf-8")))
+    cut = encoded[:room].decode("utf-8", errors="ignore").rstrip()
+    return cut + _ELLIPSIS

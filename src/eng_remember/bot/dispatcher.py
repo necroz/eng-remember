@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
-from aiogram import Dispatcher, F
+import structlog
+from aiogram import Dispatcher, F, Router
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import CallbackQuery
 
+from eng_remember.bot import texts
 from eng_remember.bot.middlewares.db import DbSessionMiddleware
 from eng_remember.bot.middlewares.dedup import DuplicateMessageMiddleware
 from eng_remember.bot.middlewares.rate_limit import RateLimitMiddleware
@@ -23,6 +26,8 @@ from eng_remember.config import Settings
 from eng_remember.db.engine import SessionFactory
 
 __all__ = ["build_dispatcher"]
+
+log = structlog.get_logger(__name__)
 
 
 def build_dispatcher(settings: Settings, session_factory: SessionFactory) -> Dispatcher:
@@ -72,5 +77,28 @@ def build_dispatcher(settings: Settings, session_factory: SessionFactory) -> Dis
     dispatcher.include_router(preferences.build_router())
     # Last: claims any plain text no other router wanted.
     dispatcher.include_router(capture.build_router())
+    dispatcher.include_router(_fallback_router())
 
     return dispatcher
+
+
+def _fallback_router() -> Router:
+    """The last router: a callback nothing else recognised.
+
+    A handler's own observers are checked before its sub-routers, so this has
+    to be a router of its own included last rather than a handler on the
+    dispatcher. Every stale button is answered here — otherwise the spinner it
+    started turns until the client gives up.
+    """
+    router = Router(name="fallback")
+
+    @router.callback_query()
+    async def unknown_callback(query: CallbackQuery) -> None:
+        log.warning(
+            "unknown_callback",
+            user_id=query.from_user.id,
+            data=query.data,
+        )
+        await query.answer(texts.stale_callback(), show_alert=True)
+
+    return router
