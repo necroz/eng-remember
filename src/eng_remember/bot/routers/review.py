@@ -126,6 +126,7 @@ def build_router() -> Router:
     ) -> None:
         text = (message.text or "").strip()
         if not text:
+            await message.answer(texts.empty_answer())
             return
 
         data = await state.get_data()
@@ -141,7 +142,8 @@ def build_router() -> Router:
         if sent_at is not None and shown_at is not None and sent_at + CLOCK_TOLERANCE < shown_at:
             # Typed while the previous card was still on screen: that answer was
             # already recorded, and grading this text against the new card would
-            # corrupt both schedules.
+            # corrupt both schedules. Saying so stops the learner from retyping.
+            await message.answer(texts.answer_too_early())
             return
 
         await state.update_data({ANSWERING_KEY: card_id})

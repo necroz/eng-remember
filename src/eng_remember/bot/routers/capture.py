@@ -695,6 +695,17 @@ def build_router() -> Router:
             reply_markup=keyboards.main_menu(),
         )
 
+    # Registered after every text handler and after the files router, so a CSV
+    # attachment keeps going to the import flow: this only sees messages that
+    # carry no text at all.
+    @router.message(~F.text)
+    async def unsupported_content(message: Message) -> None:
+        """A photo, a voice note or a sticker: nothing here can read it."""
+        await message.answer(
+            texts.unsupported_content(),
+            reply_markup=keyboards.main_menu(),
+        )
+
     return router
 
 

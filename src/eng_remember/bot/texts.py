@@ -110,6 +110,7 @@ __all__ = [
     "already_checking",
     "answer_accepted",
     "answer_result",
+    "answer_too_early",
     "badge",
     "budget_alert",
     "cannot_parse",
@@ -125,6 +126,7 @@ __all__ = [
     "discovery_preview",
     "discovery_unavailable",
     "duplicate_message",
+    "empty_answer",
     "evening_reminder",
     "explain",
     "file_export_caption",
@@ -180,6 +182,7 @@ __all__ = [
     "streak_summary",
     "too_many_requests",
     "unknown_command",
+    "unsupported_content",
     "weekly_digest",
     "welcome_back",
     "welcome_new",
@@ -391,6 +394,31 @@ def stale_callback() -> str:
 
 def already_checking() -> str:
     return "Секунду — уже проверяю предыдущий ответ."
+
+
+def answer_too_early() -> str:
+    """A message sent before the card appeared: not graded, but not ignored.
+
+    Dropping it in silence looks like the answer was lost, so the learner would
+    type it again — and the second copy *would* be graded against the card.
+    """
+    return "Этот ответ пришёл раньше карточки — не засчитываю. Напишите перевод ещё раз."
+
+
+def empty_answer() -> str:
+    return "Пустой ответ не засчитываю — напишите перевод слова."
+
+
+def unsupported_content() -> str:
+    """The message carries no text: a photo, a voice note, a sticker.
+
+    The bot cannot look at any of them, and silence would read as a broken bot.
+    """
+    return (
+        "Я понимаю текст и CSV-файлы. 📄\n\n"
+        "Напишите слово с переводом — например <code>bonjour — здравствуйте</code> — "
+        "или пришлите список слов файлом <code>.csv</code>."
+    )
 
 
 def too_many_requests() -> str:
