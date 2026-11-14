@@ -8,10 +8,11 @@ be able to break the markup.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import datetime
 from html import escape
 
+from eng_remember.bot.rendering import TELEGRAM_TEXT_LIMIT, fit_text
 from eng_remember.domain.answers import Verdict
 from eng_remember.domain.digest import HEATMAP_DAYS
 from eng_remember.domain.digest import heatmap as digest_heatmap
@@ -40,6 +41,64 @@ PREVIEW_ROWS = 10
 PREVIEW_DRAFTS = 30
 PREVIEW_DECKS = 50
 PREVIEW_PAUSED = 20
+
+
+def _joined_length(lines: Sequence[str]) -> int:
+    """Length of the one message these lines join to, newlines included."""
+    return sum(len(line) for line in lines) + max(0, len(lines) - 1)
+
+
+def _fit_entries(
+    head: Sequence[str],
+    entries: Sequence[Sequence[str]],
+    tail: Sequence[str],
+    *,
+    total: int,
+    footer: Callable[[int], str],
+    limit: int = TELEGRAM_TEXT_LIMIT,
+) -> list[str]:
+    """Keep whole entries while the message still fits, then say what was cut.
+
+    ``entries`` are groups of lines: a draft's term, translation and example
+    must never be split, or the preview stops matching the card that will be
+    saved. ``head`` and ``tail`` are always shown; ``footer`` renders the
+    honest count of hidden entries and is added only when something is hidden,
+    so the result stays inside Telegram's limit no matter how long the content
+    is. ``total`` is the real batch size, which can exceed ``len(entries)`` when
+    a count cap already trimmed the list.
+    """
+    chosen: list[str] = []
+    shown = 0
+    for entry in entries:
+        next_shown = shown + 1
+        candidate = [*head, *chosen, *entry]
+        hidden = total - next_shown
+        expected = [*candidate, footer(next_shown)] if hidden > 0 else candidate
+        if _joined_length([*expected, *tail]) > limit:
+            break
+        chosen.extend(entry)
+        shown = next_shown
+
+    lines = [*head, *chosen]
+    if shown < total:
+        lines.append(footer(shown))
+    lines.extend(tail)
+    return lines
+
+
+def _drafts_footer(total: int) -> Callable[[int], str]:
+    def footer(shown: int) -> str:
+        return f"Показаны {shown} из {total} — сохранение добавит все"
+
+    return footer
+
+
+def _more_footer(total: int) -> Callable[[int], str]:
+    def footer(shown: int) -> str:
+        return f"…и ещё {total - shown}"
+
+    return footer
+
 
 __all__ = [
     "BTN_ADD",
@@ -383,15 +442,20 @@ def llm_failed() -> str:
 
 
 def paused_list(cards: Sequence[Card], total: int) -> str:
-    shown = list(cards)[:PREVIEW_PAUSED]
     header = f"⏸ На паузе {total} {_plural(total, 'слово', 'слова', 'слов')}"
-    lines = [header, ""]
-    lines.extend(f"• <b>{escape(card.term)}</b> — {escape(card.translation)}" for card in shown)
-    if total > len(shown):
-        lines.append(f"…и ещё {total - len(shown)}")
-    lines.append("")
-    lines.append("<i>Нажмите на слово, чтобы вернуть его в повторения.</i>")
-    return "\n".join(lines)
+    entries = [
+        [f"• <b>{escape(card.term)}</b> — {escape(card.translation)}"]
+        for card in list(cards)[:PREVIEW_PAUSED]
+    ]
+    shown_total = max(total, len(entries))
+    lines = _fit_entries(
+        [header, ""],
+        entries,
+        ["", "<i>Нажмите на слово, чтобы вернуть его в повторения.</i>"],
+        total=shown_total,
+        footer=_more_footer(shown_total),
+    )
+    return fit_text("\n".join(lines))
 
 
 def paused_empty() -> str:
@@ -483,12 +547,13 @@ def file_import_preview(
     filled: int,
 ) -> str:
     word = _plural(len(rows), "слово", "слова", "слов")
-    lines = [f"📄 Нашёл {len(rows)} {word} для импорта.", ""]
-    for row in list(rows)[:PREVIEW_ROWS]:
-        language = language_badge(row.language or DEFAULT_LANGUAGE)
-        lines.append(f"• {language} <b>{escape(row.term)}</b> — {escape(row.translation or '')}")
-    if len(rows) > PREVIEW_ROWS:
-        lines.append(f"… и ещё {len(rows) - PREVIEW_ROWS}")
+    entries = [
+        [
+            f"• {language_badge(row.language or DEFAULT_LANGUAGE)} "
+            f"<b>{escape(row.term)}</b> — {escape(row.translation or '')}"
+        ]
+        for row in list(rows)[:PREVIEW_ROWS]
+    ]
 
     notes: list[str] = []
     if duplicates:
@@ -499,10 +564,16 @@ def file_import_preview(
         notes.append(f"нераспознанных строк: {skipped}")
     if filled:
         notes.append(f"переводов добавила модель: {filled}")
-    if notes:
-        lines.append("")
-        lines.append("<i>(" + "; ".join(notes) + ")</i>")
-    return "\n".join(lines)
+    tail = ["", "<i>(" + "; ".join(notes) + ")</i>"] if notes else []
+
+    lines = _fit_entries(
+        [f"📄 Нашёл {len(rows)} {word} для импорта.", ""],
+        entries,
+        tail,
+        total=len(rows),
+        footer=lambda shown: f"… и ещё {len(rows) - shown}",
+    )
+    return fit_text("\n".join(lines))
 
 
 def file_import_result(outcome: ImportOutcome) -> str:
@@ -543,36 +614,43 @@ def import_preview(
     save button. ``note`` carries what could not be done, so a partial result is
     never read as the whole answer.
     """
-    lines = [f"Разобрал <b>{len(drafts)}</b> {_plural(len(drafts), 'слово', 'слова', 'слов')}:", ""]
-    lines.extend(_capped_listing(drafts))
+    own = list(drafts)
+    more = list(found.drafts) if found is not None else []
+    total = len(own) + len(more)
 
+    head = [f"Разобрал <b>{len(own)}</b> {_plural(len(own), 'слово', 'слова', 'слов')}:", ""]
+    entries = [_draft_lines(draft) for draft in own]
+    if found is not None and more:
+        found_entries = [_draft_lines(draft) for draft in more]
+        # The heading belongs to the first found draft: showing it alone when
+        # none of the section fits would promise words that are not visible.
+        found_entries[0] = ["", _more_words_head(found), "", *found_entries[0]]
+        entries.extend(found_entries)
+    # The cap is per message, not per section: own and found share it.
+    entries = entries[:PREVIEW_DRAFTS]
+
+    tail: list[str] = []
     if found is not None and found.drafts:
-        lines.append("")
-        lines.append(_more_words_head(found))
-        lines.append("")
-        lines.extend(_capped_listing(found.drafts))
         footnotes = _discovery_footnotes(found)
         if footnotes:
-            lines.append("")
-            lines.extend(footnotes)
-
+            tail.extend(["", *footnotes])
     if note:
-        lines.append("")
-        lines.append(note)
-
-    lines.append("")
+        tail.extend(["", note])
+    tail.append("")
     if engine != "rules":
-        lines.append(
+        tail.append(
             "<i>Если язык определён неверно, укажите его в сообщении: "
             "«французское слово hotel — отель».</i>"
         )
-        lines.append(f"<i>Разобрано моделью {escape(engine)}</i>")
+        tail.append(f"<i>Разобрано моделью {escape(engine)}</i>")
     else:
-        lines.append(
+        tail.append(
             "<i>Без модели язык определяется по письменности; латиница считается английской.</i>"
         )
-        lines.append("<i>Разобрано без модели. Проверьте переводы.</i>")
-    return "\n".join(lines)
+        tail.append("<i>Разобрано без модели. Проверьте переводы.</i>")
+
+    lines = _fit_entries(head, entries, tail, total=total, footer=_drafts_footer(total))
+    return fit_text("\n".join(lines))
 
 
 def _more_words_head(found: DiscoveryResult) -> str:
@@ -605,15 +683,17 @@ def _discovery_footnotes(result: DiscoveryResult) -> list[str]:
     return lines
 
 
-def _capped_listing(drafts: Sequence[CardDraft]) -> list[str]:
-    """Render the first drafts, saying that the rest are saved too.
-
-    A hundred drafts cannot be read in one message anyway; hiding the tail
-    without saying so would look like the rest were dropped.
-    """
-    lines = cards_listing(drafts[:PREVIEW_DRAFTS])
-    if len(drafts) > PREVIEW_DRAFTS:
-        lines.append(f"Показаны первые {PREVIEW_DRAFTS} из {len(drafts)} — сохранение добавит все")
+def _draft_lines(draft: CardDraft) -> list[str]:
+    """One draft's lines, kept together so a preview never splits a card."""
+    head = f"• {language_badge(draft.language)} <b>{escape(draft.term)}</b>"
+    if draft.transcription:
+        head += f" <code>{escape(draft.transcription)}</code>"
+    level = badge(draft.cefr, draft.frequency)
+    if level:
+        head += f" · <i>{level}</i>"
+    lines = [head, f"   {escape(draft.translation)}"]
+    if draft.example:
+        lines.append(f"   <i>{escape(draft.example)}</i>")
     return lines
 
 
@@ -621,16 +701,7 @@ def cards_listing(drafts: Sequence[CardDraft]) -> list[str]:
     """Render cards the same way everywhere they are previewed."""
     lines: list[str] = []
     for draft in drafts:
-        head = f"• {language_badge(draft.language)} <b>{escape(draft.term)}</b>"
-        if draft.transcription:
-            head += f" <code>{escape(draft.transcription)}</code>"
-        level = badge(draft.cefr, draft.frequency)
-        if level:
-            head += f" · <i>{level}</i>"
-        lines.append(head)
-        lines.append(f"   {escape(draft.translation)}")
-        if draft.example:
-            lines.append(f"   <i>{escape(draft.example)}</i>")
+        lines.extend(_draft_lines(draft))
     return lines
 
 
@@ -696,16 +767,22 @@ def discovery_preview(
     else:
         head = f"🔍 Подобрал <b>{result.found}</b> слов:"
 
-    lines = [head, ""]
-    lines.extend(_capped_listing(result.drafts))
-
+    entries = [_draft_lines(draft) for draft in result.drafts[:PREVIEW_DRAFTS]]
+    tail: list[str] = []
     footnotes = _discovery_footnotes(result)
     if footnotes:
-        lines.append("")
-        lines.extend(footnotes)
-    lines.append("")
-    lines.append(f"<i>Пойдёт в колоду «{escape(deck_name)}».</i>")
-    return "\n".join(lines)
+        tail.extend(["", *footnotes])
+    tail.extend(["", f"<i>Пойдёт в колоду «{escape(deck_name)}».</i>"])
+
+    total = len(result.drafts)
+    lines = _fit_entries(
+        [head, ""],
+        entries,
+        tail,
+        total=total,
+        footer=_drafts_footer(total),
+    )
+    return fit_text("\n".join(lines))
 
 
 def discovery_empty(*, context_used: bool) -> str:
@@ -969,12 +1046,16 @@ def import_result(outcome: ImportOutcome, deck_name: str) -> str:
 
 
 def deck_list(rows: list[tuple[str, int]], total: int) -> str:
-    lines = [f"📚 <b>Колоды</b> — всего слов: {total}", ""]
-    for name, count in rows[:PREVIEW_DECKS]:
-        lines.append(f"• {escape(name)} — {count}")
-    if len(rows) > PREVIEW_DECKS:
-        lines.append(f"…и ещё {len(rows) - PREVIEW_DECKS}")
-    return "\n".join(lines)
+    entries = [[f"• {escape(name)} — {count}"] for name, count in rows[:PREVIEW_DECKS]]
+    deck_total = len(rows)
+    lines = _fit_entries(
+        [f"📚 <b>Колоды</b> — всего слов: {total}", ""],
+        entries,
+        [],
+        total=deck_total,
+        footer=_more_footer(deck_total),
+    )
+    return fit_text("\n".join(lines))
 
 
 def stats(
