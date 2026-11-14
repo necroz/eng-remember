@@ -51,6 +51,8 @@ __all__ = [
 # Control characters (including newlines and tabs) become spaces; everything
 # else keeps its meaning.
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+# Prose keeps its paragraphs: only the other control characters are stripped.
+_CONTROL_CHARS_KEEPING_NEWLINE = re.compile(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]")
 _ANGLE_BRACKETS = re.compile(r"[<>]")
 
 # Caps are generous for the field they guard: a term is a word or a short
@@ -456,10 +458,15 @@ class ParseResponse(BaseModel):
     @field_validator("answer")
     @classmethod
     def _cap_answer(cls, value: str | None) -> str | None:
-        """Explanations are prose, so newlines stay; only the ceiling applies."""
+        """Explanations are prose, so newlines stay; only the ceiling applies.
+
+        Other control characters do not: the answer is stored and sent to
+        Telegram, and a stray NUL or escape sequence is never part of prose.
+        """
         if not value:
             return None
-        return value[:ANSWER_LIMIT].strip() or None
+        cleaned = _CONTROL_CHARS_KEEPING_NEWLINE.sub(" ", value)
+        return cleaned[:ANSWER_LIMIT].strip() or None
 
     @field_validator("intent", mode="before")
     @classmethod
@@ -506,7 +513,7 @@ class ExpansionResponse(BaseModel):
     @field_validator("cards")
     @classmethod
     def _drop_incomplete(cls, cards: list[ParsedCard]) -> list[ParsedCard]:
-        return [card for card in cards if card.term and card.translation]
+        return [card for card in cards if card.term and card.translation][:CARDS_LIMIT]
 
     def to_drafts(self) -> list[CardDraft]:
         return [card.to_draft() for card in self.cards]
@@ -627,12 +634,44 @@ class AnswerCheckResponse(BaseModel):
 _FENCE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
 
 
+def _matching_brace(text: str, start: int) -> int | None:
+    """Index of the ``}`` that closes the ``{`` at ``start``, if any.
+
+    Quoted strings are skipped, including escaped quotes inside them: a ``}``
+    in ``{"c": "}"}`` is text, not structure.
+    """
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
 def extract_json_object(raw: str) -> str:
     """Pull a JSON object out of a model answer.
 
     Local models routinely wrap the payload in a markdown fence or add a
-    sentence around it even when asked not to, so the client tries the fenced
-    block first and then the outermost braces before giving up.
+    sentence around it even when asked not to. Slicing from the first ``{`` to
+    the last ``}`` breaks as soon as prose contains braces of its own or the
+    answer holds two objects, so this scans for the first balanced object that
+    actually parses instead.
     """
     text = raw.strip()
     fenced = _FENCE.search(text)
@@ -641,10 +680,22 @@ def extract_json_object(raw: str) -> str:
 
     try:
         json.loads(text)
-    except json.JSONDecodeError:
-        start = text.find("{")
-        end = text.rfind("}")
-        if start == -1 or end <= start:
-            raise
-        text = text[start : end + 1]
-    return text
+    except json.JSONDecodeError as exc:
+        first_error = exc
+    else:
+        return text
+
+    start = text.find("{")
+    while start != -1:
+        end = _matching_brace(text, start)
+        if end is not None:
+            candidate = text[start : end + 1]
+            try:
+                json.loads(candidate)
+            except json.JSONDecodeError:
+                pass
+            else:
+                return candidate
+        start = text.find("{", start + 1)
+
+    raise first_error
