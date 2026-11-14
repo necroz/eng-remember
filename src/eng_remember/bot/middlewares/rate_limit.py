@@ -5,10 +5,12 @@ but one account can still fill it with a burst. This middleware rejects beyond
 a rolling per-minute allowance before a database session is opened, so a flood
 costs neither a connection nor a model call.
 
-Two things are exempt from the message budget: an active FSM flow, because a
-review or practice run legitimately sends more answers than a minute's worth of
-chat, and the refusal reply itself, which is sent at most once per window per
-learner instead of once per dropped message.
+Two things are exempt from the message budget: text typed into a flow that
+reads typed input (a review or clarification answer), because such a run
+legitimately sends more answers than a minute's worth of chat, and the refusal
+reply itself, which is sent at most once per window per learner instead of once
+per dropped message. Button-only flows are not exempt: a plain text there is not
+flow input, it reaches the capture router and may buy a model call.
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ from aiogram import BaseMiddleware
 from aiogram.types import CallbackQuery, Message, TelegramObject
 
 from eng_remember.bot import texts
+from eng_remember.bot.states import is_text_input_state
 
 __all__ = ["RateLimitMiddleware", "SlidingWindowLimiter"]
 
@@ -90,9 +93,9 @@ class RateLimitMiddleware(BaseMiddleware):
         if from_user is None or from_user.is_bot:
             return await handler(event, data)
 
-        if isinstance(event, Message) and data.get("raw_state"):
-            # An answer typed inside review, practice or capture is part of a
-            # flow the learner already paid for; it must not trip the flood gate.
+        if isinstance(event, Message) and is_text_input_state(data.get("raw_state")):
+            # An answer typed into review or a clarification is part of a flow
+            # the learner already paid for; it must not trip the flood gate.
             return await handler(event, data)
 
         if isinstance(event, Message) and not self._limiter.allow(

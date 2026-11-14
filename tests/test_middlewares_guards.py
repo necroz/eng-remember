@@ -1,4 +1,4 @@
-"""FSM-aware guards: an active flow is neither a duplicate nor a flood.
+"""FSM-aware guards: text-consuming flows are neither duplicates nor floods.
 
 These tests build the middlewares themselves from production defaults instead of
 using the ``settings`` fixture, which deliberately switches the guards off for
@@ -23,7 +23,14 @@ from pydantic import SecretStr
 from eng_remember.bot import texts
 from eng_remember.bot.middlewares.dedup import DuplicateMessageMiddleware
 from eng_remember.bot.middlewares.rate_limit import RateLimitMiddleware
-from eng_remember.bot.states import Review
+from eng_remember.bot.states import (
+    TEXT_INPUT_STATES,
+    AddWords,
+    ImportFile,
+    Practice,
+    Review,
+    is_text_input_state,
+)
 from eng_remember.config import Settings
 from tests.factories import make_message_update
 
@@ -112,6 +119,60 @@ async def test_identical_review_answers_not_deduped() -> None:
     assert second.answers == []
 
 
+async def test_identical_clarification_answers_not_deduped() -> None:
+    """A clarification answer is typed text the flow consumes, like a review answer."""
+    settings = real_settings()
+    clock = Clock()
+    middleware = dedup(settings, clock)
+    handler = Recorder()
+    state = FakeState(AddWords.clarifying.state)
+
+    await middleware(handler, *message_event(1, "медицина", state=state))
+    second, second_data = message_event(1, "медицина", state=state)
+    await middleware(handler, second, second_data)
+
+    assert len(handler.events) == 2
+    assert second.answers == []
+
+
+@pytest.mark.parametrize(
+    "state_value",
+    [AddWords.confirming.state, ImportFile.confirming.state, Practice.awaiting_answer.state],
+)
+async def test_repeated_text_in_button_only_state_is_deduplicated(state_value: str) -> None:
+    """Only states that consume typed text are exempt; buttons states are not.
+
+    In ``AddWords.confirming`` and ``ImportFile.confirming`` the flow reads
+    callbacks, and practice answers are buttons too. A repeated plain text there
+    falls through to the capture catch-all, i.e. another model call that also
+    overwrites the pending batch — so the guard must keep counting it.
+    """
+    settings = real_settings()
+    clock = Clock()
+    middleware = dedup(settings, clock)
+    handler = Recorder()
+    state = FakeState(state_value)
+
+    await middleware(handler, *message_event(1, "resilient", state=state))
+    clock.advance(10)
+    second, second_data = message_event(1, "resilient", state=state)
+    await middleware(handler, second, second_data)
+
+    assert len(handler.events) == 1
+    assert second.answers == [(texts.duplicate_message(), {})]
+
+
+def test_text_input_states_are_the_text_consuming_flows() -> None:
+    """The allowlist names exactly the states whose flow reads a typed message."""
+    assert frozenset({Review.awaiting_answer.state, AddWords.clarifying.state}) == TEXT_INPUT_STATES
+    assert is_text_input_state(Review.awaiting_answer.state)
+    assert is_text_input_state(AddWords.clarifying.state)
+    assert not is_text_input_state(AddWords.confirming.state)
+    assert not is_text_input_state(ImportFile.confirming.state)
+    assert not is_text_input_state(Practice.awaiting_answer.state)
+    assert not is_text_input_state(None)
+
+
 @pytest.mark.parametrize("button", texts.MAIN_MENU_BUTTONS)
 async def test_menu_button_press_not_deduped(button: str) -> None:
     """Tapping the same menu button again within the window must work."""
@@ -190,8 +251,8 @@ async def test_dedup_prunes_expired_keys_on_every_call() -> None:
     assert list(middleware._seen) == [(1, "fresh")]
 
 
-async def test_active_fsm_exempt_from_rate_limit() -> None:
-    """A review or practice run can send more than a minute's worth of answers."""
+async def test_review_answers_exempt_from_rate_limit() -> None:
+    """A review run can send more than a minute's worth of answers."""
     settings = real_settings()
     clock = Clock()
     middleware = limiter(settings, clock)
@@ -206,6 +267,42 @@ async def test_active_fsm_exempt_from_rate_limit() -> None:
 
     assert len(handler.events) == settings.bot.messages_per_minute + 5
     assert [event.answers for event in events] == [[] for _ in events]
+
+
+@pytest.mark.parametrize(
+    "state_value",
+    [AddWords.confirming.state, ImportFile.confirming.state, Practice.awaiting_answer.state],
+)
+async def test_text_in_button_only_state_counts_against_rate_limit(state_value: str) -> None:
+    """A flow that only listens for buttons must not exempt typed text.
+
+    Nothing consumes that text but the capture catch-all, so every message can
+    cost a model call; without charging it, holding the state is a free flood.
+    """
+    settings = real_settings()
+    clock = Clock()
+    middleware = limiter(settings, clock)
+    handler = Recorder()
+    state = FakeState(state_value)
+
+    for _ in range(settings.bot.messages_per_minute + 1):
+        await middleware(handler, *message_event(1, "word", state=state))
+
+    assert len(handler.events) == settings.bot.messages_per_minute
+
+
+async def test_clarification_answers_exempt_from_rate_limit() -> None:
+    """Clarification text is flow input the learner already paid for."""
+    settings = real_settings()
+    clock = Clock()
+    middleware = limiter(settings, clock)
+    handler = Recorder()
+    state = FakeState(AddWords.clarifying.state)
+
+    for _ in range(settings.bot.messages_per_minute + 5):
+        await middleware(handler, *message_event(1, "медицина", state=state))
+
+    assert len(handler.events) == settings.bot.messages_per_minute + 5
 
 
 async def test_rate_limit_reply_throttled() -> None:

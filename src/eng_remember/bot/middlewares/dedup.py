@@ -4,11 +4,13 @@ Double taps, client retries and impatience should not buy two model calls. The
 key is the learner plus whitespace/case-normalised text; commands are exempt so
 ``/review`` and ``/stats`` keep working when pressed again.
 
-The guard is deliberately narrow. An active FSM flow (a review answer, a
-clarification, a pending import) is never a duplicate: the same text twice is
-exactly what repetition looks like. Menu reply buttons are exempt too — pressing
-"Статистика" again is a request, not a retry. And a key is released as soon as
-the handler has dealt with the message without leaving an FSM flow behind, so a
+The guard is deliberately narrow. Text typed into a flow that reads typed input
+(a review answer, a clarification answer) is never a duplicate: the same text
+twice is exactly what repetition looks like. Menu reply buttons are exempt too —
+pressing "Статистика" again is a request, not a retry. Button-only states keep
+the guard: nothing there consumes a typed message except the capture catch-all,
+which would cost another model call. And a key is released as soon as the
+handler has dealt with the message without leaving an FSM flow behind, so a
 refusal such as ``cannot_parse`` can be retried immediately.
 """
 
@@ -23,6 +25,7 @@ from aiogram import BaseMiddleware
 from aiogram.types import Message, TelegramObject
 
 from eng_remember.bot import texts
+from eng_remember.bot.states import is_text_input_state
 
 __all__ = ["DuplicateMessageMiddleware"]
 
@@ -68,9 +71,9 @@ class DuplicateMessageMiddleware(BaseMiddleware):
             return await handler(event, data)
 
         normalised = _normalise(text)
-        if normalised in _MENU_BUTTONS or data.get("raw_state"):
-            # A live flow owns the next text (an answer is often repeated), and
-            # a menu button is a fresh request every time.
+        if normalised in _MENU_BUTTONS or is_text_input_state(data.get("raw_state")):
+            # A live text flow owns the next message (an answer is often
+            # repeated), and a menu button is a fresh request every time.
             return await handler(event, data)
 
         key = (from_user.id, normalised)
