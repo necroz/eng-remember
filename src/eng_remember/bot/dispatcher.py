@@ -24,6 +24,7 @@ from eng_remember.bot.routers import (
 )
 from eng_remember.config import Settings
 from eng_remember.db.engine import SessionFactory
+from eng_remember.services.enrichment import BackfillQueue
 from eng_remember.services.llm.client import LlmTransport
 
 __all__ = ["build_dispatcher"]
@@ -36,6 +37,7 @@ def build_dispatcher(
     session_factory: SessionFactory,
     *,
     llm_transport: LlmTransport | None = None,
+    backfill: BackfillQueue | None = None,
 ) -> Dispatcher:
     """Wire the dispatcher.
 
@@ -61,7 +63,12 @@ def build_dispatcher(
     duplicate_middleware = DuplicateMessageMiddleware(
         ttl_seconds=settings.bot.duplicate_message_ttl_seconds,
     )
-    session_middleware = DbSessionMiddleware(session_factory, settings, llm_transport=llm_transport)
+    session_middleware = DbSessionMiddleware(
+        session_factory,
+        settings,
+        llm_transport=llm_transport,
+        backfill=backfill,
+    )
     user_middleware = UserMiddleware()
     for observer in (dispatcher.message, dispatcher.callback_query):
         observer.middleware(rate_limit_middleware)

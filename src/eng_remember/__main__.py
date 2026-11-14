@@ -19,6 +19,7 @@ from eng_remember.config import Settings, get_settings, require_bot_token
 from eng_remember.db.engine import SessionFactory, create_engine, create_session_factory
 from eng_remember.errors import ConfigurationError
 from eng_remember.logging_setup import configure_logging
+from eng_remember.services.enrichment import BackfillQueue
 from eng_remember.services.enrichment_worker import enrichment_worker
 from eng_remember.services.llm.budget import BudgetAlert, global_budget
 from eng_remember.services.llm.client import LlmTransport
@@ -52,7 +53,15 @@ async def main() -> None:
     # One connection owner for the whole process: every update's client is a
     # thin view over it, and what a provider rejects is learned only once.
     llm_transport = LlmTransport(settings.llm) if settings.llm.is_configured else None
-    dispatcher = build_dispatcher(settings, session_factory, llm_transport=llm_transport)
+    # One backfill queue as well: review handlers put cards in, the worker
+    # below takes them out.
+    backfill = BackfillQueue()
+    dispatcher = build_dispatcher(
+        settings,
+        session_factory,
+        llm_transport=llm_transport,
+        backfill=backfill,
+    )
 
     bot = Bot(
         token=require_bot_token(settings),
@@ -97,7 +106,13 @@ async def main() -> None:
     # nothing to generate, so the worker is not started at all.
     enrichment = (
         asyncio.create_task(
-            enrichment_worker(session_factory, settings, stopping, transport=llm_transport),
+            enrichment_worker(
+                session_factory,
+                settings,
+                stopping,
+                queue=backfill,
+                transport=llm_transport,
+            ),
             name="enrichment-worker",
         )
         if settings.llm.is_configured

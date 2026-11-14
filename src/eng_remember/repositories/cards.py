@@ -159,6 +159,22 @@ class CardRepository:
         stmt = select(Card).where(Card.id == card_id, Card.user_id == user_id)
         return await self._session.scalar(stmt)
 
+    async def refresh(self, card: Card) -> Card | None:
+        """Re-read a card's stored state, replacing what this session holds.
+
+        Someone else may have committed an edit while a slow task kept its
+        snapshot: the enrichment worker only learns about a sentence the learner
+        added during the model call by asking the database again.
+        ``populate_existing`` is what makes the query overwrite the identity-mapped
+        instance instead of handing the stale object back.
+        """
+        stmt = (
+            select(Card)
+            .where(Card.id == card.id, Card.user_id == card.user_id)
+            .execution_options(populate_existing=True)
+        )
+        return await self._session.scalar(stmt)
+
     async def find_by_term(
         self, user_id: int, term: str, language: str = DEFAULT_LANGUAGE
     ) -> Card | None:
