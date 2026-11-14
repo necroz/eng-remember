@@ -25,6 +25,15 @@ def test_latin_forms_match_by_stem() -> None:
     assert contains_term("runs", "run", "eng")
 
 
+def test_a_short_token_only_matches_itself() -> None:
+    """A two-letter word is not a stem: "go" must not hide "good" or "goes"."""
+    assert contains_term("You should go now.", "go", "eng")
+    assert contains_term("go", "go", "eng")
+    assert not contains_term("This is a good idea.", "go", "eng")
+    assert not contains_term("He goes home.", "go", "eng")
+    assert not contains_term("go", "good", "eng")
+
+
 def test_latin_diacritics_are_significant() -> None:
     assert not contains_term("The hotel is open.", "hôtel", "fra")
     assert not contains_term("cafe", "café", "fra")

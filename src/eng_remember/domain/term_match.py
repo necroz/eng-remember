@@ -22,9 +22,11 @@ _STEM_LANGUAGES = frozenset(
 )
 
 # Same rule as discovery and the old cloze implementation: how many leading
-# characters have to agree before two words count as forms of each other.
+# characters have to agree before two words count as forms of each other. A
+# shorter word is never a stem: "go" must not swallow "good". Three is the floor
+# because "run" still has to match "runs" — the cloze hint depends on it.
 _STEM = 4
-_MIN_STEM_LENGTH = 2
+_MIN_STEM_LENGTH = 3
 
 
 def fold_term(term: str) -> str:

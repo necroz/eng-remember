@@ -68,13 +68,13 @@ def local_day_start(timezone_name: str, *, now: datetime | None = None) -> datet
     "cards introduced today" has to be anchored to the user's own midnight.
     """
     moment = ensure_utc(now) or utcnow()
-    local = moment.astimezone(resolve_timezone(timezone_name))
-    midnight = local.replace(hour=0, minute=0, second=0, microsecond=0)
-    # On a DST transition midnight can be ambiguous or nonexistent in some
-    # zones; stepping forward to the first valid instant keeps the anchor sane.
-    if midnight.utcoffset() is None:  # pragma: no cover - defensive
-        midnight = local.replace(hour=1, minute=0, second=0, microsecond=0)
-    return ensure_utc(midnight.astimezone(UTC)) or midnight
+    zone = resolve_timezone(timezone_name)
+    local = moment.astimezone(zone)
+    # Built through ``combine`` rather than ``replace``: on the day a zone starts
+    # daylight saving at midnight (Santiago, Havana) that wall clock does not
+    # exist, and ``combine`` still yields the first valid instant of the day
+    # instead of a value that could fall on the previous date.
+    return datetime.combine(local.date(), time(0, 0), tzinfo=zone).astimezone(UTC)
 
 
 def next_local_day_start(timezone_name: str, *, now: datetime | None = None) -> datetime:
@@ -131,18 +131,22 @@ def humanize_clock(moment: time) -> str:
 
 
 def humanize_interval(delta_seconds: float) -> str:
-    """Render a scheduling interval the way a learner reads it."""
+    """Render a scheduling interval the way a learner reads it.
+
+    Every step floors: 59 minutes 59 seconds is "59 мин", not a rounded-up
+    "60 мин" that contradicts its own unit, and 23.6 hours is "23 ч".
+    """
     if delta_seconds < 60:
         return "меньше минуты"
     minutes = delta_seconds / 60
     if minutes < 60:
-        return f"{round(minutes)} мин"
+        return f"{int(minutes)} мин"
     hours = minutes / 60
     if hours < 24:
-        return f"{round(hours)} ч"
+        return f"{int(hours)} ч"
     days = hours / 24
     if days < 30:
-        return f"{round(days)} дн"
+        return f"{int(days)} дн"
     months = days / 30.44
     if months < 12:
         return f"{months:.1f} мес".replace(".0 ", " ")
