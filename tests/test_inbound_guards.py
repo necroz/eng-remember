@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import Mock
@@ -135,19 +136,32 @@ async def test_callbacks_have_a_separate_limit_and_alert() -> None:
     assert extra.answers == [(texts.too_many_requests(), {"show_alert": True})]
 
 
-async def test_same_text_within_the_ttl_is_rejected() -> None:
+async def test_same_text_while_the_first_is_in_flight_is_rejected() -> None:
+    """A double tap is one message sent twice before the first one is done.
+
+    The guard deliberately forgets a key once the handler has dealt with the
+    message, so that a retry after a refusal is not mistaken for a duplicate;
+    what it must still catch is the second copy arriving mid-flight.
+    """
     clock = Clock()
     middleware = DuplicateMessageMiddleware(ttl_seconds=60, clock=clock.now)
     handled: list[Any] = []
+    started = asyncio.Event()
+    release = asyncio.Event()
 
     async def handler(event: Any, data: dict[str, Any]) -> None:
         handled.append(event)
+        started.set()
+        await release.wait()
 
     first, first_data = message_event(1, "resilient — стойкий")
-    await middleware(handler, first, first_data)
+    in_flight = asyncio.create_task(middleware(handler, first, first_data))
+    await started.wait()
 
     duplicate, duplicate_data = message_event(1, "  resilient —   стойкий ")
     await middleware(handler, duplicate, duplicate_data)
+    release.set()
+    await in_flight
 
     assert handled == [first]
     assert duplicate.answers == [(texts.duplicate_message(), {})]

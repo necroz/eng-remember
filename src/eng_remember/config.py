@@ -40,7 +40,7 @@ class BotSettings(BaseModel):
         description="Maximum updates processed concurrently per bot process",
     )
     messages_per_minute: int = Field(
-        default=10,
+        default=30,
         ge=1,
         description="Inbound messages allowed per learner in any rolling minute",
     )

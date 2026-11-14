@@ -39,7 +39,7 @@ def test_llm_budget_fits_reasoning_and_a_full_discovery_batch() -> None:
 def test_inbound_guards_have_safe_defaults() -> None:
     bot = BotSettings()
 
-    assert bot.messages_per_minute == 10
+    assert bot.messages_per_minute == 30
     assert bot.callbacks_per_minute == 30
     assert bot.duplicate_message_ttl_seconds == 60.0
     assert bot.admin_chat_id is None

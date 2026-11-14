@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 from aiogram.fsm.state import State, StatesGroup
 
 __all__ = [
@@ -34,11 +36,13 @@ __all__ = [
     "SESSION_LIMIT_KEY",
     "SHOWN_AT_KEY",
     "SHOWN_CARD_KEY",
+    "TEXT_INPUT_STATES",
     "TOPIC_KEY",
     "AddWords",
     "ImportFile",
     "Practice",
     "Review",
+    "is_text_input_state",
 ]
 
 # Keys inside FSM storage. Named constants instead of scattered string literals
@@ -129,3 +133,27 @@ class ImportFile(StatesGroup):
     """Waiting for the learner to confirm a CSV import."""
 
     confirming = State()
+
+
+# States in which the next plain text is consumed by the flow itself: a review
+# answer, a clarification answer. Guards give these a pass, because repeating an
+# answer is legitimate. Button-only states (``AddWords.confirming``,
+# ``ImportFile.confirming``, ``Practice.awaiting_answer``) are deliberately
+# absent: nothing in them reads a typed message, so it falls through to the
+# capture router and can cost a model call — it must stay guarded.
+#
+# New text-consuming flows (card editing, deck renaming, …) belong here; the
+# guards read this single set through :func:`is_text_input_state`.
+TEXT_INPUT_STATES: frozenset[str] = frozenset(
+    {
+        # ``State.state`` is typed ``str | None`` (a state may lack a group),
+        # but these states belong to groups, so the full name is always there.
+        cast(str, AddWords.clarifying.state),
+        cast(str, Review.awaiting_answer.state),
+    }
+)
+
+
+def is_text_input_state(raw_state: str | None) -> bool:
+    """Whether ``raw_state`` (as aiogram puts it in handler data) reads text."""
+    return raw_state in TEXT_INPUT_STATES
