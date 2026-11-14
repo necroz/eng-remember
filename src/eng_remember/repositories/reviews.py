@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import date, datetime
 
 from sqlalchemy import func, select
@@ -77,6 +77,52 @@ class ReviewRepository:
         )
         stmt = select(func.count()).select_from(first_seen)
         return int(await self._session.scalar(stmt) or 0)
+
+    async def introduced_counts(
+        self,
+        user_ids: Sequence[int],
+        *,
+        since_by_user: Mapping[int, datetime],
+    ) -> dict[int, int]:
+        """First answers per learner since each learner's own boundary.
+
+        The batched counterpart of :meth:`count_cards_introduced_since`: the
+        reminder tick needs "how many introductions today" for a whole batch,
+        and the learners' local midnights collapse into a couple of distinct
+        values. Grouping by boundary turns that into one query per boundary
+        instead of one per learner.
+
+        A card counts once however often it was answered since — hence the
+        grouping by card as well and the ``HAVING`` on the earliest answer.
+        Learners absent from ``since_by_user`` are reported as zero.
+        """
+        if not user_ids:
+            return {}
+
+        by_boundary: dict[datetime, list[int]] = {}
+        for user_id in user_ids:
+            since = since_by_user.get(user_id)
+            if since is None:
+                continue
+            by_boundary.setdefault(since, []).append(user_id)
+
+        introduced = dict.fromkeys(user_ids, 0)
+        for since, learners in by_boundary.items():
+            first_seen = (
+                select(Review.user_id, Review.card_id)
+                .where(Review.user_id.in_(learners))
+                .group_by(Review.user_id, Review.card_id)
+                .having(func.min(Review.reviewed_at) >= since)
+                .subquery()
+            )
+            stmt = (
+                select(first_seen.c.user_id, func.count())
+                .select_from(first_seen)
+                .group_by(first_seen.c.user_id)
+            )
+            for user_id, count in (await self._session.execute(stmt)).all():
+                introduced[int(user_id)] = int(count)
+        return introduced
 
     async def daily_counts(self, user_id: int, *, since: datetime) -> list[tuple[date, int]]:
         """Answers per day, for the statistics screen."""

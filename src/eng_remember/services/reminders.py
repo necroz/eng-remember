@@ -109,6 +109,7 @@ class ReminderService:
         self._notifier = notifier
         self._reminders: ReminderSettings = settings.reminders
         self._streak_settings = settings.streak
+        self._new_cards_per_day = settings.bot.new_cards_per_day
 
     async def run(self, *, now: datetime | None = None) -> ReminderRun:
         """One pass over everyone who might be owed a reminder."""
@@ -157,6 +158,7 @@ class ReminderService:
         """Decide the whole batch, with the counting queries batched as well."""
         user_ids = [user.id for user in batch]
         counts = await self._cards.queue_counts(user_ids, now=now)
+        introduced = await self._introduced_today(batch, now=now)
         streak_states = await self._streaks.by_user_ids(user_ids)
         answered = await self._answered_today(batch, now=now)
 
@@ -167,6 +169,12 @@ class ReminderService:
             queue = counts.get(user.id)
             if queue is None:  # pragma: no cover - the query returns every id
                 continue
+
+            # The queue counts are raw; the promise must match what a session
+            # would actually serve, which is bounded by the daily budget.
+            per_day = user.new_cards_per_day or self._new_cards_per_day
+            allowance = max(0, per_day - introduced.get(user.id, 0))
+            new_available = min(queue.new, allowance)
 
             # Settled in memory only. A tick must not write to the streak just to
             # look at it, and the answer and statistics paths persist the same
@@ -187,7 +195,7 @@ class ReminderService:
                 # is a guarantee rather than a fresh lookup.
                 has_cards=True,
                 due_now=queue.due,
-                new_available=queue.new,
+                new_available=new_available,
                 answered_today=answered.get(user.id, 0) > 0,
                 streak_alive=streak.state.is_alive,
                 streak_days=streak.state.current,
@@ -207,7 +215,7 @@ class ReminderService:
                     kind=kind,
                     local_day=today_by_user[user.id],
                     due_now=queue.due,
-                    new_available=queue.new,
+                    new_available=new_available,
                     streak_days=streak.state.current,
                     streak_warning=kind is ReminderKind.EVENING and at_risk,
                     digest=digest,
@@ -278,6 +286,18 @@ class ReminderService:
         for boundary, user_ids in by_boundary.items():
             answered.update(await self._reviews.counts_since(user_ids, since=boundary))
         return answered
+
+    async def _introduced_today(self, batch: list[User], *, now: datetime) -> dict[int, int]:
+        """Cards introduced per learner since their own midnight.
+
+        The reminder tick needs the day's introductions to apply the new-card
+        budget; the repository groups the batch by shared day boundary so this
+        stays one query per boundary rather than one per learner.
+        """
+        since_by_user = {user.id: local_day_start(user.timezone, now=now) for user in batch}
+        return await self._reviews.introduced_counts(
+            list(since_by_user), since_by_user=since_by_user
+        )
 
     async def _deliver(self, plan: ReminderPlan, run: ReminderRun) -> None:
         try:

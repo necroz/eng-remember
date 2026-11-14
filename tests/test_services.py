@@ -203,6 +203,33 @@ class TestCardService:
         assert await services.card_service.delete(stranger, card.id) is None
         assert await services.cards.get(card.id, user_id=user.id) is not None
 
+    async def test_stats_show_only_new_cards_the_budget_still_allows(
+        self, services: Services, session: AsyncSession, user: User
+    ) -> None:
+        """The queue would serve nothing new, so the count must say nothing new.
+
+        Otherwise the statistics screen promises a hundred words the review
+        session refuses to start — the same contradiction as in reminders.
+        """
+        user.new_cards_per_day = 1
+        deck = await services.card_service.default_deck(user)
+        for index in range(3):
+            await services.cards.add(
+                user_id=user.id,
+                deck_id=deck.id,
+                draft=CardDraft(term=f"new{index}", translation="новое"),
+                schedule=schedule(0),
+            )
+        await session.commit()
+        first = await services.review_service.build_queue(user)
+        await services.review_service.answer(user, first.cards[0], ReviewRating.GOOD)
+        await session.commit()
+
+        stats = await services.card_service.stats(user)
+
+        assert stats.new_today == 1
+        assert stats.new_cards == 0
+
     async def test_stats_reflect_the_queue(
         self, services: Services, session: AsyncSession, user: User
     ) -> None:

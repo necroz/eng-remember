@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import AsyncIterator
+from datetime import timedelta
 
 import pytest
 from sqlalchemy import select, text
@@ -24,6 +25,7 @@ from eng_remember.config import Settings
 from eng_remember.db import Base, create_engine, create_session_factory
 from eng_remember.domain.enums import CardDirection, CardState, ReviewRating
 from eng_remember.models.card import Card
+from eng_remember.models.review import Review
 from eng_remember.models.user import User
 from eng_remember.repositories.cards import CardDraft
 from eng_remember.repositories.users import TelegramProfile
@@ -250,6 +252,60 @@ async def test_the_daily_new_card_budget_uses_real_timestamps(
 
     second = await pg_services.review_service.build_queue(pg_user, now=arrives)
     assert second.cards == []
+
+
+async def test_introduced_counts_handles_several_boundaries(
+    pg_services: Services, pg_session: AsyncSession, pg_user: User
+) -> None:
+    """Batched introduction counting against per-learner midnights.
+
+    The query compares a collection of ``timestamptz`` values and applies
+    ``HAVING min(reviewed_at)``; SQLite is more forgiving about those types, so
+    the real column is exercised here.
+    """
+    from eng_remember.repositories.users import UserRepository
+
+    other, _ = await UserRepository(pg_session).get_or_create(
+        TelegramProfile(telegram_id=100501, first_name="Other")
+    )
+    now = utcnow()
+
+    async def introduce(learner: User, term: str, hours_ago: float) -> None:
+        deck = await pg_services.card_service.default_deck(learner)
+        card = await pg_services.cards.add(
+            user_id=learner.id,
+            deck_id=deck.id,
+            draft=CardDraft(term=term, translation="слово"),
+            schedule=schedule(0),
+        )
+        await pg_services.reviews.add(
+            Review(
+                card_id=card.id,
+                user_id=learner.id,
+                rating=ReviewRating.GOOD,
+                reviewed_at=now - timedelta(hours=hours_ago),
+                state_before=CardState.LEARNING,
+                state_after=CardState.LEARNING,
+            )
+        )
+
+    # A fresh card each; the second card was already known before that learner's
+    # own boundary, so it is not an introduction for them.
+    await introduce(pg_user, "fresh", 0.1)
+    await introduce(pg_user, "known", 30)
+    await introduce(other, "fresh", 0.1)
+    await introduce(other, "known", 2)
+    await pg_session.commit()
+
+    counted = await pg_services.reviews.introduced_counts(
+        [pg_user.id, other.id],
+        since_by_user={
+            pg_user.id: now - timedelta(hours=12),
+            other.id: now - timedelta(hours=1),
+        },
+    )
+
+    assert counted == {pg_user.id: 1, other.id: 1}
 
 
 async def test_a_card_keeps_its_instant_when_the_timezone_changes(

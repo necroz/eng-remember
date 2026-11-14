@@ -279,6 +279,11 @@ class CardRepository:
     ) -> dict[int, QueueCounts]:
         """Due and new counts for many learners in one query.
 
+        These are raw counts: they say how much sits in the collection, not how
+        much today's session will serve. The daily new-card budget is applied by
+        the caller, which knows the learner's settings and their introduction
+        count for today.
+
         The reminder tick examines a batch of users; asking per user would be one
         round trip per notification, which is exactly the shape that turns a
         periodic job into a problem at a few thousand accounts.

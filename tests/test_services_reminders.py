@@ -87,6 +87,50 @@ async def give_work(services: Services, user: User, *, due: int = 1, new: int = 
     await services.commit()
 
 
+async def give_new_cards(services: Services, user: User, *, count: int) -> None:
+    """New cards that already came due: added earlier, never answered.
+
+    ``schedule(0)`` anchors to the real clock, which a test that mocks "today at
+    09:00" cannot rely on; a due date in the past is stable at any hour.
+    """
+    from tests.factories import schedule
+
+    deck = await services.card_service.default_deck(user)
+    for index in range(count):
+        await services.cards.add(
+            user_id=user.id,
+            deck_id=deck.id,
+            draft=CardDraft(term=f"new{index}", translation="новое"),
+            schedule=schedule(-1),
+        )
+    await services.commit()
+
+
+async def give_introductions(services: Services, user: User, *, count: int) -> None:
+    """Cards whose first answer happened today: they spend the daily budget."""
+    from tests.factories import schedule
+
+    deck = await services.card_service.default_deck(user)
+    for index in range(count):
+        card = await services.cards.add(
+            user_id=user.id,
+            deck_id=deck.id,
+            draft=CardDraft(term=f"seen{index}", translation="видел"),
+            schedule=schedule(1, state=CardState.REVIEW, reps=2),
+        )
+        await services.reviews.add(
+            Review(
+                card_id=card.id,
+                user_id=user.id,
+                rating=ReviewRating.GOOD,
+                reviewed_at=utcnow(),
+                state_before=CardState.LEARNING,
+                state_after=CardState.REVIEW,
+            )
+        )
+    await services.commit()
+
+
 async def give_streak(
     services: Services,
     session: AsyncSession,
@@ -315,6 +359,76 @@ class TestLearnerSettings:
 
         assert run.sent_count == 1
         assert notifier.sent[0].local_day == TEST_DAY
+
+
+class TestNewCardBudget:
+    """A reminder must not promise new words the daily budget will not serve."""
+
+    async def test_reminder_does_not_promise_new_over_budget(
+        self,
+        reminders: ReminderService,
+        services: Services,
+        session: AsyncSession,
+        user: User,
+    ) -> None:
+        """20 of 20 introduced, 100 still untouched, nothing due: no work at all.
+
+        The morning slot sees an empty queue and stays silent rather than
+        inviting the learner to a session that would refuse to start.
+        """
+        user.new_cards_per_day = 20
+        await session.commit()
+        await give_introductions(services, user, count=20)
+        await give_new_cards(services, user, count=100)
+
+        morning = await reminders.run(now=moment(9, 0))
+
+        assert morning.sent_count == 0
+
+    async def test_a_due_card_is_promised_without_the_exhausted_budget(
+        self,
+        reminders: ReminderService,
+        services: Services,
+        session: AsyncSession,
+        user: User,
+        notifier: RecordingNotifier,
+    ) -> None:
+        """Work remains — due reviews — but new words are no longer advertised."""
+        user.new_cards_per_day = 20
+        await session.commit()
+        await give_introductions(services, user, count=20)
+        await give_new_cards(services, user, count=100)
+        await give_work(services, user, due=2)
+
+        run = await reminders.run(now=moment(9, 0))
+
+        assert run.sent_count == 1
+        plan = notifier.sent[-1]
+        assert plan.kind is ReminderKind.MORNING
+        assert plan.due_now == 2
+        assert plan.new_available == 0
+
+    async def test_reminder_new_count_respects_partial_budget(
+        self,
+        reminders: ReminderService,
+        services: Services,
+        session: AsyncSession,
+        user: User,
+        notifier: RecordingNotifier,
+    ) -> None:
+        """5 of 20 introduced leaves 15 of the 100 untouched words available."""
+        user.new_cards_per_day = 20
+        await session.commit()
+        await give_introductions(services, user, count=5)
+        await give_new_cards(services, user, count=100)
+
+        run = await reminders.run(now=moment(9, 0))
+
+        assert run.sent_count == 1
+        plan = notifier.sent[-1]
+        assert plan.kind is ReminderKind.MORNING
+        assert plan.due_now == 0
+        assert plan.new_available == 15
 
 
 class TestDelivery:

@@ -58,12 +58,14 @@ class CardService:
         reviews: ReviewRepository,
         scheduler: SrsScheduler,
         default_deck_name: str,
+        new_cards_per_day: int = 20,
     ) -> None:
         self._cards = cards
         self._decks = decks
         self._reviews = reviews
         self._scheduler = scheduler
         self._default_deck_name = default_deck_name
+        self._new_cards_per_day = new_cards_per_day
 
     async def default_deck(self, user: User) -> Deck:
         return await self._decks.get_or_create_default(user.id, name=self._default_deck_name)
@@ -228,12 +230,24 @@ class CardService:
         return card
 
     async def stats(self, user: User, *, now: datetime | None = None) -> UserStats:
+        """Collection figures, with new cards measured by what today can serve.
+
+        ``new_cards`` is the available number, not the size of the untouched
+        backlog: once the daily budget is spent, a review session starts with
+        nothing new, and a bigger figure here would promise work the queue
+        refuses — the same rule the queue and the reminder tick follow.
+        """
         moment = ensure_utc(now) or utcnow()
         day_start = local_day_start(user.timezone, now=moment)
+        new_today = await self._reviews.count_cards_introduced_since(user.id, since=day_start)
+        per_day = user.new_cards_per_day or self._new_cards_per_day
         return UserStats(
             total_cards=await self._cards.count_for_user(user.id),
             due_now=await self._cards.count_due(user.id, now=moment),
-            new_cards=await self._cards.count_new(user.id, now=moment),
+            new_cards=min(
+                await self._cards.count_new(user.id, now=moment),
+                max(0, per_day - new_today),
+            ),
             reviews_today=await self._reviews.count_since(user.id, since=day_start),
-            new_today=await self._reviews.count_cards_introduced_since(user.id, since=day_start),
+            new_today=new_today,
         )
