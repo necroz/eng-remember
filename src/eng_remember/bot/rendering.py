@@ -7,6 +7,8 @@ import re
 import structlog
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
 __all__ = [
@@ -15,6 +17,7 @@ __all__ = [
     "edit_message_or_send",
     "edit_or_send",
     "fit_text",
+    "require_state",
 ]
 
 log = structlog.get_logger(__name__)
@@ -92,6 +95,25 @@ def _closing_tags(prefix: str) -> str:
         elif not match.group(0).rstrip().endswith("/>") and name not in _VOID_TAGS:
             stack.append(name)
     return "".join(f"</{name}>" for name in reversed(stack))
+
+
+async def require_state(query: CallbackQuery, fsm: FSMContext, expected: State) -> bool:
+    """Whether the flow that owns this button is still the active one.
+
+    Every inline keyboard outlives the moment it belonged to: a tap on it can
+    arrive while another flow is running, and acting on it would clear or
+    overwrite that flow. A stale tap is answered here — an unanswered callback
+    leaves the spinner turning forever — and the caller simply returns.
+
+    The text is imported locally: ``texts`` imports this module, so a
+    module-level import would be a cycle.
+    """
+    from eng_remember.bot import texts
+
+    if await fsm.get_state() == expected.state:
+        return True
+    await query.answer(texts.stale_button(), show_alert=True)
+    return False
 
 
 async def edit_message_or_send(

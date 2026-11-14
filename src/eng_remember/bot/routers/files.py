@@ -163,9 +163,11 @@ def build_router() -> Router:
         services: Services,
         state: FSMContext,
     ) -> None:
+        if not await rendering.require_state(query, state, ImportFile.confirming):
+            return
         data = await state.get_data()
         rows = _rows_from_state(data.get(FILE_ROWS_KEY))
-        if await state.get_state() != ImportFile.confirming.state or not rows:
+        if not rows:
             await query.answer(texts.stale_button(), show_alert=True)
             return
 
@@ -188,8 +190,7 @@ def build_router() -> Router:
     ) -> None:
         # Only the live confirmation owns cancel: an old button from a spent
         # preview must not clear whatever flow is active now.
-        if await state.get_state() != ImportFile.confirming.state:
-            await query.answer(texts.stale_button(), show_alert=True)
+        if not await rendering.require_state(query, state, ImportFile.confirming):
             return
         await state.clear()
         await query.answer()

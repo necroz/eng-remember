@@ -130,6 +130,7 @@ __all__ = [
     "file_export_caption",
     "file_import_cancelled",
     "file_import_empty",
+    "file_import_pending",
     "file_import_preview",
     "file_import_prompt",
     "file_import_result",
@@ -173,6 +174,7 @@ __all__ = [
     "queue_reminder",
     "review_finished",
     "stale_button",
+    "stale_callback",
     "stats",
     "streak_notes",
     "streak_summary",
@@ -380,6 +382,11 @@ def answer_result(
 
 def stale_button() -> str:
     return "Кнопка устарела — начните повторение заново."
+
+
+def stale_callback() -> str:
+    """A button no router recognised: nothing belongs to it any more."""
+    return "Кнопка устарела. Начните действие заново."
 
 
 def already_checking() -> str:
@@ -590,6 +597,15 @@ def file_import_result(outcome: ImportOutcome) -> str:
 
 def file_import_cancelled() -> str:
     return "Импорт отменён."
+
+
+def file_import_pending() -> str:
+    """A message typed over a preview that is waiting for its own decision.
+
+    Handing the text to the parser would start a new batch and silently drop
+    the import the learner already prepared.
+    """
+    return "Сначала подтвердите или отмените импорт — файл ждёт решения."
 
 
 def file_import_empty() -> str:
