@@ -35,6 +35,11 @@ from eng_remember.utils.time import ensure_utc, humanize_interval, utcnow
 
 # How many imported rows the preview shows before it starts counting.
 PREVIEW_ROWS = 10
+# Rendering caps: a big batch must stay one readable message, but confirmation
+# still saves every draft — only the preview is shortened.
+PREVIEW_DRAFTS = 30
+PREVIEW_DECKS = 50
+PREVIEW_PAUSED = 20
 
 __all__ = [
     "BTN_ADD",
@@ -378,11 +383,12 @@ def llm_failed() -> str:
 
 
 def paused_list(cards: Sequence[Card], total: int) -> str:
+    shown = list(cards)[:PREVIEW_PAUSED]
     header = f"⏸ На паузе {total} {_plural(total, 'слово', 'слова', 'слов')}"
-    if total > len(cards):
-        header += f" (первые {len(cards)})"
     lines = [header, ""]
-    lines.extend(f"• <b>{escape(card.term)}</b> — {escape(card.translation)}" for card in cards)
+    lines.extend(f"• <b>{escape(card.term)}</b> — {escape(card.translation)}" for card in shown)
+    if total > len(shown):
+        lines.append(f"…и ещё {total - len(shown)}")
     lines.append("")
     lines.append("<i>Нажмите на слово, чтобы вернуть его в повторения.</i>")
     return "\n".join(lines)
@@ -538,13 +544,13 @@ def import_preview(
     never read as the whole answer.
     """
     lines = [f"Разобрал <b>{len(drafts)}</b> {_plural(len(drafts), 'слово', 'слова', 'слов')}:", ""]
-    lines.extend(cards_listing(drafts))
+    lines.extend(_capped_listing(drafts))
 
     if found is not None and found.drafts:
         lines.append("")
         lines.append(_more_words_head(found))
         lines.append("")
-        lines.extend(cards_listing(found.drafts))
+        lines.extend(_capped_listing(found.drafts))
         footnotes = _discovery_footnotes(found)
         if footnotes:
             lines.append("")
@@ -596,6 +602,18 @@ def _discovery_footnotes(result: DiscoveryResult) -> list[str]:
             f"<i>Просили {result.requested}, нашлось {result.found} — "
             f"честно больше не набралось.</i>"
         )
+    return lines
+
+
+def _capped_listing(drafts: Sequence[CardDraft]) -> list[str]:
+    """Render the first drafts, saying that the rest are saved too.
+
+    A hundred drafts cannot be read in one message anyway; hiding the tail
+    without saying so would look like the rest were dropped.
+    """
+    lines = cards_listing(drafts[:PREVIEW_DRAFTS])
+    if len(drafts) > PREVIEW_DRAFTS:
+        lines.append(f"Показаны первые {PREVIEW_DRAFTS} из {len(drafts)} — сохранение добавит все")
     return lines
 
 
@@ -679,7 +697,7 @@ def discovery_preview(
         head = f"🔍 Подобрал <b>{result.found}</b> слов:"
 
     lines = [head, ""]
-    lines.extend(cards_listing(result.drafts))
+    lines.extend(_capped_listing(result.drafts))
 
     footnotes = _discovery_footnotes(result)
     if footnotes:
@@ -952,8 +970,10 @@ def import_result(outcome: ImportOutcome, deck_name: str) -> str:
 
 def deck_list(rows: list[tuple[str, int]], total: int) -> str:
     lines = [f"📚 <b>Колоды</b> — всего слов: {total}", ""]
-    for name, count in rows:
+    for name, count in rows[:PREVIEW_DECKS]:
         lines.append(f"• {escape(name)} — {count}")
+    if len(rows) > PREVIEW_DECKS:
+        lines.append(f"…и ещё {len(rows) - PREVIEW_DECKS}")
     return "\n".join(lines)
 
 

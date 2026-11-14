@@ -2,14 +2,96 @@
 
 from __future__ import annotations
 
+import re
+
 import structlog
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
-__all__ = ["callback_chat_id", "edit_message_or_send", "edit_or_send"]
+__all__ = [
+    "TELEGRAM_TEXT_LIMIT",
+    "callback_chat_id",
+    "edit_message_or_send",
+    "edit_or_send",
+    "fit_text",
+]
 
 log = structlog.get_logger(__name__)
+
+# Telegram rejects a message longer than this, so every send goes through
+# fit_text rather than trusting the renderer to stay small.
+TELEGRAM_TEXT_LIMIT = 4096
+
+_TRUNCATED = "\n… (сообщение сокращено)"
+_TAG = re.compile(r"<\s*(/?)\s*([a-zA-Z][a-zA-Z0-9-]*)\b[^>]*>")
+_ENTITY_TAIL = re.compile(r"&[a-zA-Z#][a-zA-Z0-9]*$")
+_VOID_TAGS = frozenset({"br", "hr"})
+
+
+def fit_text(text: str, limit: int = TELEGRAM_TEXT_LIMIT) -> str:
+    """Make a rendered message fit into one Telegram message.
+
+    The cut falls on a line boundary, never inside markup: a tag or an HTML
+    entity split in half would turn the rest of the message into visible
+    garbage. Tags left open by the cut are closed, so the suffix and everything
+    before it stay valid HTML. An extremely long single line is still cut, just
+    without the line-boundary courtesy.
+    """
+    if len(text) <= limit:
+        return text
+    if limit <= len(_TRUNCATED):
+        return _TRUNCATED[: max(limit, 0)]
+
+    budget = limit - len(_TRUNCATED)
+    boundary = text.rfind("\n", 0, budget)
+    end = boundary if boundary > 0 else budget
+
+    while end > 0:
+        prefix = text[:end]
+        tag_start = _unclosed_tag_start(prefix)
+        if tag_start is not None:
+            previous = text.rfind("\n", 0, tag_start)
+            end = previous if previous > 0 else tag_start
+            continue
+
+        entity = _ENTITY_TAIL.search(prefix)
+        if entity is not None:
+            end = entity.start()
+            continue
+
+        closing = _closing_tags(prefix)
+        if len(prefix) + len(closing) <= budget:
+            return prefix.rstrip() + closing + _TRUNCATED
+
+        # The closing tags must fit too: move the cut to the previous boundary.
+        previous = text.rfind("\n", 0, end)
+        end = previous if previous > 0 else end - 1
+
+    return _TRUNCATED[:limit]
+
+
+def _unclosed_tag_start(prefix: str) -> int | None:
+    """Where the last raw ``<`` begins when its tag is still open."""
+    last_open = prefix.rfind("<")
+    if last_open > prefix.rfind(">"):
+        return last_open
+    return None
+
+
+def _closing_tags(prefix: str) -> str:
+    """Close every tag the cut left open, innermost first."""
+    stack: list[str] = []
+    for match in _TAG.finditer(prefix):
+        closing, name = match.group(1), match.group(2).lower()
+        if closing:
+            if stack and stack[-1] == name:
+                stack.pop()
+            elif name in stack:
+                del stack[stack.index(name) :]
+        elif not match.group(0).rstrip().endswith("/>") and name not in _VOID_TAGS:
+            stack.append(name)
+    return "".join(f"</{name}>" for name in reversed(stack))
 
 
 async def edit_message_or_send(
@@ -25,6 +107,7 @@ async def edit_message_or_send(
     old to edit by the time the answer is graded — then the result is simply
     sent as a new message instead of being lost.
     """
+    text = fit_text(text)
     if message_id is not None:
         try:
             await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text)
@@ -50,6 +133,7 @@ async def edit_or_send(
     edit (or belong to another account), and the new text may be identical to the
     current one — both are normal when a user taps the same button twice.
     """
+    text = fit_text(text)
     message = query.message
     if isinstance(message, Message):
         try:
