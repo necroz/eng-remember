@@ -78,9 +78,9 @@ def decide(
     today = local_date(context.timezone, now=now)
     local_clock = now.astimezone(resolve_timezone(context.timezone)).time()
 
-    # The digest owns its whole day, so it is decided before the evening slot:
-    # a bot whose first tick came after the evening hour would otherwise skip
-    # the week. It already settles the morning slot through covers_morning.
+    # The digest closes the morning slot, so it is decided before the evening
+    # one: a bot whose first tick came after the evening hour would otherwise
+    # skip the week. The evening still fires later that day.
     if _digest_owed(context, today=today, local_clock=local_clock, settings=settings):
         return ReminderKind.DIGEST
 
@@ -91,7 +91,7 @@ def decide(
     if context.last_digest_on == today:
         return None
 
-    if context.last_morning_on == today:
+    if _slot_closed(context.last_morning_on, today):
         return None
     if local_clock < context.morning_at:
         return None
@@ -99,6 +99,15 @@ def decide(
         # Nothing to do and nothing to lose: a ping here is pure noise.
         return None
     return ReminderKind.MORNING
+
+
+def _slot_closed(mark: date | None, today: date) -> bool:
+    """Whether a daily mark already fills its slot.
+
+    ``>=`` rather than ``==``: a timezone move west can leave a mark dated after
+    the new "today", and the reminder must not be sent twice.
+    """
+    return mark is not None and mark >= today
 
 
 def _digest_owed(
@@ -113,13 +122,13 @@ def _digest_owed(
         and context.digest_enabled
         and today.weekday() == settings.digest_weekday
         and context.last_digest_on != today
-        and context.last_morning_on != today
+        and not _slot_closed(context.last_morning_on, today)
         and local_clock >= context.morning_at
     )
 
 
 def _evening_owed(context: ReminderContext, *, today: date) -> bool:
-    if context.last_evening_on == today:
+    if _slot_closed(context.last_evening_on, today):
         return False
     if context.has_work:
         return True
