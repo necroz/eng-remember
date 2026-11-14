@@ -34,6 +34,13 @@ def monday(hour: int, minute: int = 0, *, tz: str = "UTC") -> datetime:
     return datetime(2026, 5, 11, hour, minute, tzinfo=ZoneInfo(tz)).astimezone(UTC)
 
 
+def tuesday(hour: int, minute: int = 0, *, tz: str = "UTC") -> datetime:
+    """2026-05-12 is a Tuesday."""
+    from zoneinfo import ZoneInfo
+
+    return datetime(2026, 5, 12, hour, minute, tzinfo=ZoneInfo(tz)).astimezone(UTC)
+
+
 def context(**overrides: object) -> ReminderContext:
     base: dict[str, object] = {
         "timezone": "UTC",
@@ -237,6 +244,40 @@ class TestDigest:
         )
 
         assert decide(done, now=monday(20, 0), settings=settings) is ReminderKind.EVENING
+
+    def test_digest_sent_when_first_tick_is_monday_evening(
+        self, settings: ReminderSettings
+    ) -> None:
+        """The bot was down all day; 19:00 is its first tick on the digest day.
+
+        The evening slot starts at 18:00 (the configured default), so the
+        digest must win over it: otherwise a bot that started late would
+        silently skip the whole week.
+        """
+        first_tick = context(digest_enabled=True, evening_at=time(18, 0))
+
+        assert decide(first_tick, now=monday(19, 0), settings=settings) is ReminderKind.DIGEST
+
+    def test_digest_sent_monday_evening_with_empty_queue_and_dead_streak(
+        self, settings: ReminderSettings
+    ) -> None:
+        """Nothing to review and no streak to save — the digest is still worth it."""
+        quiet = context(
+            digest_enabled=True,
+            evening_at=time(18, 0),
+            due_now=0,
+            new_available=0,
+            streak_alive=False,
+        )
+
+        assert decide(quiet, now=monday(19, 0), settings=settings) is ReminderKind.DIGEST
+
+    def test_tuesday_evening_is_still_the_evening_reminder(
+        self, settings: ReminderSettings
+    ) -> None:
+        ordinary = context(digest_enabled=True, evening_at=time(18, 0))
+
+        assert decide(ordinary, now=tuesday(19, 0), settings=settings) is ReminderKind.EVENING
 
 
 class TestTimezones:
