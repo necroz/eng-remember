@@ -91,11 +91,15 @@ def build_router() -> Router:
             )
             return
 
-        if not argument.isdigit() or not MIN_NEW_CARDS <= int(argument) <= MAX_NEW_CARDS:
+        # ``str.isdigit`` is not a number check: it accepts "²" (which ``int``
+        # then refuses) and "٣" (which ``int`` reads as 3). Only ASCII digits are
+        # a number the learner meant to type.
+        limit = int(argument) if argument.isascii() and argument.isdigit() else None
+        if limit is None or not MIN_NEW_CARDS <= limit <= MAX_NEW_CARDS:
             await message.answer(f"Нужно число от {MIN_NEW_CARDS} до {MAX_NEW_CARDS}.")
             return
 
-        user.new_cards_per_day = int(argument)
+        user.new_cards_per_day = limit
         await services.commit()
         await message.answer(
             f"Хорошо, не больше {user.new_cards_per_day} новых слов в день.",
