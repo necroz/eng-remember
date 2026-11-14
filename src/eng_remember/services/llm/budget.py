@@ -6,7 +6,9 @@ that creates new Telegram accounts. It does not decide whether a call is allowed
 — the quota gate raises the refusal — but it emits one warning per episode above
 the configured percentage and one critical alert per episode of spending. Usage
 is a rolling window, so when it falls back below a threshold the episode ends and
-a later crossing alerts again.
+a later crossing alerts again. A critical covers the warning for its episode: a
+dip below the limit but above the warning percentage is still the same spending,
+so only a recovery below the warning threshold makes a warning possible again.
 """
 
 from __future__ import annotations
@@ -61,7 +63,12 @@ class GlobalBudgetMonitor:
         if used >= limit:
             if self._critical_sent:
                 return
+            # One episode, one alert: the critical already reported this
+            # spending, so a later dip into the warning band must not add a
+            # warning. The flag is cleared only below the warning threshold,
+            # which is what makes a real recovery alert again.
             self._critical_sent = True
+            self._warning_sent = True
             await self._emit(BudgetAlert("critical", used, limit))
             return
 
