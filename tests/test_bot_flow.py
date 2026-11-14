@@ -749,6 +749,25 @@ class TestOtherCommands:
 
         assert "Нужно число" in recording.last_text()
 
+    async def test_the_daily_limit_rejects_unicode_digits(
+        self,
+        dispatcher: Dispatcher,
+        bot: Bot,
+        recording: RecordingSession,
+        session_factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        """``²`` is a digit to ``str.isdigit`` but not a number to ``int``.
+
+        The handler must answer with its validation message rather than letting
+        the conversion error escape as a generic failure.
+        """
+        await send(dispatcher, bot, "/limit ²")
+
+        assert "Нужно число" in recording.last_text()
+        async with session_factory() as check:
+            user = (await check.scalars(select(User))).one()
+            assert user.new_cards_per_day == 20
+
     async def test_the_daily_limit_can_be_changed(
         self,
         dispatcher: Dispatcher,

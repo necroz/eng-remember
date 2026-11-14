@@ -110,7 +110,15 @@ def parse_clock(value: str) -> time | None:
     if ":" not in text:
         return None
     hours_text, _, minutes_text = text.partition(":")
-    if not (hours_text.isdigit() and minutes_text.isdigit()):
+    # ``isdigit`` alone accepts "①" and "８": the first breaks ``int``, the
+    # second silently turns another alphabet's numeral into a clock. A clock a
+    # learner typed is ASCII digits only.
+    if not (
+        hours_text.isascii()
+        and minutes_text.isascii()
+        and hours_text.isdigit()
+        and minutes_text.isdigit()
+    ):
         return None
     hours, minutes = int(hours_text), int(minutes_text)
     if not (0 <= hours <= 23 and 0 <= minutes <= 59):

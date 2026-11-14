@@ -57,6 +57,11 @@ class TestClockParsing:
         """Guessing 08:00 for someone who meant 20:00 is worse than asking again."""
         assert parse_clock(raw) is None
 
+    @pytest.mark.parametrize("raw", ["①②:③④", "８:３０", "٣:٠٥"])
+    def test_unicode_digits_are_not_a_clock(self, raw: str) -> None:
+        """Only ASCII digits are a clock: decorated digits are a format error."""
+        assert parse_clock(raw) is None
+
 
 class TestRemindCommand:
     async def test_it_shows_the_current_settings(
