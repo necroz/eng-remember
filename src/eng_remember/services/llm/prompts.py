@@ -15,7 +15,7 @@ from eng_remember.domain.languages import (
     resolve_language,
     resolve_target_language,
 )
-from eng_remember.services.llm.schema import flatten_line
+from eng_remember.services.llm.schema import TERM_LIMIT, TOPIC_LIMIT, flatten_line
 
 __all__ = [
     "ANSWER_CHECK_REVERSE_SYSTEM_PROMPT",
@@ -255,6 +255,10 @@ Answer with a single JSON object and nothing else: {"verdict": "correct"} \
 # than one meaning's worth of text to be made.
 CHECK_FIELD_LIMIT = 200
 
+# A Telegram message is the longest free text these builders receive; the
+# platform itself cuts a message at 4096 characters.
+MESSAGE_LIMIT = 4096
+
 # The enrichment prompt only needs enough existing sentences to steer away from
 # repeating them.
 EXISTING_EXAMPLES_IN_PROMPT = 10
@@ -306,8 +310,20 @@ No prose, no markdown fences.
 
 
 def build_user_prompt(text: str) -> str:
-    """Wrap the raw message so a stray instruction inside it stays data."""
-    return f"Parse the message between the markers.\n<message>\n{text.strip()}\n</message>"
+    """Wrap the raw message so a stray instruction inside it stays data.
+
+    The message is the most untrusted string the bot handles: flattening it
+    keeps it from closing ``<message>`` or starting a line of its own, exactly
+    like every other free-form value that enters a prompt.
+    """
+    safe_text = flatten_line(text, limit=MESSAGE_LIMIT, strip_brackets=True)
+    return f"Parse the message between the markers.\n<message>\n{safe_text}\n</message>"
+
+
+def _flatten_each(values: Sequence[str], *, limit: int) -> list[str]:
+    """Flatten untrusted strings for a prompt list, dropping the empty ones."""
+    flattened = [flatten_line(value, limit=limit, strip_brackets=True) for value in values]
+    return [value for value in flattened if value]
 
 
 def _language_code(language: str, *, allow_native: bool = False) -> str:
@@ -330,18 +346,22 @@ def build_clarified_prompt(original: str, question: str, answer: str) -> str:
 
     The original text is repeated on purpose: the answer alone ("бизнес") says
     nothing about what was being asked, and a model that has to guess tends to
-    invent the missing half.
+    invent the missing half. All three values are human or model text, so each
+    is flattened before it is wrapped.
     """
+    safe_original = flatten_line(original, limit=MESSAGE_LIMIT, strip_brackets=True)
+    safe_question = flatten_line(question, limit=CHECK_FIELD_LIMIT, strip_brackets=True)
+    safe_answer = flatten_line(answer, limit=MESSAGE_LIMIT, strip_brackets=True)
     return (
         "The learner was asked for one detail and has answered.\n"
         "<original_request>\n"
-        f"{original.strip()}\n"
+        f"{safe_original}\n"
         "</original_request>\n"
         "<question_you_asked>\n"
-        f"{question.strip()}\n"
+        f"{safe_question}\n"
         "</question_you_asked>\n"
         "<answer>\n"
-        f"{answer.strip()}\n"
+        f"{safe_answer}\n"
         "</answer>\n"
         "Now parse the original request with that detail taken into account."
     )
@@ -363,21 +383,27 @@ def build_expansion_prompt(
     dominate the prompt, and duplicates are dropped in code anyway. Level
     guidance is absent in source-text mode: there the only rule that matters is
     "words from this text", and a level would argue with it.
+
+    Topic, source text, seeds and known words all carry text a human typed, so
+    each is flattened before it enters its wrapper or list.
     """
     parts: list[str] = [f"Find {count} words.", _target_language_line(language)]
 
-    if topic:
-        parts.append(f"<topic>\n{topic}\n</topic>")
-    if context_text:
+    safe_topic = flatten_line(topic or "", limit=TOPIC_LIMIT, strip_brackets=True)
+    if safe_topic:
+        parts.append(f"<topic>\n{safe_topic}\n</topic>")
+    safe_context = flatten_line(context_text or "", limit=MESSAGE_LIMIT, strip_brackets=True)
+    if safe_context:
         parts.append(
             "Take the words from this text only. "
             "Do not add anything that is not in it.\n"
-            f"<source_text>\n{context_text.strip()}\n</source_text>"
+            f"<source_text>\n{safe_context}\n</source_text>"
         )
-    if seeds:
+    safe_seeds = _flatten_each(seeds, limit=TERM_LIMIT)
+    if safe_seeds:
         parts.append(
             "The learner is working with these words — pick others from the same "
-            f"domain or situation: {', '.join(seeds)}"
+            f"domain or situation: {', '.join(safe_seeds)}"
         )
     if context_text is None:
         safe_level = flatten_line(level or "", limit=8, strip_brackets=True)
@@ -387,8 +413,9 @@ def build_expansion_prompt(
                 f"Prefer words at {safe_level} and one step around it; do not offer "
                 f"words far above {safe_level} unless they are very frequent."
             )
-    if known:
-        parts.append("Already known, must not be returned: " + ", ".join(known))
+    safe_known = _flatten_each(known, limit=TERM_LIMIT)
+    if safe_known:
+        parts.append("Already known, must not be returned: " + ", ".join(safe_known))
     return "\n\n".join(parts)
 
 
