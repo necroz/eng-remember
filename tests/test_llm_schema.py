@@ -8,6 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 from eng_remember.services.llm.schema import (
+    PART_OF_SPEECH_LIMIT,
     ExamplesResponse,
     Intent,
     MnemonicResponse,
@@ -26,6 +27,14 @@ def test_transcription_is_normalised_to_slashes() -> None:
 
 def test_part_of_speech_is_lowercased() -> None:
     assert ParsedCard(term="a", translation="б", part_of_speech="Noun").part_of_speech == "noun"
+
+
+def test_part_of_speech_limit_matches_column() -> None:
+    """The schema must never hand the 32-character column a longer value."""
+    card = ParsedCard(term="run", translation="бежать", part_of_speech="a" * 40)
+
+    assert PART_OF_SPEECH_LIMIT == 32
+    assert card.part_of_speech == "a" * 32
 
 
 @pytest.mark.parametrize(
@@ -81,6 +90,30 @@ def test_explicit_parse_language_beats_the_first_card() -> None:
 def test_an_empty_parse_response_is_english() -> None:
     assert ParseResponse().language == "eng"
     assert ParseResponse.model_validate({"cards": []}).language == "eng"
+
+
+def test_answer_is_capped() -> None:
+    response = ParseResponse.model_validate({"answer": "я" * 5000})
+
+    assert response.answer is not None
+    assert len(response.answer) == 2000
+
+
+def test_answer_keeps_line_breaks_under_the_cap() -> None:
+    """An explanation is prose: only its ceiling matters, not its shape."""
+    response = ParseResponse.model_validate({"answer": "Первая строка.\nВторая строка."})
+
+    assert response.answer == "Первая строка.\nВторая строка."
+
+
+def test_cards_list_is_capped() -> None:
+    response = ParseResponse.model_validate(
+        {"cards": [{"term": f"word{i}", "translation": f"слово{i}"} for i in range(200)]}
+    )
+
+    assert len(response.cards) == 50
+    assert response.cards[0].term == "word0"
+    assert response.cards[-1].term == "word49"
 
 
 def test_an_explicit_null_language_stays_english() -> None:

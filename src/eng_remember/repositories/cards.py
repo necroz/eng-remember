@@ -25,7 +25,21 @@ from eng_remember.domain.srs import CardSchedule
 from eng_remember.models.card import Card
 from eng_remember.utils.time import ensure_utc
 
-__all__ = ["CardDraft", "CardRepository", "QueueCounts"]
+__all__ = ["COLUMN_WIDTHS", "CardDraft", "CardRepository", "QueueCounts"]
+
+# Declared widths of the String columns in models/card.py. Text columns
+# (translation, example, notes) are unbounded, so nothing is cut there.
+# ``CardDraft.normalized()`` is the last stop before persistence: a value that
+# slipped past its own layer — a CSV row, a model answer, a future caller — is
+# cut to fit here instead of failing at INSERT time.
+COLUMN_WIDTHS: dict[str, int] = {
+    "term": 255,
+    "language": 8,
+    "transcription": 128,
+    "part_of_speech": 32,
+    "cefr": 2,
+    "frequency": 8,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,21 +80,22 @@ class CardDraft:
 
         The example list keeps its invariant here: the main example is the
         first element, so rotation always starts with the sentence the learner
-        may have pinned themselves.
+        may have pinned themselves. Widths of the String columns are enforced
+        here too, as the last stop before persistence.
         """
         examples = tuple(merge_examples(self.example, self.examples))
         return CardDraft(
-            term=self.term.strip(),
+            term=_fit(self.term, "term") or "",
             translation=self.translation.strip(),
-            transcription=_clean(self.transcription),
-            part_of_speech=_clean(self.part_of_speech),
+            transcription=_fit(self.transcription, "transcription"),
+            part_of_speech=_fit(self.part_of_speech, "part_of_speech"),
             example=examples[0] if examples else None,
             examples=examples,
             notes=_clean(self.notes),
             tags=tuple(tag.strip() for tag in self.tags if tag.strip()),
-            cefr=_clean(self.cefr),
-            frequency=_clean(self.frequency),
-            language=resolve_target_language(self.language),
+            cefr=_fit(self.cefr, "cefr"),
+            frequency=_fit(self.frequency, "frequency"),
+            language=_fit(resolve_target_language(self.language), "language") or DEFAULT_LANGUAGE,
         )
 
 
@@ -89,6 +104,14 @@ def _clean(value: str | None) -> str | None:
         return None
     stripped = value.strip()
     return stripped or None
+
+
+def _fit(value: str | None, column: str) -> str | None:
+    """Trim and cut a value to the declared width of the column storing it."""
+    cleaned = _clean(value)
+    if cleaned is None:
+        return None
+    return cleaned[: COLUMN_WIDTHS[column]].rstrip() or None
 
 
 class CardRepository:

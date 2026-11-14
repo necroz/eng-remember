@@ -164,6 +164,30 @@ async def test_json_tags_round_trip(
     assert reloaded.tags == ["business", "money"]
 
 
+async def test_normalized_draft_truncates_to_column_widths(
+    pg_services: Services, pg_session: AsyncSession, pg_user: User
+) -> None:
+    """A 40-character part of speech must not fail at INSERT (the column is 32)."""
+    part_of_speech = "adjective" * 5
+    card = await pg_services.card_service.add_draft(
+        pg_user,
+        CardDraft(
+            term="ubiquitous",
+            translation="вездесущий",
+            transcription="/" + "ɪ" * 200 + "/",
+            part_of_speech=part_of_speech,
+        ),
+    )
+    await pg_session.commit()
+    pg_session.expunge_all()
+
+    reloaded = await pg_services.cards.get(card.id, user_id=pg_user.id)
+
+    assert reloaded is not None
+    assert reloaded.part_of_speech == part_of_speech[:32]
+    assert len(reloaded.transcription or "") == 128
+
+
 async def test_the_state_check_constraint_is_enforced(
     pg_session: AsyncSession, pg_user: User
 ) -> None:

@@ -58,7 +58,9 @@ _ANGLE_BRACKETS = re.compile(r"[<>]")
 TERM_LIMIT = 80
 TRANSLATION_LIMIT = 200
 TRANSCRIPTION_LIMIT = 80
-PART_OF_SPEECH_LIMIT = 40
+# Equal to the ``part_of_speech`` column width: a longer value would only be
+# cut by the database (or rejected) later.
+PART_OF_SPEECH_LIMIT = 32
 EXAMPLE_LIMIT = 300
 NOTES_LIMIT = 300
 MNEMONIC_LIMIT = 200
@@ -66,6 +68,14 @@ TAG_LIMIT = 40
 TOPIC_LIMIT = 80
 QUESTION_LIMIT = 200
 OPTION_LIMIT = 48
+
+# An explanation may be several paragraphs, but it is still one Telegram
+# message; the ceiling is what keeps a runaway answer from filling the chat.
+ANSWER_LIMIT = 2000
+
+# The biggest batch a user can plausibly ask for. Everything past it is dropped
+# in code rather than rejected: the first cards of a long answer are still good.
+CARDS_LIMIT = 50
 
 # The prompts ask for up to three examples; the hard ceiling is higher so a
 # generous model is not rejected, and everything past it is dropped in code.
@@ -443,6 +453,14 @@ class ParseResponse(BaseModel):
         cleaned = flatten_line(value or "", limit=TOPIC_LIMIT, strip_brackets=True)
         return cleaned or None
 
+    @field_validator("answer")
+    @classmethod
+    def _cap_answer(cls, value: str | None) -> str | None:
+        """Explanations are prose, so newlines stay; only the ceiling applies."""
+        if not value:
+            return None
+        return value[:ANSWER_LIMIT].strip() or None
+
     @field_validator("intent", mode="before")
     @classmethod
     def _coerce_intent(cls, value: object) -> object:
@@ -463,7 +481,10 @@ class ParseResponse(BaseModel):
     @field_validator("cards")
     @classmethod
     def _drop_incomplete(cls, cards: list[ParsedCard]) -> list[ParsedCard]:
-        return [card for card in cards if card.term and card.translation]
+        # Drop first, then cap: a truncated answer's last card is still a whole
+        # card, not an empty slot.
+        complete = [card for card in cards if card.term and card.translation]
+        return complete[:CARDS_LIMIT]
 
     def to_drafts(self) -> list[CardDraft]:
         return [card.to_draft() for card in self.cards]

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from typing import cast
 
 import pytest
+from sqlalchemy import String
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eng_remember.domain.enums import CardDirection, CardState, ReviewRating
@@ -12,7 +14,7 @@ from eng_remember.domain.languages import DEFAULT_LANGUAGE
 from eng_remember.models.card import Card
 from eng_remember.models.review import Review
 from eng_remember.models.user import User
-from eng_remember.repositories.cards import CardDraft, CardRepository
+from eng_remember.repositories.cards import COLUMN_WIDTHS, CardDraft, CardRepository
 from eng_remember.repositories.decks import DeckRepository
 from eng_remember.repositories.reviews import ReviewRepository
 from eng_remember.repositories.users import TelegramProfile, UserRepository
@@ -141,6 +143,42 @@ def test_normalized_draft_keeps_and_resolves_its_language() -> None:
     assert (
         CardDraft(term="привет", translation="привет", language="ru").normalized().language == "eng"
     )
+
+
+def test_draft_column_widths_match_the_card_model() -> None:
+    """The truncation table is only useful while it mirrors models/card.py."""
+    for column, width in COLUMN_WIDTHS.items():
+        declared = cast(String, Card.__table__.c[column].type).length
+        assert declared == width
+
+
+def test_normalized_draft_truncates_to_column_widths() -> None:
+    draft = CardDraft(
+        term="t" * 300,
+        translation="я" * 1000,
+        transcription="/" + "ɪ" * 200 + "/",
+        part_of_speech="adjective" * 10,
+        example="e" * 1000,
+        notes="n" * 1000,
+        cefr="B2",
+        frequency="common",
+    ).normalized()
+
+    assert draft.term == "t" * 255
+    assert len(draft.transcription or "") == 128
+    assert len(draft.part_of_speech or "") == 32
+    # Text columns have no declared width: their content is kept whole.
+    assert draft.translation == "я" * 1000
+    assert draft.example == "e" * 1000
+    assert draft.notes == "n" * 1000
+    assert draft.cefr == "B2"
+    assert draft.frequency == "common"
+
+
+def test_normalized_draft_drops_the_space_left_by_truncation() -> None:
+    draft = CardDraft(term="t" * 254 + " tail", translation="перевод").normalized()
+
+    assert draft.term == "t" * 254
 
 
 class TestCards:
