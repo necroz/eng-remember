@@ -152,14 +152,46 @@ async def test_valid_answer_is_parsed() -> None:
     assert record.provider_model == "test-model"
 
 
-async def test_json_mode_is_requested() -> None:
+async def test_json_schema_is_requested_with_the_strict_contract() -> None:
     client, fake = make_client([completion('{"intent": "unknown"}')])
 
     await complete(client)
 
-    assert fake.endpoint.calls[0]["response_format"] == {"type": "json_object"}
+    response_format = fake.endpoint.calls[0]["response_format"]
+    assert response_format["type"] == "json_schema"
+    assert response_format["json_schema"] == {
+        "name": "ParseResponse",
+        "schema": ParseResponse.model_json_schema(),
+        "strict": True,
+    }
     assert fake.endpoint.calls[0]["model"] == "test-model"
     assert fake.endpoint.calls[0]["temperature"] == 0.0
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Unsupported parameter: json_schema",
+        "Invalid schema for response_format 'ParseResponse': 'required' is required",
+    ],
+)
+async def test_json_schema_rejection_degrades_once_to_json_object(message: str) -> None:
+    """A rejected strict schema falls back to plain JSON mode exactly once."""
+    client, fake = make_client(
+        [
+            api_error("bad_request", message, 400),
+            completion('{"intent": "unknown"}'),
+            completion('{"intent": "unknown"}'),
+        ]
+    )
+
+    await complete(client)
+    await complete(client)
+
+    assert len(fake.endpoint.calls) == 3
+    assert fake.endpoint.calls[0]["response_format"]["type"] == "json_schema"
+    assert fake.endpoint.calls[1]["response_format"] == {"type": "json_object"}
+    assert fake.endpoint.calls[2]["response_format"] == {"type": "json_object"}
 
 
 async def test_reasoning_is_not_sent_by_default() -> None:

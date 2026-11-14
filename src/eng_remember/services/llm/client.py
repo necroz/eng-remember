@@ -99,6 +99,7 @@ _REPAIR_TRUNCATED_MARK = " …(обрезано)"
 # an unrelated error such as "max_tokens must be greater than reasoning tokens".
 _REASONING_EFFORT_REJECTION = re.compile(r"reasoning[_\s-]?effort")
 _RESPONSE_FORMAT_REJECTION = re.compile(r"response[_\s-]?format")
+_JSON_SCHEMA_REJECTION = re.compile(r"json[_\s-]?schema|invalid schema|structured output")
 
 
 def _rejection_text(exc: BadRequestError) -> str:
@@ -161,7 +162,8 @@ class LlmTransport:
     update. It also owns the flags learned from provider rejections: once a
     provider says it does not understand ``response_format`` or
     ``reasoning_effort``, every later request remembers that instead of paying
-    for the same 400 again.
+    for the same 400 again. Structured outputs degrade in two steps: a provider
+    that rejects only the strict JSON schema still gets plain ``json_object``.
 
     Tests can pass a ready-made ``client``; production leaves it ``None`` and the
     real SDK is built on first use.
@@ -173,6 +175,10 @@ class LlmTransport:
         # Flipped off for the lifetime of the transport the first time a
         # provider rejects ``response_format``; small self-hosted servers often do.
         self._json_mode = True
+        # A stricter form of the same knob: a schema-constrained answer. Not
+        # every provider that understands ``json_object`` understands it, so a
+        # rejection here only costs us the schema, not JSON mode itself.
+        self._json_schema = True
         # Same idea for reasoning control: not every OpenAI-compatible endpoint
         # knows the parameter, and one rejected request is enough to learn that.
         self._reasoning_effort = (settings.reasoning_effort or "").strip() or None
@@ -198,7 +204,16 @@ class LlmTransport:
             "temperature": self._settings.temperature,
             "max_tokens": self._settings.max_output_tokens,
         }
-        if self._json_mode:
+        if self._json_schema and schema is not None:
+            kwargs["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": schema.__name__,
+                    "schema": schema.model_json_schema(),
+                    "strict": True,
+                },
+            }
+        elif self._json_mode:
             kwargs["response_format"] = {"type": "json_object"}
         if self._reasoning_effort:
             kwargs["reasoning_effort"] = self._reasoning_effort
@@ -213,12 +228,25 @@ class LlmTransport:
                 # transport already, while our own kwargs still carry the
                 # rejected parameter. The retry must drop it here too.
                 response_format = kwargs.get("response_format")
-                if isinstance(response_format, dict) and _RESPONSE_FORMAT_REJECTION.search(
-                    rejection
-                ):
-                    self._json_mode = False
-                    kwargs.pop("response_format", None)
-                    changed = True
+                if isinstance(response_format, dict):
+                    kind = response_format.get("type")
+                    schema_rejected = _JSON_SCHEMA_REJECTION.search(rejection)
+                    format_rejected = _RESPONSE_FORMAT_REJECTION.search(rejection)
+                    if kind == "json_schema" and (schema_rejected or format_rejected):
+                        self._json_schema = False
+                        if schema_rejected and self._json_mode:
+                            # The schema was the problem, not JSON mode: keep
+                            # the weaker guarantee and lose only the shape.
+                            kwargs["response_format"] = {"type": "json_object"}
+                        else:
+                            self._json_mode = False
+                            kwargs.pop("response_format", None)
+                        changed = True
+                    elif kind == "json_object" and format_rejected:
+                        self._json_schema = False
+                        self._json_mode = False
+                        kwargs.pop("response_format", None)
+                        changed = True
                 if "reasoning_effort" in kwargs and _REASONING_EFFORT_REJECTION.search(rejection):
                     self._reasoning_effort = None
                     kwargs.pop("reasoning_effort", None)
@@ -321,7 +349,7 @@ class OpenAiCompatibleClient:
                 for attempt in range(1, attempts + 1):
                     attempt_started = time.perf_counter()
                     try:
-                        response = await self._create(messages)
+                        response = await self._create(messages, schema=schema)
                     except _FATAL as exc:
                         await self._report(
                             purpose=purpose,
@@ -445,9 +473,14 @@ class OpenAiCompatibleClient:
             f"model did not return valid JSON after {attempts} attempts: {last_error}"
         )
 
-    async def _create(self, messages: list[ChatCompletionMessageParam]) -> Any:
+    async def _create(
+        self,
+        messages: list[ChatCompletionMessageParam],
+        *,
+        schema: type[BaseModel],
+    ) -> Any:
         """Let the shared transport make the call and learn from rejections."""
-        return await self._transport.create(messages)
+        return await self._transport.create(messages, schema=schema)
 
     async def _report(
         self,
