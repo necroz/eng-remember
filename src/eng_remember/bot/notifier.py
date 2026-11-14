@@ -11,7 +11,7 @@ import structlog
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 
-from eng_remember.bot import keyboards, texts
+from eng_remember.bot import keyboards, rendering, texts
 from eng_remember.domain.reminders import ReminderKind
 from eng_remember.errors import RecipientUnreachable
 from eng_remember.services.reminders import ReminderPlan
@@ -49,7 +49,7 @@ class BotNotifier:
         try:
             await self._bot.send_message(
                 plan.user.telegram_id,
-                body,
+                rendering.fit_text(body),
                 reply_markup=keyboards.main_menu(),
             )
         except TelegramForbiddenError as exc:
