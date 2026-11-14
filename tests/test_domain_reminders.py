@@ -85,6 +85,12 @@ class TestMorning:
 
         assert decide(yesterday, now=at(9, 0), settings=settings) is ReminderKind.MORNING
 
+    def test_morning_not_sent_twice_after_tz_west(self, settings: ReminderSettings) -> None:
+        """A mark left on a day that is still "tomorrow" must close the slot."""
+        marked_ahead = context(last_morning_on=date(2026, 5, 15))
+
+        assert decide(marked_ahead, now=at(9, 0), settings=settings) is None
+
     def test_nothing_to_do_means_no_message(self, settings: ReminderSettings) -> None:
         """ "You have nothing to review" is a notification about nothing."""
         idle = context(due_now=0, new_available=0)
@@ -170,6 +176,12 @@ class TestEvening:
 
         assert decide(already, now=at(22, 0), settings=settings) is None
 
+    def test_evening_not_sent_twice_after_tz_west(self, settings: ReminderSettings) -> None:
+        """The same protection applies to the evening mark."""
+        marked_ahead = context(last_evening_on=date(2026, 5, 15))
+
+        assert decide(marked_ahead, now=at(21, 0), settings=settings) is None
+
     def test_it_can_be_switched_off_per_user(self, settings: ReminderSettings) -> None:
         without_evening = context(evening_at=None, last_morning_on=date(2026, 5, 14))
 
@@ -244,6 +256,22 @@ class TestDigest:
         )
 
         assert decide(done, now=monday(20, 0), settings=settings) is ReminderKind.EVENING
+
+    def test_digest_wins_at_the_evening_boundary(self, settings: ReminderSettings) -> None:
+        """Exactly at the evening hour the digest still takes the slot."""
+        first_tick = context(digest_enabled=True, evening_at=time(18, 0))
+
+        assert decide(first_tick, now=monday(18, 0), settings=settings) is ReminderKind.DIGEST
+
+    def test_digest_not_sent_when_the_morning_slot_is_marked_ahead(
+        self, settings: ReminderSettings
+    ) -> None:
+        """A morning mark from a "future" day closes the slot the digest would take."""
+        marked_ahead = context(
+            digest_enabled=True, evening_at=None, last_morning_on=date(2026, 5, 12)
+        )
+
+        assert decide(marked_ahead, now=monday(10, 0), settings=settings) is None
 
     def test_digest_sent_when_first_tick_is_monday_evening(
         self, settings: ReminderSettings

@@ -32,6 +32,12 @@ REMIND_USAGE = (
     "<i>Время указывается в вашем часовом поясе.</i>"
 )
 
+REMIND_ORDER_ERROR = (
+    "Вечернее напоминание должно идти после утреннего: "
+    "сейчас утро — <code>{morning}</code>, вечер — <code>{evening}</code>.\n"
+    "Измените время: <code>/remind 8:30</code> или <code>/remind evening 20:00</code>."
+)
+
 WEEKDAY_NAMES = ("пн", "вт", "ср", "чт", "пт", "сб", "вс")
 
 
@@ -113,6 +119,15 @@ def build_router() -> Router:
             evening = user.evening_reminder_time or settings.default_streak_time
         return morning, evening
 
+    def _order_error(morning: time, evening: time | None) -> str | None:
+        """Reject an evening that would fire before (or at) the morning slot."""
+        if evening is None or morning < evening:
+            return None
+        return REMIND_ORDER_ERROR.format(
+            morning=humanize_clock(morning),
+            evening=humanize_clock(evening),
+        )
+
     async def _show_reminders(message: Message, user: User, services: Services) -> None:
         settings = services.settings.reminders
         morning, evening = _effective(user, settings)
@@ -170,14 +185,28 @@ def build_router() -> Router:
 
         if argument.startswith("evening"):
             rest = argument.removeprefix("evening").strip()
+            settings = services.settings.reminders
+            morning = _effective(user, settings)[0]
+
             if rest in {"on", "off"}:
+                if rest == "on":
+                    wanted_evening = user.evening_reminder_time or settings.default_streak_time
+                    error = _order_error(morning, wanted_evening)
+                    if error is not None:
+                        await message.answer(error)
+                        return
                 user.evening_reminder = rest == "on"
                 await services.commit()
                 await _show_reminders(message, user, services)
                 return
+
             parsed_evening = parse_clock(rest) if rest else None
             if parsed_evening is None:
                 await message.answer(REMIND_USAGE)
+                return
+            error = _order_error(morning, parsed_evening)
+            if error is not None:
+                await message.answer(error)
                 return
             user.evening_reminder = True
             user.evening_reminder_time = parsed_evening
@@ -188,6 +217,11 @@ def build_router() -> Router:
         parsed = parse_clock(argument)
         if parsed is None:
             await message.answer(REMIND_USAGE)
+            return
+        evening = _effective(user, services.settings.reminders)[1]
+        error = _order_error(parsed, evening)
+        if error is not None:
+            await message.answer(error)
             return
         user.reminder_time = parsed
         await services.commit()

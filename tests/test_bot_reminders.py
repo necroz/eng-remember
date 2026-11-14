@@ -96,6 +96,50 @@ class TestRemindCommand:
 
         assert "22:45" in recording.last_text()
 
+    async def test_remind_rejects_evening_before_morning(
+        self,
+        dispatcher: Dispatcher,
+        bot: Bot,
+        recording: RecordingSession,
+        session_factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        await send(dispatcher, bot, "/remind evening 07:00")
+
+        async with session_factory() as check:
+            user = (await check.scalars(select(User))).one()
+            assert user.evening_reminder_time is None
+        assert "должно идти после утреннего" in recording.last_text()
+
+    async def test_remind_rejects_morning_after_evening(
+        self,
+        dispatcher: Dispatcher,
+        bot: Bot,
+        recording: RecordingSession,
+        session_factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        await send(dispatcher, bot, "/remind 22:00")
+
+        async with session_factory() as check:
+            user = (await check.scalars(select(User))).one()
+            assert user.reminder_time is None
+        assert "должно идти после утреннего" in recording.last_text()
+
+    async def test_remind_rejects_enabling_evening_before_morning(
+        self,
+        dispatcher: Dispatcher,
+        bot: Bot,
+        recording: RecordingSession,
+        session_factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        await send(dispatcher, bot, "/remind evening off", update_id=10)
+        await send(dispatcher, bot, "/remind 21:00", update_id=11)
+        await send(dispatcher, bot, "/remind evening on", update_id=12)
+
+        async with session_factory() as check:
+            user = (await check.scalars(select(User))).one()
+            assert not user.evening_reminder
+        assert "должно идти после утреннего" in recording.last_text()
+
     async def test_the_evening_warning_can_be_switched_off(
         self,
         dispatcher: Dispatcher,

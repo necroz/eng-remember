@@ -63,6 +63,18 @@ class TestFirstDay:
         assert state.current == 1
 
 
+class TestDateBackward:
+    def test_record_activity_ignores_date_backward(self, settings: StreakSettings) -> None:
+        """A timezone move west can put "today" before the accounted day."""
+        state = StreakState(current=5, longest=5, freezes=2, accounted_on=D0)
+
+        result = record_activity(state, days(-1), settings)
+
+        assert result.state == state
+        assert not result.counted
+        assert result.events == ()
+
+
 class TestConsecutiveDays:
     def test_a_second_day_extends_the_streak(self, settings: StreakSettings) -> None:
         state = record_activity(fresh(settings), D0, settings).state
