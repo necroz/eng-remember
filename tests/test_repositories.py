@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import cast
 
 import pytest
-from sqlalchemy import String
+from sqlalchemy import String, Text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eng_remember.domain.enums import CardDirection, CardState, ReviewRating
@@ -145,11 +144,27 @@ def test_normalized_draft_keeps_and_resolves_its_language() -> None:
     )
 
 
-def test_draft_column_widths_match_the_card_model() -> None:
-    """The truncation table is only useful while it mirrors models/card.py."""
-    for column, width in COLUMN_WIDTHS.items():
-        declared = cast(String, Card.__table__.c[column].type).length
-        assert declared == width
+# Columns of ``Card`` a draft never sets: the card's origin and direction, and
+# its scheduling state. Every other bounded String column a draft can fill has
+# to be in ``COLUMN_WIDTHS``; adding one without a width fails this test.
+_NON_DRAFT_COLUMNS = frozenset({"source", "state", "direction"})
+
+
+def test_every_string_column_of_a_draft_has_a_declared_width() -> None:
+    """The truncation table must cover every bounded String field a draft fills.
+
+    Text columns are unbounded by design; the three ``_NON_DRAFT_COLUMNS`` are
+    set by the repository and the scheduler, not the parser. The rest is exactly
+    what ``_fit`` cuts, and the widths must match the model.
+    """
+    bounded = {
+        name: column.type.length
+        for name, column in Card.__table__.c.items()
+        if isinstance(column.type, String) and not isinstance(column.type, Text)
+    }
+
+    assert set(bounded) - set(COLUMN_WIDTHS) == _NON_DRAFT_COLUMNS
+    assert {name: bounded[name] for name in COLUMN_WIDTHS} == COLUMN_WIDTHS
 
 
 def test_normalized_draft_truncates_to_column_widths() -> None:
@@ -173,6 +188,21 @@ def test_normalized_draft_truncates_to_column_widths() -> None:
     assert draft.notes == "n" * 1000
     assert draft.cefr == "B2"
     assert draft.frequency == "common"
+
+
+def test_normalized_draft_truncates_every_short_level_field() -> None:
+    """The three narrow fields are as easy to overflow as the term."""
+    draft = CardDraft(
+        term="ubiquitous",
+        translation="вездесущий",
+        frequency="very common",
+        cefr="B2/C1",
+        language="portuguese",
+    ).normalized()
+
+    assert draft.frequency == "very com"
+    assert draft.cefr == "B2"
+    assert draft.language == "por"
 
 
 def test_normalized_draft_drops_the_space_left_by_truncation() -> None:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from datetime import datetime
 from typing import Any, cast
 
@@ -14,21 +14,26 @@ from sqlalchemy import (
     exists,
     func,
     select,
+    update,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
+from sqlalchemy.orm.attributes import set_committed_value
 
 from eng_remember.domain.enums import CardDirection
 from eng_remember.domain.examples import merge_examples
 from eng_remember.domain.languages import DEFAULT_LANGUAGE, resolve_target_language
 from eng_remember.domain.srs import CardSchedule
+from eng_remember.errors import ScheduleConflictError
 from eng_remember.models.card import Card
 from eng_remember.utils.time import ensure_utc
 
 __all__ = ["COLUMN_WIDTHS", "CardDraft", "CardRepository", "QueueCounts"]
 
-# Declared widths of the String columns in models/card.py. Text columns
-# (translation, example, notes) are unbounded, so nothing is cut there.
+# Declared widths of the String fields a ``CardDraft`` carries. Text columns
+# the draft also fills (translation, example, notes) are unbounded, so nothing
+# is cut there; ``source``, ``direction`` and the scheduler's ``state`` are set
+# by the repository, not the parser, and are not in the table.
 # ``CardDraft.normalized()`` is the last stop before persistence: a value that
 # slipped past its own layer — a CSV row, a model answer, a future caller — is
 # cut to fit here instead of failing at INSERT time.
@@ -40,6 +45,12 @@ COLUMN_WIDTHS: dict[str, int] = {
     "cefr": 2,
     "frequency": 8,
 }
+
+# Columns a :class:`CardSchedule` owns. ``update_schedule`` copies them onto the
+# ORM object as committed values after the conditional write, so a successful
+# answer needs no second UPDATE. Derived from the domain object so a new field
+# cannot be written to the row and forgotten in the identity map.
+_SCHEDULE_FIELDS = tuple(item.name for item in fields(CardSchedule))
 
 
 @dataclass(frozen=True, slots=True)
@@ -405,8 +416,38 @@ class CardRepository:
         return list((await self._session.scalars(stmt.limit(limit))).all())
 
     async def update_schedule(self, card: Card, schedule: CardSchedule) -> None:
-        card.apply_schedule(schedule)
-        await self._session.flush()
+        """Persist a schedule only if the card has not moved since it was read.
+
+        The write is conditional on the ``reps`` the caller saw: two answers
+        logged from the same read state both carry the same value, and only the
+        first may land. The loser gets :class:`ScheduleConflictError` instead of
+        silently overwriting the winner's schedule.
+
+        The ORM object is updated only after the write succeeds, and through
+        committed values: reassigning plain attributes would queue a second
+        unconditional UPDATE for the next flush, which is exactly the write this
+        check exists to prevent.
+        """
+        expected_reps = card.reps
+        stmt = (
+            update(Card)
+            .where(Card.id == card.id, Card.reps == expected_reps)
+            .values(
+                due_at=schedule.due_at,
+                state=schedule.state,
+                step=schedule.step,
+                stability=schedule.stability,
+                difficulty=schedule.difficulty,
+                last_review_at=schedule.last_review_at,
+                reps=schedule.reps,
+                lapses=schedule.lapses,
+            )
+        )
+        result = await self._session.execute(stmt)
+        if cast("CursorResult[Any]", result).rowcount == 0:
+            raise ScheduleConflictError(card.id)
+        for name in _SCHEDULE_FIELDS:
+            set_committed_value(card, name, getattr(schedule, name))
 
     async def update_content(self, card: Card, draft: CardDraft) -> None:
         card.translation = draft.translation

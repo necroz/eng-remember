@@ -6,14 +6,14 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from eng_remember.domain.enums import CardDirection, CardState, ReviewRating
-from eng_remember.errors import DuplicateCardError
+from eng_remember.errors import DuplicateCardError, ScheduleConflictError
 from eng_remember.models.card import Card
 from eng_remember.models.review import Review
 from eng_remember.models.user import User
-from eng_remember.repositories.cards import CardDraft
+from eng_remember.repositories.cards import CardDraft, CardRepository
 from eng_remember.repositories.users import TelegramProfile
 from eng_remember.services.container import Services
 from eng_remember.utils.time import utcnow
@@ -287,6 +287,99 @@ class TestReviewService:
         assert min(sizes) >= 15
         assert max(sizes) <= 20
         assert len(sizes) > 1
+
+    async def test_the_candidate_margin_is_not_capped_by_the_session_size(
+        self,
+        services: Services,
+        session: AsyncSession,
+        user: User,
+        deck_id: int,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The margin exists to survive the in-Python filter, so the cap must not eat it.
+
+        Both directions of a word are in the candidate list and only one may be
+        introduced, so a full session needs twice the candidates — even when the
+        session itself is already twenty cards.
+        """
+        await self.queue_cards(services, session, user, deck_id, new=40)
+        limits: list[int] = []
+        original = services.cards.list_new
+
+        async def spy(
+            user_id: int,
+            *,
+            now: datetime,
+            limit: int,
+            deck_id: int | None = None,
+            bury_reviewed_since: datetime | None = None,
+        ) -> list[Card]:
+            limits.append(limit)
+            return await original(
+                user_id,
+                now=now,
+                limit=limit,
+                deck_id=deck_id,
+                bury_reviewed_since=bury_reviewed_since,
+            )
+
+        monkeypatch.setattr(services.cards, "list_new", spy)
+
+        queue = await services.review_service.build_queue(user)
+
+        assert len(queue.cards) == 20
+        assert limits == [40]
+
+    async def test_get_next_does_not_count_the_queue_totals(
+        self,
+        services: Services,
+        session: AsyncSession,
+        user: User,
+        deck_id: int,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """One card needs no totals: the two aggregate COUNTs are pure overhead."""
+        await self.queue_cards(services, session, user, deck_id, new=1)
+        counted: list[str] = []
+
+        async def fail(*_args: object, **_kwargs: object) -> int:
+            counted.append("called")
+            raise AssertionError("a single-card queue must not count totals")
+
+        monkeypatch.setattr(services.cards, "count_due", fail)
+        monkeypatch.setattr(services.cards, "count_new", fail)
+
+        card = await services.review_service.get_next(user)
+
+        assert card is not None
+        assert counted == []
+
+    async def test_an_answer_from_a_stale_read_is_refused(
+        self,
+        services: Services,
+        session: AsyncSession,
+        session_factory: async_sessionmaker[AsyncSession],
+        user: User,
+        deck_id: int,
+    ) -> None:
+        """Two answers logged from one read state must not both land.
+
+        The second write carries the ``reps`` it saw before the first answer; the
+        row no longer matches and the caller learns the card moved on instead of
+        overwriting the schedule.
+        """
+        await self.queue_cards(services, session, user, deck_id, new=1)
+        card = (await services.review_service.build_queue(user)).cards[0]
+
+        async with session_factory() as stale_session:
+            stale = await CardRepository(stale_session).get(card.id, user_id=user.id)
+            assert stale is not None
+
+            await services.review_service.answer(user, card, ReviewRating.GOOD)
+            await session.commit()
+
+            with pytest.raises(ScheduleConflictError):
+                await services.review_service.answer(user, stale, ReviewRating.GOOD)
 
     async def test_new_cards_are_capped_by_the_daily_budget(
         self, services: Services, session: AsyncSession, user: User, deck_id: int
