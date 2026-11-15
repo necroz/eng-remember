@@ -31,8 +31,11 @@
   `services/llm/quota.py` не даёт двум запросам пересечься, а
   `BOT__TASKS_CONCURRENCY_LIMIT` (20) ограничивает общее число одновременных
   апдейтов на процесс. Это не даёт всплеску сообщений обойти квоту и занять
-  все слоты бота.
-- Входящий поток ограничен на пользователя: `BOT__MESSAGES_PER_MINUTE` (10)
+  все слоты бота. Сверх того `BOT__USER_CONCURRENCY_LIMIT` (3) ограничивает
+  число одновременных апдейтов одного ученика: всплеск занимает не больше трёх
+  слотов, остальные ждут, не удерживая соединение с БД
+  (`bot/middlewares/concurrency.py`).
+- Входящий поток ограничен на пользователя: `BOT__MESSAGES_PER_MINUTE` (30)
   и `BOT__CALLBACKS_PER_MINUTE` (30). Одинаковый plain-text в течение
   `BOT__DUPLICATE_MESSAGE_TTL_SECONDS` (60 секунд) второй раз не обрабатывается.
   Guard'ы живут в `bot/middlewares/rate_limit.py` и `bot/middlewares/dedup.py`.
