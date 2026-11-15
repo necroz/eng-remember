@@ -2,13 +2,16 @@
 
 The README tells multi-replica deployments to switch the in-process loop off and
 drive reminders from cron. With no loop there is no daily prune either, so the
-one-shot entry point has to run it itself: the audit table must not grow without
-bound just because of the deployment shape.
+one-shot entry point has to run its own: the audit table must not grow without
+bound just because of the deployment shape. And because the switch is about the
+loop, not about reminders as a whole, the cron pass must still send when it is
+off.
 """
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+import asyncio
+from datetime import UTC, date, datetime, time
 
 import pytest
 from aiogram import Bot
@@ -18,6 +21,11 @@ import eng_remember.__main__ as entrypoint
 import eng_remember.remind as remind_entry
 from eng_remember.__main__ import prune_llm_calls_if_due
 from eng_remember.config import Settings
+from eng_remember.models.user import User
+from eng_remember.repositories.cards import CardDraft
+from eng_remember.services.container import Services
+from tests.conftest import RecordingSession
+from tests.factories import TEST_USER_ID, schedule
 
 
 class _DisposableEngine:
@@ -136,3 +144,92 @@ async def test_zero_days_never_prunes(
 
     assert stamp is None
     assert calls == []
+
+
+async def test_cron_sends_even_with_the_in_process_loop_off(
+    monkeypatch: pytest.MonkeyPatch,
+    settings: Settings,
+    session: AsyncSession,
+    session_factory: async_sessionmaker[AsyncSession],
+    user: User,
+    bot: Bot,
+    recording: RecordingSession,
+    services: Services,
+) -> None:
+    """``REMINDERS__ENABLED=false`` switches the loop off, not the command.
+
+    The documented multi-replica deployment relies on cron being the sender;
+    treating the flag as a global kill switch left that deployment silently
+    sending nothing at all.
+    """
+    settings.reminders.enabled = False
+    user.reminder_time = time(0, 0)
+    deck = await services.card_service.default_deck(user)
+    await services.cards.add(
+        user_id=user.id,
+        deck_id=deck.id,
+        draft=CardDraft(term="cron", translation="крон"),
+        schedule=schedule(-1),
+    )
+    await session.commit()
+
+    engine = _DisposableEngine()
+    monkeypatch.setattr(remind_entry, "get_settings", lambda: settings)
+    monkeypatch.setattr(remind_entry, "create_engine", lambda _: engine)
+    monkeypatch.setattr(remind_entry, "create_session_factory", lambda _: session_factory)
+    monkeypatch.setattr(remind_entry, "Bot", lambda **_: bot)
+
+    assert await remind_entry.main() == 0
+    assert len(recording.outbound) == 1
+    assert recording.outbound[0].chat_id == TEST_USER_ID
+    assert engine.disposed
+
+
+class _PollingDispatcher:
+    """Stands in for the dispatcher: polling returns at once, as if told to stop."""
+
+    def __init__(self) -> None:
+        self.polled = False
+
+    def resolve_used_update_types(self) -> list[str]:
+        return []
+
+    async def start_polling(self, *args: object, **kwargs: object) -> None:
+        # Yield once so tasks created just before polling get to run.
+        await asyncio.sleep(0.01)
+        self.polled = True
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_the_in_process_loop_starts_only_when_reminders_are_enabled(
+    enabled: bool,
+    monkeypatch: pytest.MonkeyPatch,
+    settings: Settings,
+    session_factory: async_sessionmaker[AsyncSession],
+    bot: Bot,
+) -> None:
+    """The flag belongs to the process: cron remains an explicit command.
+
+    The enabled case is the control: without it a broken harness could pass the
+    disabled one too.
+    """
+    settings.reminders.enabled = enabled
+    engine = _DisposableEngine()
+    dispatcher = _PollingDispatcher()
+    started: list[str] = []
+
+    async def fake_loop(**kwargs: object) -> None:
+        started.append("reminder-loop")
+
+    monkeypatch.setattr(entrypoint, "get_settings", lambda: settings)
+    monkeypatch.setattr(entrypoint, "create_engine", lambda _: engine)
+    monkeypatch.setattr(entrypoint, "create_session_factory", lambda _: session_factory)
+    monkeypatch.setattr(entrypoint, "build_dispatcher", lambda *a, **k: dispatcher)
+    monkeypatch.setattr(entrypoint, "Bot", lambda **_: bot)
+    monkeypatch.setattr(entrypoint, "reminder_loop", fake_loop)
+
+    await entrypoint.main()
+
+    assert dispatcher.polled
+    assert engine.disposed
+    assert (started != []) is enabled

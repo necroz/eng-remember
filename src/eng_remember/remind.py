@@ -6,6 +6,12 @@ The bot container runs this same pass on a timer; this entry point exists for th
 deployments that would rather keep scheduling outside the application, and for
 answering "why did/didn't I get a reminder?" by running it by hand.
 
+``REMINDERS__ENABLED`` switches the *in-process loop*, not this command: with
+several bot replicas it is switched off so that only one process sends, and the
+cron job is that process. Running this command is an explicit request for a pass,
+so it sends even when the flag is false; a flag that also silenced the command
+would leave the documented deployment sending nothing at all.
+
 Reminders are idempotent per day, so running this next to the in-process loop is
 safe but pointless — one of the two should be switched off. With several bot
 replicas, switch the loop off and drive this from cron instead: otherwise every
@@ -57,8 +63,16 @@ async def main() -> int:
         # and indexed, so a no-op costs one query.
         await prune_llm_calls_if_due(session_factory, settings)
 
+        # ``REMINDERS__ENABLED=false`` only stops the in-process loop; invoking
+        # this command is an explicit request for a pass, so the service must
+        # not second-guess it. Forcing the flag here (rather than relaxing the
+        # service) keeps the loop's kill switch honest.
+        tick_settings = settings.model_copy(
+            update={"reminders": settings.reminders.model_copy(update={"enabled": True})}
+        )
+
         async with session_factory() as session:
-            service = build_reminder_service(session, settings, BotNotifier(bot))
+            service = build_reminder_service(session, tick_settings, BotNotifier(bot))
             # The service commits each delivery itself; there is no batch left
             # to flush here.
             outcome = await service.run()

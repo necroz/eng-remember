@@ -56,7 +56,7 @@
 | `llm_quota_exceeded` | services/llm/quota.py | аккаунт упёрся в лимит — аномалия или злоупотребление |
 | `llm_global_budget_warning` / `llm_global_budget_exceeded` | services/llm/budget.py | глобальный бюджет на 80% / 100% |
 | `llm_budget_alert_failed` | services/llm/budget.py | не удалось отправить алерт админу |
-| `rate_limit_exceeded` | bot/middlewares/rate_limit.py | пользователь превысил 10 сообщений или 30 нажатий в минуту |
+| `rate_limit_exceeded` | bot/middlewares/rate_limit.py | пользователь превысил 30 сообщений или 30 нажатий в минуту |
 | `duplicate_message_ignored` | bot/middlewares/dedup.py | повтор одинакового текста внутри TTL |
 | `discovery_out_of_text` | services/discovery.py | модель выдумывает слова «из текста» — деградация качества |
 | `llm_parse_failed` | services/llm/parser.py | разбор ушёл в правила: сбой провайдера или ответ вне схемы |
@@ -76,8 +76,10 @@
 in-process цикла, а не процесса. При `REMINDERS__ENABLED=false` (несколько
 реплик, напоминания из cron) цикла нет, поэтому этих событий не будет: живость
 проверяет внешний монитор (systemd timer, cron с алертом на ненулевой код
-выхода, проверка свежих `llm_calls_pruned`/`reminder_tick` в логах). Суточная
-чистка аудита от этого не зависит: её делает и cron-команда.
+выхода, проверка свежих `llm_calls_pruned`/`reminder_tick` в логах). Флаг
+выключает только цикл: cron-команда `eng-remember-remind` шлёт напоминания при
+любом его значении. Суточная чистка аудита от этого не зависит: её делает и
+cron-команда.
 
 ## Runbook
 
