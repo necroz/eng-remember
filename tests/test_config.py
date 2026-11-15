@@ -49,6 +49,56 @@ def test_llm_budget_fits_reasoning_and_a_full_discovery_batch() -> None:
     assert llm.reasoning_effort is None
 
 
+def test_pool_defaults_cover_concurrency() -> None:
+    """A connection slot for every in-flight update, plus room for background work.
+
+    Each of the ``tasks_concurrency_limit`` updates may hold a session while it
+    waits for a model answer, and the reminder tick, the digest and the pruner
+    connect on their own. A pool smaller than that makes handlers queue on the
+    pool instead of doing their work.
+    """
+    settings = Settings(_env_file=None)
+
+    assert settings.db_pool_size + settings.db_max_overflow >= (
+        settings.bot.tasks_concurrency_limit + 5
+    )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "postgresql+asyncpg://eng:eng@localhost:55432/eng_remember",
+        "sqlite+aiosqlite:////tmp/eng-remember.db",
+        "sqlite://",
+    ],
+)
+def test_supported_database_urls_are_accepted(url: str) -> None:
+    assert Settings(_env_file=None, database_url=url).database_url == url
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "mysql://eng:eng@localhost/eng_remember",
+        # A synchronous driver would fail at the first query instead of at startup.
+        "postgresql://eng:eng@localhost/eng_remember",
+        "",
+    ],
+)
+def test_database_url_rejects_unknown_scheme(url: str) -> None:
+    with pytest.raises(ValidationError, match="database_url"):
+        Settings(_env_file=None, database_url=url)
+
+
+def test_log_level_normalized_and_validated() -> None:
+    """Operators type lower case; a typo must not silently fall back to INFO."""
+    assert Settings(_env_file=None, log_level="debug").log_level == "DEBUG"
+    assert Settings(_env_file=None, log_level=" Warning ").log_level == "WARNING"
+
+    with pytest.raises(ValidationError, match="log_level"):
+        Settings(_env_file=None, log_level="verbose")
+
+
 def test_inbound_guards_have_safe_defaults() -> None:
     bot = BotSettings()
 

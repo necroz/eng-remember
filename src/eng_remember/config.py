@@ -19,6 +19,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ParseModeName = Literal["HTML", "MarkdownV2", "Markdown"]
 
+# The engine is async, so each URL must name an async driver: a bare
+# ``postgresql://`` would hand SQLAlchemy the synchronous psycopg2 and fail at
+# the first query instead of at startup. SQLite needs no driver for the sync
+# form used by tooling.
+ALLOWED_DATABASE_SCHEMES = ("postgresql+asyncpg://", "sqlite+aiosqlite://", "sqlite://")
+
+LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+
 
 class BotSettings(BaseModel):
     """How the Telegram side behaves."""
@@ -251,8 +259,13 @@ class Settings(BaseSettings):
     # Port matches the mapping published by docker-compose.yml.
     database_url: str = "postgresql+asyncpg://eng:eng@localhost:55432/eng_remember"
     db_echo: bool = False
-    db_pool_size: int = Field(default=5, ge=1)
-    db_max_overflow: int = Field(default=10, ge=0)
+    # Every concurrent update may hold a session while it waits for the model,
+    # and the reminder tick, the digest and the pruner connect on their own.
+    # The pool therefore has to cover BOT__TASKS_CONCURRENCY_LIMIT plus
+    # background work; a smaller pool queues requests here instead of running
+    # them. 10 + 15 = 25 for the default limit of 20.
+    db_pool_size: int = Field(default=10, ge=1)
+    db_max_overflow: int = Field(default=15, ge=0)
 
     log_level: str = "INFO"
     log_json: bool = True
@@ -274,6 +287,29 @@ class Settings(BaseSettings):
     @property
     def is_sqlite(self) -> bool:
         return self.database_url.startswith("sqlite")
+
+    @field_validator("database_url")
+    @classmethod
+    def _known_database_scheme(cls, value: str) -> str:
+        url = value.strip()
+        if not url:
+            raise ValueError(
+                "database_url is empty; use one of " + ", ".join(ALLOWED_DATABASE_SCHEMES)
+            )
+        if not url.startswith(ALLOWED_DATABASE_SCHEMES):
+            raise ValueError(
+                f"database_url must start with one of {', '.join(ALLOWED_DATABASE_SCHEMES)}; "
+                f"got {url.split(':', 1)[0]}"
+            )
+        return url
+
+    @field_validator("log_level")
+    @classmethod
+    def _known_log_level(cls, value: str) -> str:
+        level = value.strip().upper()
+        if level not in LOG_LEVELS:
+            raise ValueError(f"log_level must be one of {', '.join(LOG_LEVELS)}; got {value!r}")
+        return level
 
 
 def require_bot_token(settings: Settings) -> str:
