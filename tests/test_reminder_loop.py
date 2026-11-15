@@ -36,17 +36,14 @@ TODAY = local_date("UTC")
 
 
 class RecordingNotifier:
-    """A notifier that remembers what it sent, and can refuse one chat."""
+    """A notifier that remembers what it sent."""
 
     def __init__(self) -> None:
         self.sent: list[ReminderPlan] = []
         self.sent_ids: list[int] = []
         self.alerts: list[str] = []
-        self.broken: set[int] = set()
 
     async def send_reminder(self, plan: ReminderPlan) -> None:
-        if plan.user.id in self.broken:
-            raise ConnectionError("network is down")
         self.sent.append(plan)
         self.sent_ids.append(plan.user.id)
 

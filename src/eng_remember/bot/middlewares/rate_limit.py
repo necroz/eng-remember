@@ -109,8 +109,12 @@ class RateLimitMiddleware(BaseMiddleware):
             "callback", from_user.id, limit=self._callbacks
         ):
             log.info("rate_limit_exceeded", user_id=from_user.id, kind="callback")
+            # Always answer: a callback left unanswered keeps its spinner until
+            # Telegram gives up. The visible alert is throttled, the answer is not.
             if self._should_reply(("callback", from_user.id)):
                 await event.answer(texts.too_many_requests(), show_alert=True)
+            else:
+                await event.answer()
             return None
 
         return await handler(event, data)

@@ -90,6 +90,12 @@ def test_database_url_rejects_unknown_scheme(url: str) -> None:
         Settings(_env_file=None, database_url=url)
 
 
+def test_the_sync_postgresql_url_names_the_async_driver() -> None:
+    """The most common mistake gets an actionable message, not just "got ..."."""
+    with pytest.raises(ValidationError, match="asyncpg"):
+        Settings(_env_file=None, database_url="postgresql://user:pass@host/db")
+
+
 def test_log_level_normalized_and_validated() -> None:
     """Operators type lower case; a typo must not silently fall back to INFO."""
     assert Settings(_env_file=None, log_level="debug").log_level == "DEBUG"
@@ -170,13 +176,14 @@ class TestBotToken:
 
 
 class TestEnvironmentIsolation:
-    """Exported variables must not change what the suite measures."""
+    """Exported variables must not change what the suite measures.
 
-    def test_the_settings_fixture_ignores_an_exported_api_key(
-        self, settings: Settings, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The fixture removed it before this test's settings were built."""
-        assert settings.llm.api_key is None
+    The autouse fixture removes every settings prefix before each test, so any
+    test that builds ``Settings`` starts from a clean environment. The guard
+    below proves the neutraliser itself removes the prefixes and keeps unrelated
+    variables; the fixture's ordering is exercised by every other test in the
+    suite, not by a test that could only see its after-state.
+    """
 
     def test_neutralisation_removes_settings_variables_and_keeps_the_rest(
         self, monkeypatch: pytest.MonkeyPatch

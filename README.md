@@ -203,6 +203,7 @@ make docker-up / docker-down / docker-logs
 - [Дизайн, модель данных и компромиссы](docs/superpowers/specs/2026-10-12-eng-remember-design.md)
 - [Деплой: Docker, LLM, бэкап, диагностика](docs/deploy.md)
 - [Безопасность: лимиты, логи, инциденты](docs/security.md)
+- [Миграции: правила безопасных ревизий](docs/migrations.md)
 
 ## Обратная связь
 

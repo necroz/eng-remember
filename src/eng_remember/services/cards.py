@@ -23,7 +23,20 @@ from eng_remember.services.llm.schema import (
 )
 from eng_remember.utils.time import ensure_utc, local_day_start, next_local_day_start, utcnow
 
-__all__ = ["CardService", "ImportOutcome", "UserStats"]
+__all__ = ["CardEdit", "CardService", "ImportOutcome", "UserStats"]
+
+
+@dataclass(frozen=True, slots=True)
+class CardEdit:
+    """What a manual edit did.
+
+    ``truncated`` is true when the pasted text was longer than the field's
+    limit and had to be cut: the caller tells the learner instead of claiming
+    the card was stored exactly as typed.
+    """
+
+    card: Card | None
+    truncated: bool
 
 
 @dataclass(slots=True)
@@ -233,7 +246,7 @@ class CardService:
         translation: str | None = None,
         example: str | None = None,
         notes: str | None = None,
-    ) -> Card | None:
+    ) -> CardEdit:
         """Change the text of a card, leaving its schedule untouched.
 
         Only the fields the learner actually changed are passed: ``None`` means
@@ -247,29 +260,39 @@ class CardService:
         that the next card and review would then try to send. Line breaks are
         the learner's formatting in notes, not in the one-line fields.
 
-        Returns ``None`` when the card does not exist or belongs to someone
-        else; the caller answers with the stale-card page.
+        Returns ``CardEdit(card=None, ...)`` when the card does not exist or
+        belongs to someone else; ``truncated`` marks a paste that had to be cut.
         """
         card = await self._cards.get(card_id, user_id=user.id)
         if card is None:
-            return None
+            return CardEdit(card=None, truncated=False)
 
+        new_translation = (
+            card.translation
+            if translation is None
+            else flatten_line(translation, limit=TRANSLATION_LIMIT)
+        )
+        new_example = (
+            card.example if example is None else flatten_line(example, limit=EXAMPLE_LIMIT)
+        )
+        new_notes = (
+            card.notes
+            if notes is None
+            else flatten_line(notes, limit=NOTES_LIMIT, keep_newlines=True)
+        )
+        truncated = (
+            (translation is not None and new_translation != translation.strip())
+            or (example is not None and new_example != example.strip())
+            or (notes is not None and new_notes != notes.strip())
+        )
         draft = CardDraft(
             term=card.term,
-            translation=(
-                card.translation
-                if translation is None
-                else flatten_line(translation, limit=TRANSLATION_LIMIT)
-            ),
+            translation=new_translation,
             transcription=card.transcription,
             part_of_speech=card.part_of_speech,
-            example=card.example if example is None else flatten_line(example, limit=EXAMPLE_LIMIT),
+            example=new_example,
             examples=tuple(card.examples or ()),
-            notes=(
-                card.notes
-                if notes is None
-                else flatten_line(notes, limit=NOTES_LIMIT, keep_newlines=True)
-            ),
+            notes=new_notes,
             tags=tuple(card.tags or ()),
             cefr=card.cefr,
             frequency=card.frequency,
@@ -278,7 +301,7 @@ class CardService:
         if not draft.normalized().translation:
             raise EmptyDraftError()
         await self._cards.update_content(card, draft)
-        return card
+        return CardEdit(card=card, truncated=truncated)
 
     async def suspend(self, user: User, card_id: int, *, suspended: bool = True) -> Card | None:
         """Pause or resume the whole word: the twin follows its sibling."""

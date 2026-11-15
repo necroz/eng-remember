@@ -1,7 +1,8 @@
 """Routers, in match order.
 
-``capture`` is deliberately last: it catches any plain text that no specific
-handler claimed, so it has to be the fallback rather than a competitor.
+``capture`` is the catch-all for plain text: it must come after every specific
+handler. The dispatcher's fallback router for unknown callbacks is registered
+after all of these.
 """
 
 from eng_remember.bot.routers import (

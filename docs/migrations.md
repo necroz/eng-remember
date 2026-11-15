@@ -61,7 +61,7 @@ def upgrade() -> None:
         if not ids:
             break
         bind.execute(
-            sa.text("UPDATE cards SET language = 'en' WHERE id = ANY(:ids)"),
+            sa.text("UPDATE cards SET language = 'en' WHERE id = ANY(CAST(:ids AS integer[]))"),
             {"ids": ids},
         )
         bind.commit()  # каждая пачка — своя транзакция
@@ -166,8 +166,8 @@ uv run alembic upgrade head                         # повторный нак�
 ```
 
 CI прогоняет то же самое: `upgrade head` дважды, `alembic check`, раундтрип
-`downgrade -1 && upgrade head` на тестовой базе. Ревизия, которая проходит
-локально, но не переживает откат, ломает CI, а не прод.
+`downgrade -1 && upgrade head` на служебной базе джоба. Ревизия, которая
+проходит локально, но не переживает откат, ломает CI, а не прод.
 
 ## Если миграция уже идёт и что-то пошло не так
 
@@ -176,6 +176,8 @@ CI прогоняет то же самое: `upgrade head` дважды, `alembi
 - Посмотреть, на какой ревизии база: `docker compose run --rm migrate alembic current`.
 - Упавшая ревизия откатилась целиком (`transaction_per_migration`), поэтому
   лечится исправлением ревизии и повторным запуском, а не ручным добиванием
-  полуприменённой схемы.
+  полуприменённой схемы. Исключение — ревизия с коммитами по пачкам (backfill):
+  применённые пачки остаются, а повторный запуск продолжает с курсора; именно
+  поэтому условие `WHERE ... IS NULL` в таких ревизиях обязательно.
 - `downgrade` с разрушающими изменениями — только после бэкапа
   ([deploy.md](deploy.md#бэкап-и-восстановление)).
