@@ -14,6 +14,8 @@ from aiogram.filters.callback_data import CallbackData
 __all__ = [
     "ClarifyAction",
     "ClarifyCB",
+    "DeckAction",
+    "DeckCB",
     "FileImportAction",
     "FileImportCB",
     "ImportAction",
@@ -38,6 +40,7 @@ PauseAction = Literal["resume"]
 PracticeAction = Literal["start", "answer"]
 FileImportAction = Literal["confirm", "cancel"]
 LevelAction = Literal["set", "reset"]
+DeckAction = Literal["rn", "dl", "ok", "dc", "rc"]
 
 
 class ReviewCB(CallbackData, prefix="rv"):
@@ -118,3 +121,19 @@ class LevelCB(CallbackData, prefix="lv"):
 
     action: LevelAction
     level: str = ""
+
+
+class DeckCB(CallbackData, prefix="dk"):
+    """A row of the /decks list or the decision it asked for.
+
+    The deck id travels in the payload, so a button left in the chat history
+    addresses the deck it was drawn for. A deck that has been deleted since then
+    is reported instead of acting on whatever now answers to that id.
+
+    ``rn`` starts a rename, ``dl`` asks whether to delete, ``ok`` deletes after
+    that question, ``dc`` abandons the deletion and ``rc`` the rename — the two
+    cancellations stay apart because they abandon different flows.
+    """
+
+    action: DeckAction
+    deck_id: int = 0

@@ -41,6 +41,9 @@ PREVIEW_ROWS = 10
 PREVIEW_DRAFTS = 30
 PREVIEW_DECKS = 50
 PREVIEW_PAUSED = 20
+# Deck names are typed in a chat window; the limit is short enough to read whole
+# in a button and in the list line, long enough for a topic name.
+DECK_NAME_LIMIT = 64
 
 
 def _joined_length(lines: Sequence[str]) -> int:
@@ -124,7 +127,17 @@ __all__ = [
     "clarification",
     "clarification_answered",
     "clarification_skipped",
+    "deck_default_undeletable",
+    "deck_delete_cancelled",
+    "deck_delete_confirm",
+    "deck_deleted",
     "deck_list",
+    "deck_name_invalid",
+    "deck_name_taken",
+    "deck_rename_cancelled",
+    "deck_rename_prompt",
+    "deck_renamed",
+    "deck_unavailable",
     "discovery_empty",
     "discovery_needs_context",
     "discovery_preview",
@@ -1143,11 +1156,56 @@ def deck_list(rows: list[tuple[str, int]], total: int) -> str:
     lines = _fit_entries(
         [f"📚 <b>Колоды</b> — всего слов: {total}", ""],
         entries,
-        [],
+        ["", "<i>✏️ — переименовать, 🗑 — удалить колоду.</i>"],
         total=deck_total,
         footer=_more_footer(deck_total),
     )
     return fit_text("\n".join(lines))
+
+
+def deck_delete_confirm(name: str, cards: int) -> str:
+    word = _plural(cards, "карточка", "карточки", "карточек")
+    return f"🗑 Удалить колоду «{escape(name)}»? В ней {cards} {word}. Это необратимо."
+
+
+def deck_deleted(name: str) -> str:
+    return f"Колода «{escape(name)}» удалена."
+
+
+def deck_delete_cancelled() -> str:
+    return "Удаление отменено — колода на месте."
+
+
+def deck_default_undeletable() -> str:
+    """The refusal: the default deck is where uncategorised words land."""
+    return "Основную колоду удалить нельзя — в неё попадают новые слова."
+
+
+def deck_rename_prompt(name: str) -> str:
+    return (
+        f"✏️ Новое имя для колоды «{escape(name)}»?\n\n"
+        f"Напишите его одним сообщением — до {DECK_NAME_LIMIT} символов."
+    )
+
+
+def deck_renamed(old_name: str, new_name: str) -> str:
+    return f"✅ Колода «{escape(old_name)}» теперь «{escape(new_name)}»."
+
+
+def deck_rename_cancelled() -> str:
+    return "Переименование отменено."
+
+
+def deck_name_invalid() -> str:
+    return f"Имя колоды не может быть пустым или длиннее {DECK_NAME_LIMIT} символов."
+
+
+def deck_name_taken(name: str) -> str:
+    return f"Колода «{escape(name)}» уже есть — напишите другое имя."
+
+
+def deck_unavailable() -> str:
+    return "Колода больше не доступна — откройте список заново."
 
 
 def stats(

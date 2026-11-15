@@ -12,6 +12,7 @@ __all__ = [
     "CONTEXT_KEY",
     "CORRECT_COUNT_KEY",
     "COUNT_KEY",
+    "DECK_ID_KEY",
     "DRAFT_KEY",
     "ENGINE_KEY",
     "EXAMPLE_KEY",
@@ -39,6 +40,7 @@ __all__ = [
     "TEXT_INPUT_STATES",
     "TOPIC_KEY",
     "AddWords",
+    "DeckRename",
     "ImportFile",
     "Practice",
     "Review",
@@ -107,6 +109,11 @@ FILE_DUPLICATES_KEY = "file_duplicates"
 FILE_UNTRANSLATED_KEY = "file_untranslated"
 FILE_FILLED_KEY = "file_filled"
 
+# The deck-rename dialogue: which deck the name being typed belongs to. Stored
+# rather than carried by the message, because the learner answers the prompt in
+# a message of their own and it must not be able to rename another deck.
+DECK_ID_KEY = "deck_id"
+
 
 class AddWords(StatesGroup):
     """Waiting for the user to confirm a parsed batch of cards."""
@@ -135,6 +142,12 @@ class ImportFile(StatesGroup):
     confirming = State()
 
 
+class DeckRename(StatesGroup):
+    """Waiting for the new name of a deck the /decks list offered to rename."""
+
+    awaiting_name = State()
+
+
 # States in which the next plain text is consumed by the flow itself: a review
 # answer, a clarification answer. Guards give these a pass, because repeating an
 # answer is legitimate. Button-only states (``AddWords.confirming``,
@@ -150,6 +163,7 @@ TEXT_INPUT_STATES: frozenset[str] = frozenset(
         # but these states belong to groups, so the full name is always there.
         cast(str, AddWords.clarifying.state),
         cast(str, Review.awaiting_answer.state),
+        cast(str, DeckRename.awaiting_name.state),
     }
 )
 
