@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, time, timedelta
+from typing import Any
 
 import pytest
 from sqlalchemy import select, update
@@ -17,7 +18,7 @@ from eng_remember.models.card import Card
 from eng_remember.models.review import Review
 from eng_remember.models.user import User
 from eng_remember.repositories.cards import CardDraft
-from eng_remember.repositories.users import TelegramProfile
+from eng_remember.repositories.users import TelegramProfile, UserRepository
 from eng_remember.services.container import Services
 from eng_remember.services.reminders import ReminderPlan, ReminderService, build_reminder_service
 from eng_remember.utils.time import local_date, utcnow
@@ -568,6 +569,47 @@ class TestBatching:
 
         run = await reminders.run(now=moment(9, 0))
 
+        assert run.sent_count == 5
+        assert len({plan.user.id for plan in notifier.sent}) == 5
+
+    async def test_the_cursor_walks_past_the_first_batch(
+        self,
+        services: Services,
+        session: AsyncSession,
+        settings: Settings,
+        notifier: RecordingNotifier,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Five learners with a page size of two: all of them, not the first page.
+
+        The tick restarts from the lowest id every time, so a walk that stopped
+        at one batch would leave everybody past the first page unreminded — and
+        no later tick would pick them up either.
+        """
+        settings.reminders.batch_size = 2
+        service = build_reminder_service(session, settings, notifier)
+
+        pages: list[int] = []
+        fetch = UserRepository.list_reminder_candidates
+
+        async def counting(self: UserRepository, **kwargs: Any) -> list[User]:
+            found = await fetch(self, **kwargs)
+            pages.append(len(found))
+            return found
+
+        monkeypatch.setattr(UserRepository, "list_reminder_candidates", counting)
+
+        for index in range(5):
+            learner, _ = await services.users.get_or_create(
+                TelegramProfile(telegram_id=400000 + index)
+            )
+            await give_work(services, learner)
+        await session.commit()
+
+        run = await service.run(now=moment(9, 0))
+
+        assert pages == [2, 2, 1, 0], pages
+        assert run.candidates == 5
         assert run.sent_count == 5
         assert len({plan.user.id for plan in notifier.sent}) == 5
 

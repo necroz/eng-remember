@@ -13,7 +13,7 @@ from eng_remember.services.container import Services
 from eng_remember.utils.time import utcnow
 from tests.conftest import RecordingSession, make_due
 from tests.factories import ScriptedClient, card_payload, parse_payload
-from tests.test_bot_flow import send, tap
+from tests.helpers import send, tap
 
 
 def button_data(recording: RecordingSession, needle: str) -> str:

@@ -34,18 +34,9 @@ from tests.factories import (
     TEST_USER_ID,
     ScriptedClient,
     card_payload,
-    make_callback_update,
-    make_message_update,
     parse_payload,
 )
-
-
-async def send(dispatcher: Dispatcher, bot: Bot, text: str, **kwargs: object) -> None:
-    await dispatcher.feed_update(bot, make_message_update(text, **kwargs))  # type: ignore[arg-type]
-
-
-async def tap(dispatcher: Dispatcher, bot: Bot, data: str, **kwargs: object) -> None:
-    await dispatcher.feed_update(bot, make_callback_update(data, **kwargs))  # type: ignore[arg-type]
+from tests.helpers import send, tap
 
 
 def button_with(recording: RecordingSession, needle: str) -> str:
@@ -775,19 +766,24 @@ class TestOtherCommands:
 
         assert "Нужно число" in recording.last_text()
 
+    @pytest.mark.parametrize("digits", ["²", "٣", "٨"])
     async def test_the_daily_limit_rejects_unicode_digits(
         self,
+        digits: str,
         dispatcher: Dispatcher,
         bot: Bot,
         recording: RecordingSession,
         session_factory: async_sessionmaker[AsyncSession],
     ) -> None:
-        """``²`` is a digit to ``str.isdigit`` but not a number to ``int``.
+        """Only ASCII digits are a number the learner meant to type.
 
-        The handler must answer with its validation message rather than letting
-        the conversion error escape as a generic failure.
+        ``²`` is a digit to ``str.isdigit`` and not a number to ``int`` — the old
+        handler crashed there. ``٣`` and ``٨`` are worse: ``int`` reads them as 3
+        and 8, so the old check accepted a value nobody typed and quietly moved
+        the daily budget. All three must get the validation message and leave the
+        setting alone.
         """
-        await send(dispatcher, bot, "/limit ²")
+        await send(dispatcher, bot, f"/limit {digits}")
 
         assert "Нужно число" in recording.last_text()
         async with session_factory() as check:

@@ -15,7 +15,7 @@ from eng_remember.repositories.cards import CardDraft
 from eng_remember.services.container import Services
 from eng_remember.utils.time import utcnow
 from tests.conftest import RecordingSession, make_due
-from tests.test_bot_flow import send
+from tests.helpers import send
 
 
 async def seed_reverse_due(

@@ -16,15 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from eng_remember.bot.callbacks import ReviewCB
 from eng_remember.models.user import User
 from tests.conftest import RecordingSession, make_due
-from tests.factories import make_callback_update, make_message_update
-
-
-async def send(dispatcher: Dispatcher, bot: Bot, text: str, **kwargs: object) -> None:
-    await dispatcher.feed_update(bot, make_message_update(text, **kwargs))  # type: ignore[arg-type]
-
-
-async def tap(dispatcher: Dispatcher, bot: Bot, data: str, **kwargs: object) -> None:
-    await dispatcher.feed_update(bot, make_callback_update(data, **kwargs))  # type: ignore[arg-type]
+from tests.helpers import send, tap
 
 
 def confirm_button(recording: RecordingSession) -> str:

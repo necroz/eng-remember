@@ -20,7 +20,7 @@ from eng_remember.services.reminders import ReminderPlan, WeeklyDigest
 from eng_remember.utils.time import parse_clock
 from tests.conftest import RecordingSession
 from tests.factories import TEST_USER_ID
-from tests.test_bot_flow import send
+from tests.helpers import send
 
 
 async def with_card(services: Services, user: User) -> None:

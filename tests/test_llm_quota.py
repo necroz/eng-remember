@@ -22,14 +22,8 @@ from eng_remember.repositories.llm_calls import LlmCallRecord, LlmCallRepository
 from eng_remember.repositories.users import TelegramProfile, UserRepository
 from eng_remember.services.llm.budget import GlobalBudgetMonitor
 from eng_remember.services.llm.factory import build_llm_client
-from eng_remember.services.llm.quota import GlobalUsageCache, QuotaLimitedClient, global_usage_cache
+from eng_remember.services.llm.quota import GlobalUsageCache, QuotaLimitedClient
 from eng_remember.services.llm.schema import ParseResponse
-
-
-@pytest.fixture(autouse=True)
-def _fresh_global_usage_cache() -> None:
-    """The bot-wide usage cache is process-wide; no test may inherit a total."""
-    global_usage_cache.clear()
 
 
 class RecordingModel:

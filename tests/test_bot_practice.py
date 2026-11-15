@@ -23,7 +23,7 @@ from eng_remember.repositories.cards import CardDraft
 from eng_remember.services.container import Services
 from tests.conftest import TEST_TOKEN, RecordingSession
 from tests.factories import schedule
-from tests.test_bot_flow import send, tap
+from tests.helpers import send, tap
 
 
 async def seed_seen(

@@ -19,8 +19,8 @@ from eng_remember.models.card import Card
 from eng_remember.models.review import Review
 from eng_remember.utils.time import utcnow
 from tests.conftest import RecordingSession, make_due
+from tests.helpers import send, tap
 from tests.test_bot_files import CSV_TEXT, patch_file, send_file
-from tests.test_bot_flow import send, tap
 
 
 def callback_answers(recording: RecordingSession) -> list[AnswerCallbackQuery]:
