@@ -51,6 +51,9 @@ class RecordingNotifier:
             raise ConnectionError("network is down")
         self.sent.append(plan)
 
+    async def send_alert(self, text: str) -> None:
+        """The service does not alert; the loop does. Nothing to record here."""
+
 
 @pytest.fixture
 def notifier() -> RecordingNotifier:

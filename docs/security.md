@@ -63,10 +63,14 @@
 | `discovery_failed` / `discovery_quota_exceeded` | bot/routers/capture.py | подбор слов не удался, пользователь получил отказ |
 | `handler_failed` | bot/routers/errors.py | необработанное исключение, есть traceback |
 | `reminder_failed` / `reminder_unreachable` | services/reminders.py | напоминание не доставлено |
+| `reminder_tick_finished` | __main__.py | тик завершён: `duration_ms`, `users_processed`, `sent`, `failed`, `unreachable` |
+| `reminder_tick_crashed` | __main__.py | тик упал (traceback); дублируется алертом в `BOT__ADMIN_CHAT_ID` |
+| `bot_heartbeat` | __main__.py | раз в N тиков: `pool_checked_out`/`pool_size` — процесс жив |
 | `llm_calls_pruned` / `llm_calls_prune_failed` | __main__.py | суточная чистка аудита: строк удалено / чистка не удалась |
 | `user_unblocked` | bot/middlewares/user.py | ранее недоставляемый аккаунт снова написал боту — флаг снят |
 
-Минимальный алерт: непустой поток `llm_quota_exceeded` и `handler_failed`.
+Минимальный алерт: непустой поток `llm_quota_exceeded`, `handler_failed` и
+`reminder_tick_crashed` (последний также уходит в admin-чат, если он задан).
 
 ## Runbook
 

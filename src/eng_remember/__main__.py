@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import sys
+import time
 from datetime import date, datetime, timedelta
 
 import structlog
@@ -29,6 +30,10 @@ from eng_remember.services.reminders import Notifier, build_reminder_service
 from eng_remember.utils.time import ensure_utc, local_date, utcnow
 
 log = structlog.get_logger(__name__)
+
+# One heartbeat an hour at the default ten-minute tick: often enough that a
+# monitor notices a wedged process, rare enough not to drown the log.
+_HEARTBEAT_EVERY_TICKS = 6
 
 COMMANDS = [
     BotCommand(command="review", description="Повторить слова"),
@@ -173,9 +178,14 @@ async def reminder_loop(
     ``notifier`` exists for tests and for a caller that already has a delivery
     channel; production omits it and gets a :class:`BotNotifier`.
     """
-    delivery = notifier if notifier is not None else BotNotifier(bot)
+    delivery = (
+        notifier
+        if notifier is not None
+        else BotNotifier(bot, admin_chat_id=settings.bot.admin_chat_id)
+    )
     interval = settings.reminders.tick_seconds
     pruned_on: date | None = None
+    ticks = 0
 
     while not stopping.is_set():
         # Retention is a daily housekeeping job, not a per-tick one: the audit
@@ -194,19 +204,61 @@ async def reminder_loop(
             else:
                 pruned_on = today
 
+        started = time.monotonic()
         try:
             async with session_factory() as session:
                 service = build_reminder_service(session, settings, delivery)
-                await service.run()
+                run = await service.run()
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as exc:
             # A failing tick must not kill the loop: the next one may well work,
-            # and reminders are not worth taking the bot down for.
+            # and reminders are not worth taking the bot down for. The operator
+            # hears about it in the admin chat, not only in the log stream.
             log.exception("reminder_tick_crashed")
+            await _alert_tick_crash(delivery, exc)
+        else:
+            log.info(
+                "reminder_tick_finished",
+                duration_ms=int((time.monotonic() - started) * 1000),
+                users_processed=run.candidates,
+                sent=run.sent_count,
+                unreachable=len(run.unreachable),
+                failed=len(run.failed),
+            )
+
+        ticks += 1
+        if ticks % _HEARTBEAT_EVERY_TICKS == 0:
+            log.info("bot_heartbeat", tick=ticks, **_pool_stats(session_factory))
 
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(stopping.wait(), timeout=interval)
+
+
+async def _alert_tick_crash(notifier: Notifier, error: Exception) -> None:
+    """Put a crashed tick in front of a human, without failing the loop again."""
+    try:
+        await notifier.send_alert(
+            f"Тик напоминаний упал: {type(error).__name__}: {error}. Бот продолжает работу."
+        )
+    except Exception as exc:
+        log.warning("reminder_tick_alert_failed", error=str(exc))
+
+
+def _pool_stats(session_factory: SessionFactory) -> dict[str, int]:
+    """Connection-pool occupancy for the heartbeat, best effort.
+
+    SQLite uses pools that do not implement ``size()``; a heartbeat without the
+    numbers is still a heartbeat, so a missing implementation is not an error.
+    """
+    engine = session_factory.kw.get("bind")
+    pool = getattr(engine, "pool", None)
+    if pool is None:
+        return {}
+    try:
+        return {"pool_checked_out": pool.checkedout(), "pool_size": pool.size()}
+    except NotImplementedError:
+        return {}
 
 
 async def prune_llm_calls(

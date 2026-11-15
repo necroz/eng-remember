@@ -82,29 +82,43 @@ def _disable_retention(settings: Settings) -> None:
     settings.llm_call_retention_days = 0
 
 
+class _StoppingFactory:
+    """A session factory that ends the loop when the ``stop_at``-th tick begins.
+
+    The event is checked at the top of the loop, so setting it here still lets
+    that tick run and only then ends the loop. It forwards ``kw`` so the
+    heartbeat can still find the engine's pool.
+    """
+
+    def __init__(
+        self,
+        factory: async_sessionmaker[AsyncSession],
+        stopping: asyncio.Event,
+        *,
+        stop_at: int,
+    ) -> None:
+        self._factory = factory
+        self._stopping = stopping
+        self._stop_at = stop_at
+        self._calls = 0
+        self.kw = factory.kw
+
+    @asynccontextmanager
+    async def __call__(self) -> AsyncIterator[AsyncSession]:
+        self._calls += 1
+        if self._calls == self._stop_at:
+            self._stopping.set()
+        async with self._factory() as session:
+            yield session
+
+
 def stopping_factory(
     factory: async_sessionmaker[AsyncSession],
     stopping: asyncio.Event,
     *,
     stop_at: int,
 ) -> SessionFactory:
-    """Wrap a session factory and set ``stopping`` as the stop_at-th tick begins.
-
-    The event is checked at the top of the loop, so setting it here still lets
-    that tick run and only then ends the loop.
-    """
-    calls = 0
-
-    @asynccontextmanager
-    async def make() -> AsyncIterator[AsyncSession]:
-        nonlocal calls
-        calls += 1
-        if calls == stop_at:
-            stopping.set()
-        async with factory() as session:
-            yield session
-
-    return cast(SessionFactory, make)
+    return cast(SessionFactory, _StoppingFactory(factory, stopping, stop_at=stop_at))
 
 
 async def wait_for_sends(notifier: RecordingNotifier, count: int) -> None:
@@ -305,3 +319,116 @@ def test_the_bot_gets_a_grace_period_longer_than_the_llm_timeout() -> None:
     text = compose.read_text(encoding="utf-8")
     bot_section = text.split("\n  bot:", 1)[1]
     assert "stop_grace_period: 130s" in bot_section
+
+
+class RecordingLog:
+    """Captures the structured events the loop emits, without a log backend."""
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict[str, Any]]] = []
+
+    def info(self, event: str, **fields: Any) -> None:
+        self.events.append((event, fields))
+
+    def warning(self, event: str, **fields: Any) -> None:
+        self.events.append((event, fields))
+
+    def exception(self, event: str, **fields: Any) -> None:
+        self.events.append((event, fields))
+
+
+async def test_tick_crash_alerts_admin(
+    session_factory: async_sessionmaker[AsyncSession],
+    settings: Settings,
+    bot: Bot,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A crashed tick reaches the operator's chat, not only the log."""
+    _disable_retention(settings)
+    settings.reminders.tick_seconds = 0
+    stopping = asyncio.Event()
+    notifier = RecordingNotifier()
+    log = RecordingLog()
+    original = build_reminder_service
+    built = 0
+
+    def flaky(*args: Any, **kwargs: Any) -> ReminderService:
+        nonlocal built
+        built += 1
+        if built == 1:
+            raise RuntimeError("boom")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(entrypoint, "build_reminder_service", flaky)
+    monkeypatch.setattr(entrypoint, "log", log)
+
+    await reminder_loop(
+        bot=bot,
+        session_factory=stopping_factory(session_factory, stopping, stop_at=2),
+        settings=settings,
+        stopping=stopping,
+        notifier=notifier,
+    )
+
+    assert len(notifier.alerts) == 1
+    assert "напоминаний" in notifier.alerts[0]
+    assert "boom" in notifier.alerts[0]
+    assert any(event == "reminder_tick_crashed" for event, _ in log.events)
+
+
+async def test_tick_finished_reports_duration_and_counts(
+    session_factory: async_sessionmaker[AsyncSession],
+    services: Services,
+    settings: Settings,
+    bot: Bot,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every successful tick says how long it took and how much it did."""
+    await make_learner(services, 500031)
+    _disable_retention(settings)
+    settings.reminders.tick_seconds = 0
+    stopping = asyncio.Event()
+    log = RecordingLog()
+    monkeypatch.setattr(entrypoint, "log", log)
+
+    await reminder_loop(
+        bot=bot,
+        session_factory=stopping_factory(session_factory, stopping, stop_at=2),
+        settings=settings,
+        stopping=stopping,
+        notifier=RecordingNotifier(),
+    )
+
+    finished = [fields for event, fields in log.events if event == "reminder_tick_finished"]
+    assert finished
+    assert finished[0]["users_processed"] == 1
+    assert finished[0]["sent"] == 1
+    assert finished[0]["duration_ms"] >= 0
+
+
+async def test_bot_heartbeat_reports_pool(
+    session_factory: async_sessionmaker[AsyncSession],
+    settings: Settings,
+    bot: Bot,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A periodic heartbeat lets external monitoring see the process is alive."""
+    _disable_retention(settings)
+    settings.reminders.tick_seconds = 0
+    stopping = asyncio.Event()
+    log = RecordingLog()
+    monkeypatch.setattr(entrypoint, "log", log)
+    monkeypatch.setattr(entrypoint, "_HEARTBEAT_EVERY_TICKS", 2)
+
+    await reminder_loop(
+        bot=bot,
+        session_factory=stopping_factory(session_factory, stopping, stop_at=3),
+        settings=settings,
+        stopping=stopping,
+        notifier=RecordingNotifier(),
+    )
+
+    beats = [fields for event, fields in log.events if event == "bot_heartbeat"]
+    assert len(beats) == 1
+    assert beats[0]["pool_size"] >= 1
+    assert beats[0]["pool_checked_out"] >= 0

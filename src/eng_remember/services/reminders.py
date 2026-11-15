@@ -80,9 +80,14 @@ class Notifier(Protocol):
     caller's options explicit: an unreachable account is retired, a transport
     failure is retried later, and neither can be mistaken for the other. Rendering
     is the notifier's job, so this service never touches user-facing text.
+
+    ``send_alert`` is the operator channel: the loop uses it for a crashed tick,
+    and a notifier without an admin chat configured quietly ignores it.
     """
 
     async def send_reminder(self, plan: ReminderPlan) -> None: ...
+
+    async def send_alert(self, text: str) -> None: ...
 
 
 @dataclass(slots=True)

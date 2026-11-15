@@ -362,6 +362,25 @@ class TestNotifier:
         with pytest.raises(RecipientUnreachable):
             await BotNotifier(bot).send_reminder(plan_for(user))
 
+    async def test_an_alert_goes_to_the_admin_chat(
+        self, bot: Bot, recording: RecordingSession
+    ) -> None:
+        notifier = BotNotifier(bot, admin_chat_id=777)
+
+        await notifier.send_alert("Тик напоминаний упал: boom")
+
+        assert len(recording.requests) == 1
+        assert getattr(recording.requests[0], "chat_id", None) == 777
+        assert "Тик напоминаний упал" in recording.last_text()
+
+    async def test_an_alert_is_dropped_without_an_admin_chat(
+        self, bot: Bot, recording: RecordingSession
+    ) -> None:
+        """No admin configured is not an error: the log still has the crash."""
+        await BotNotifier(bot).send_alert("Тик напоминаний упал: boom")
+
+        assert recording.requests == []
+
 
 class TestMessageTexts:
     def test_the_morning_message_lists_what_is_waiting(self) -> None:
