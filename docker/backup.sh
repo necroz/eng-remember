@@ -48,14 +48,20 @@ dump() {
     esac
 
     mkdir -p "$BACKUP_DIR"
-    # One dump per day: a second run the same day replaces it, and the mv is
-    # atomic, so a reader never sees a half-written file under the final name.
+    # One dump per day: a second run the same day replaces it, and the final mv
+    # is atomic, so a reader never sees a half-written file under the date name.
+    # The in-progress name carries this process's pid: cron and a manual
+    # `docker compose run --rm backup dump` can run at the same time, and a
+    # shared `.part` would let them overwrite each other's bytes. The trap drops
+    # the partial file when pg_dump fails, so a failed run leaves nothing behind.
     target="$BACKUP_DIR/eng-remember-$(date -u +%F).dump"
-    partial="$target.part"
+    partial="$target.$$.part"
+    trap 'rm -f "$partial"' EXIT
     # Custom format (-Fc) is compressed and is what pg_restore expects.
     pg_dump --host="$PGHOST" --port="$PGPORT" --username="$POSTGRES_USER" \
         --dbname="$POSTGRES_DB" --format=custom --file="$partial"
     mv "$partial" "$target"
+    trap - EXIT
     echo "backup: wrote $target ($(wc -c <"$target") bytes)"
     prune
 }
