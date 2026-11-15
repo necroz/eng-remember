@@ -61,7 +61,11 @@ def upgrade() -> None:
         if not ids:
             break
         bind.execute(
-            sa.text("UPDATE cards SET language = 'en' WHERE id = ANY(CAST(:ids AS integer[]))"),
+            sa.text("UPDATE cards SET language = 'en' WHERE id = ANY(:ids)").bindparams(
+                # asyncpg не выводит тип массива из одного ``:ids``: без явного
+                # ARRAY он отвечает «could not determine data type of parameter».
+                sa.bindparam("ids", type_=sa.ARRAY(sa.Integer))
+            ),
             {"ids": ids},
         )
         bind.commit()  # каждая пачка — своя транзакция
@@ -72,6 +76,15 @@ def upgrade() -> None:
 всё, что уже пройдено, и на большой таблице деградирует квадратично. Условие
 `WHERE ... IS NULL` при этом сохраняется, поэтому повторный запуск после
 падения продолжает с места, а не начинает заново.
+
+**Ревизия с батч-коммитами — исключение из «одна ревизия — одна
+транзакция».** `bind.commit()` фиксирует пачки по ходу ревизии, поэтому
+`transaction_per_migration` защищает только незакоммиченный хвост: если процесс
+упал на середине, уже применённые пачки останутся в базе, а alembic_version —
+нет. Это осознанная цена: backfill на миллион строк иначе держал бы одну
+транзакцию и WAL на весь объём. Повторный запуск продолжит с курсора (условие
+`WHERE ... IS NULL`), а не начнёт заново. Такую ревизию пишут идемпотентной и
+тестируют падением посередине; для DDL батч-коммиты не применяют.
 
 ### Индексы на больших таблицах — `CONCURRENTLY` и `autocommit_block`
 
