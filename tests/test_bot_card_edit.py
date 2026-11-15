@@ -2,17 +2,23 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 from aiogram import Bot, Dispatcher
 from aiogram.methods import AnswerCallbackQuery
 from aiogram.types import InlineKeyboardMarkup
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from eng_remember.bot.callbacks import CardEditCB, CardEditStepCB
+from eng_remember.bot.rendering import TELEGRAM_TEXT_LIMIT, text_units
+from eng_remember.domain.enums import CardDirection
 from eng_remember.models.card import Card
 from eng_remember.models.user import User
 from eng_remember.repositories.cards import CardDraft
 from eng_remember.repositories.users import TelegramProfile, UserRepository
 from eng_remember.services.container import Services
+from eng_remember.services.llm.schema import EXAMPLE_LIMIT, NOTES_LIMIT, TRANSLATION_LIMIT
 from eng_remember.utils.time import utcnow
 from tests.conftest import RecordingSession, make_due
 from tests.helpers import send, tap
@@ -294,3 +300,98 @@ async def test_a_second_edit_tap_keeps_the_review_run(
     await send(dispatcher, bot, "бета", update_id=33, date=utcnow())
 
     assert "Повторение завершено" in recording.last_text()
+
+
+async def test_an_edit_is_cut_to_the_schema_limits(
+    dispatcher: Dispatcher,
+    bot: Bot,
+    recording: RecordingSession,
+    services: Services,
+    user: User,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A manually typed edit obeys the same caps as a model answer.
+
+    ``CardDraft.normalized`` only fits the narrow string columns; translation,
+    example and notes are unbounded Text. Without a cap here a paste of five
+    thousand characters is stored as is and then sent back in the card and the
+    next review.
+    """
+    card_id = await graded_card(dispatcher, bot, recording, services, user, session_factory)
+
+    await tap(dispatcher, bot, CardEditCB(card_id=card_id).pack(), update_id=30)
+    await send(dispatcher, bot, "я" * 5000, update_id=31)
+    await send(dispatcher, bot, "example " * 700, update_id=32)
+    # Notes keep the learner's line breaks; only the total length is capped.
+    await send(dispatcher, bot, "заметка\n" * 500, update_id=33)
+
+    after = await load_card(session_factory, card_id)
+    assert len(after.translation) <= TRANSLATION_LIMIT
+    assert len(after.example or "") <= EXAMPLE_LIMIT
+    assert after.notes is not None
+    assert len(after.notes) <= NOTES_LIMIT
+    assert "\n" in after.notes
+
+
+async def test_the_edit_dialogue_fits_a_card_saved_before_the_caps(
+    dispatcher: Dispatcher,
+    bot: Bot,
+    recording: RecordingSession,
+    services: Services,
+    user: User,
+) -> None:
+    """Every text the edit dialogue quotes back goes through ``fit_text``.
+
+    A card stored before the caps existed can carry a translation, an example
+    and notes above Telegram's 4096-unit ceiling. The prompts and the
+    confirmation are sent directly, so each of them has to fit itself.
+    """
+    long_text = "я" * 5000
+    card = await services.card_service.add_draft(
+        user, CardDraft(term="alpha", translation=long_text, example=long_text, notes=long_text)
+    )
+    await services.commit()
+
+    await tap(dispatcher, bot, CardEditCB(card_id=card.id).pack(), update_id=30)
+    assert text_units(recording.last_text()) <= TELEGRAM_TEXT_LIMIT
+    for update_id in (31, 32, 33):
+        await tap(
+            dispatcher,
+            bot,
+            CardEditStepCB(action="skip", card_id=card.id).pack(),
+            update_id=update_id,
+        )
+        assert text_units(recording.last_text()) <= TELEGRAM_TEXT_LIMIT
+
+
+async def test_the_reverse_front_fits_a_legacy_long_translation(
+    dispatcher: Dispatcher,
+    bot: Bot,
+    recording: RecordingSession,
+    services: Services,
+    user: User,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The reverse front *is* the translation, and it is sent directly.
+
+    Telegram refuses anything past 4096 units, so a row that predates the caps
+    must be fitted before the send: otherwise the next review answers
+    «Что-то сломалось» instead of the card.
+    """
+    long_text = "я" * 5000
+    await services.card_service.add_draft(user, CardDraft(term="alpha", translation=long_text))
+    await services.commit()
+    await make_due(session_factory)
+    # Only the reverse direction is due: its front is the translation itself.
+    async with session_factory() as session:
+        await session.execute(
+            update(Card)
+            .where(Card.user_id == user.id, Card.direction == CardDirection.FORWARD)
+            .values(due_at=utcnow() + timedelta(days=1))
+        )
+        await session.commit()
+
+    await send(dispatcher, bot, "/review", update_id=20)
+
+    assert "Что-то сломалось" not in recording.last_text()
+    assert text_units(recording.last_text()) <= TELEGRAM_TEXT_LIMIT

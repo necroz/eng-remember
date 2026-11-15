@@ -199,7 +199,10 @@ def build_router() -> Router:
         await leave_rename(state)
 
         text, markup = await deck_overview(user, services)
-        await message.answer(f"{texts.deck_renamed(old_name, name)}\n\n{text}", reply_markup=markup)
+        await message.answer(
+            rendering.fit_text(f"{texts.deck_renamed(old_name, name)}\n\n{text}"),
+            reply_markup=markup,
+        )
 
     @router.callback_query(DeckCB.filter(F.action == "rc"))
     async def cancel_rename(
