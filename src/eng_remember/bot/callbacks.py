@@ -12,6 +12,9 @@ from typing import Literal
 from aiogram.filters.callback_data import CallbackData
 
 __all__ = [
+    "CardEditAction",
+    "CardEditCB",
+    "CardEditStepCB",
     "ClarifyAction",
     "ClarifyCB",
     "DeckAction",
@@ -41,6 +44,7 @@ PracticeAction = Literal["start", "answer"]
 FileImportAction = Literal["confirm", "cancel"]
 LevelAction = Literal["set", "reset"]
 DeckAction = Literal["rn", "dl", "ok", "dc", "rc"]
+CardEditAction = Literal["skip", "finish", "cancel"]
 
 
 class ReviewCB(CallbackData, prefix="rv"):
@@ -137,3 +141,27 @@ class DeckCB(CallbackData, prefix="dk"):
 
     action: DeckAction
     deck_id: int = 0
+
+
+class CardEditCB(CallbackData, prefix="ce"):
+    """The «Правка» button on a graded card.
+
+    The card id travels in the payload: the result message stays in the chat
+    history, and editing must address the card that was answered rather than
+    whatever the review is showing by the time it is tapped.
+    """
+
+    card_id: int
+
+
+class CardEditStepCB(CallbackData, prefix="cx"):
+    """One step of the card-edit dialogue.
+
+    A prefix of its own, because the entry button carries nothing but the card:
+    ``ce:<card_id>`` is what the learner's message shows. ``skip`` advances to
+    the next question without changing the field, ``finish`` saves what has been
+    typed so far, and ``cancel`` abandons the edit.
+    """
+
+    action: CardEditAction
+    card_id: int = 0

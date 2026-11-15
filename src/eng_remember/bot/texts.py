@@ -122,6 +122,11 @@ __all__ = [
     "budget_alert",
     "cannot_parse",
     "card_back",
+    "card_edit_cancelled",
+    "card_edit_example",
+    "card_edit_notes",
+    "card_edit_saved",
+    "card_edit_translation",
     "card_front",
     "card_unavailable",
     "clarification",
@@ -384,6 +389,45 @@ def answer_accepted(
         lines.append("")
         lines.append(note)
     return "\n".join(lines)
+
+
+def card_edit_translation(card: Card) -> str:
+    """The first question of an edit: the translation, the field worth fixing.
+
+    The term and the language are named as fixed here, where the learner can
+    still see what they are about to change.
+    """
+    return (
+        f"✏️ Правка <b>{escape(card.term)}</b>\n\n"
+        f"Перевод сейчас: <b>{escape(card.translation)}</b>\n\n"
+        "Пришлите новый перевод — или пропустите шаг.\n"
+        f"<i>Слово и язык ({language_badge(card.language)}) не меняются.</i>"
+    )
+
+
+def card_edit_example(card: Card) -> str:
+    if card.example:
+        return (
+            f"Пример сейчас:\n<i>{escape(card.example)}</i>\n\n"
+            "Пришлите новый пример — или пропустите шаг."
+        )
+    return "Примера пока нет. Пришлите его — или пропустите шаг."
+
+
+def card_edit_notes(card: Card) -> str:
+    if card.notes:
+        return (
+            f"Заметки: {escape(card.notes)}\n\nПришлите новый текст заметок — или пропустите шаг."
+        )
+    return "Заметок пока нет. Пришлите их — или пропустите шаг."
+
+
+def card_edit_saved(card: Card) -> str:
+    return f"✅ Карточка обновлена.\n\n{card_back(card)}"
+
+
+def card_edit_cancelled() -> str:
+    return "Правка отменена — карточка не изменена."
 
 
 def card_back(card: Card, *, example: str | None = None) -> str:

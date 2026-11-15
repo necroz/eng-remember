@@ -146,24 +146,30 @@ async def edit_message_or_send(
     chat_id: int,
     message_id: int | None,
     text: str,
+    reply_markup: InlineKeyboardMarkup | None = None,
 ) -> None:
     """Replace a message by id, falling back to a new one.
 
     The front is remembered by id, not by an open callback, and it can be too
     old to edit by the time the answer is graded — then the result is simply
-    sent as a new message instead of being lost.
+    sent as a new message instead of being lost. ``reply_markup`` is passed on
+    so the result can carry its own button; an edit without one drops whatever
+    the previous keyboard held, which is the point when the front's «Не знаю»
+    must not survive the reveal.
     """
     text = fit_text(text)
     if message_id is not None:
         try:
-            await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text)
+            await bot.edit_message_text(
+                chat_id=chat_id, message_id=message_id, text=text, reply_markup=reply_markup
+            )
             return
         except TelegramBadRequest as exc:
             if "message is not modified" in str(exc):
                 return
             log.warning("edit_failed", error=str(exc), message_id=message_id)
 
-    await bot.send_message(chat_id, text)
+    await bot.send_message(chat_id, text, reply_markup=reply_markup)
 
 
 async def edit_or_send(

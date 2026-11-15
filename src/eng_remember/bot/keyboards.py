@@ -20,6 +20,8 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from eng_remember.bot import texts
 from eng_remember.bot.callbacks import (
+    CardEditCB,
+    CardEditStepCB,
     ClarifyCB,
     DeckCB,
     FileImportCB,
@@ -34,6 +36,8 @@ from eng_remember.models.card import Card
 from eng_remember.models.deck import Deck
 
 __all__ = [
+    "card_edit",
+    "card_edit_step",
     "clarification",
     "deck_delete_confirm",
     "deck_manager",
@@ -201,6 +205,25 @@ def deck_delete_confirm(deck_id: int) -> InlineKeyboardMarkup:
 def deck_rename_cancel(deck_id: int) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="❌ Отмена", callback_data=DeckCB(action="rc", deck_id=deck_id))
+    return builder.as_markup()
+
+
+def card_edit(card_id: int) -> InlineKeyboardMarkup:
+    """The single action a graded card offers: fix what the answer revealed."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✏️ Правка", callback_data=CardEditCB(card_id=card_id))
+    return builder.as_markup()
+
+
+def card_edit_step(card_id: int) -> InlineKeyboardMarkup:
+    """Skip, save now, or leave: a step must never be a dead end."""
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text="⏭ Пропустить", callback_data=CardEditStepCB(action="skip", card_id=card_id)
+    )
+    builder.button(text="✅ Готово", callback_data=CardEditStepCB(action="finish", card_id=card_id))
+    builder.button(text="✖️ Отмена", callback_data=CardEditStepCB(action="cancel", card_id=card_id))
+    builder.adjust(2, 1)
     return builder.as_markup()
 
 

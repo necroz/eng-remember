@@ -9,6 +9,7 @@ result stays in the chat history instead of being overwritten.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from typing import Any
 
 import structlog
 from aiogram import Bot, F, Router
@@ -23,11 +24,16 @@ from aiogram.types import (
 )
 
 from eng_remember.bot import keyboards, rendering, texts
-from eng_remember.bot.callbacks import LeechCB, ReviewCB
+from eng_remember.bot.callbacks import CardEditCB, CardEditStepCB, LeechCB, ReviewCB
 from eng_remember.bot.rendering import callback_chat_id
 from eng_remember.bot.states import (
     ANSWERED_KEY,
     ANSWERING_KEY,
+    CARD_ID_KEY,
+    EDIT_PREVIOUS_STATE_KEY,
+    EDITED_EXAMPLE_KEY,
+    EDITED_NOTES_KEY,
+    EDITED_TRANSLATION_KEY,
     EXAMPLE_KEY,
     FRONT_MESSAGE_KEY,
     HINT_USED_KEY,
@@ -35,6 +41,7 @@ from eng_remember.bot.states import (
     SESSION_LIMIT_KEY,
     SHOWN_AT_KEY,
     SHOWN_CARD_KEY,
+    CardEdit,
     Review,
 )
 from eng_remember.domain.cloze import cloze
@@ -53,6 +60,17 @@ log = structlog.get_logger(__name__)
 # microseconds, so an answer sent right after the front can look up to a second
 # older than it. Anything beyond that was typed before this card appeared.
 CLOCK_TOLERANCE = timedelta(seconds=1)
+
+# The states one content edit passes through, in order. A callback is only
+# allowed to act while one of them is active: a button left on an old result
+# must not touch a card in the middle of another flow.
+CARD_EDIT_STATES = frozenset(
+    {
+        CardEdit.translation.state,
+        CardEdit.example.state,
+        CardEdit.notes.state,
+    }
+)
 
 
 async def _show_leech_error(
@@ -74,6 +92,16 @@ async def _show_leech_error(
         bot=bot,
         reply_markup=keyboards.leech_menu(card.id),
     )
+
+
+def _edited(data: dict[str, Any], key: str) -> str | None:
+    """A value the learner typed in an edit step, or ``None`` for "not edited".
+
+    Empty and whitespace-only input is a skipped step; it must not blank the
+    stored field.
+    """
+    value = data.get(key)
+    return value if isinstance(value, str) and value else None
 
 
 def build_router() -> Router:
@@ -384,6 +412,243 @@ def build_router() -> Router:
         await query.answer()
         await rendering.edit_or_send(query, texts.leech_left(card), bot=bot)
 
+    @router.callback_query(CardEditCB.filter())
+    async def start_editing(
+        query: CallbackQuery,
+        callback_data: CardEditCB,
+        bot: Bot,
+        user: User,
+        services: Services,
+        state: FSMContext,
+    ) -> None:
+        """Open the edit dialogue on the card the result message belongs to.
+
+        The review may still be waiting for the answer to the *next* card, so
+        the state it stands in is remembered and put back when the edit is
+        done: correcting a word must not cost the learner the rest of the run.
+        """
+        card = await services.cards.get(callback_data.card_id, user_id=user.id)
+        if card is None:
+            await query.answer(texts.card_unavailable(), show_alert=True)
+            return
+
+        # Read before the state changes: this is the flow to return to.
+        previous = await state.get_state()
+        await state.set_state(CardEdit.translation)
+        await state.update_data(
+            {
+                CARD_ID_KEY: card.id,
+                EDIT_PREVIOUS_STATE_KEY: previous,
+                EDITED_TRANSLATION_KEY: None,
+                EDITED_EXAMPLE_KEY: None,
+                EDITED_NOTES_KEY: None,
+            }
+        )
+        await query.answer()
+        await bot.send_message(
+            callback_chat_id(query),
+            texts.card_edit_translation(card),
+            reply_markup=keyboards.card_edit_step(card.id),
+        )
+
+    @router.message(
+        CardEdit.translation,
+        F.text,
+        ~F.text.startswith("/"),
+        ~F.text.in_(texts.MAIN_MENU_BUTTONS),
+    )
+    async def translation_typed(
+        message: Message,
+        bot: Bot,
+        user: User,
+        services: Services,
+        state: FSMContext,
+    ) -> None:
+        # An empty message is a skipped step, not an empty translation: the
+        # resume button is «Пропустить», and typing nothing does the same.
+        value = (message.text or "").strip()
+        if value:
+            await state.update_data({EDITED_TRANSLATION_KEY: value})
+        await _ask_example(message.chat.id, bot=bot, user=user, services=services, state=state)
+
+    @router.message(
+        CardEdit.example,
+        F.text,
+        ~F.text.startswith("/"),
+        ~F.text.in_(texts.MAIN_MENU_BUTTONS),
+    )
+    async def example_typed(
+        message: Message,
+        bot: Bot,
+        user: User,
+        services: Services,
+        state: FSMContext,
+    ) -> None:
+        value = (message.text or "").strip()
+        if value:
+            await state.update_data({EDITED_EXAMPLE_KEY: value})
+        await _ask_notes(message.chat.id, bot=bot, user=user, services=services, state=state)
+
+    @router.message(
+        CardEdit.notes,
+        F.text,
+        ~F.text.startswith("/"),
+        ~F.text.in_(texts.MAIN_MENU_BUTTONS),
+    )
+    async def notes_typed(
+        message: Message,
+        bot: Bot,
+        user: User,
+        services: Services,
+        state: FSMContext,
+    ) -> None:
+        value = (message.text or "").strip()
+        if value:
+            await state.update_data({EDITED_NOTES_KEY: value})
+        await _finish_editing(message.chat.id, bot=bot, user=user, services=services, state=state)
+
+    @router.callback_query(CardEditStepCB.filter(F.action == "skip"))
+    async def skip_edit_step(
+        query: CallbackQuery,
+        callback_data: CardEditStepCB,
+        bot: Bot,
+        user: User,
+        services: Services,
+        state: FSMContext,
+    ) -> None:
+        current = await state.get_state()
+        if current not in CARD_EDIT_STATES or not await _owns_edit(state, callback_data):
+            await query.answer(texts.stale_button(), show_alert=True)
+            return
+
+        await query.answer()
+        chat_id = callback_chat_id(query)
+        if current == CardEdit.translation.state:
+            await _ask_example(chat_id, bot=bot, user=user, services=services, state=state)
+        elif current == CardEdit.example.state:
+            await _ask_notes(chat_id, bot=bot, user=user, services=services, state=state)
+        else:
+            await _finish_editing(chat_id, bot=bot, user=user, services=services, state=state)
+
+    @router.callback_query(CardEditStepCB.filter(F.action == "finish"))
+    async def finish_editing(
+        query: CallbackQuery,
+        callback_data: CardEditStepCB,
+        bot: Bot,
+        user: User,
+        services: Services,
+        state: FSMContext,
+    ) -> None:
+        if await state.get_state() not in CARD_EDIT_STATES or not await _owns_edit(
+            state, callback_data
+        ):
+            await query.answer(texts.stale_button(), show_alert=True)
+            return
+        await query.answer()
+        await _finish_editing(
+            callback_chat_id(query), bot=bot, user=user, services=services, state=state
+        )
+
+    @router.callback_query(CardEditStepCB.filter(F.action == "cancel"))
+    async def cancel_editing(
+        query: CallbackQuery,
+        callback_data: CardEditStepCB,
+        bot: Bot,
+        state: FSMContext,
+    ) -> None:
+        if await state.get_state() not in CARD_EDIT_STATES or not await _owns_edit(
+            state, callback_data
+        ):
+            await query.answer(texts.stale_button(), show_alert=True)
+            return
+        await _leave_editing(state)
+        await query.answer()
+        await rendering.edit_or_send(query, texts.card_edit_cancelled(), bot=bot)
+
+    async def _owns_edit(state: FSMContext, callback_data: CardEditStepCB) -> bool:
+        """Whether this dialogue is about the card the button was drawn for."""
+        data = await state.get_data()
+        return data.get(CARD_ID_KEY) == callback_data.card_id
+
+    async def _edit_card(state: FSMContext, user: User, services: Services) -> Card | None:
+        """The card being edited, or ``None`` once it is gone or not ours.
+
+        Read on every step rather than trusted from the first one: the card can
+        be deleted in another flow while the questions are open.
+        """
+        data = await state.get_data()
+        card_id = data.get(CARD_ID_KEY)
+        if not isinstance(card_id, int):
+            return None
+        return await services.cards.get(card_id, user_id=user.id)
+
+    async def _ask_example(
+        chat_id: int, *, bot: Bot, user: User, services: Services, state: FSMContext
+    ) -> None:
+        card = await _edit_card(state, user, services)
+        if card is None:
+            await _leave_editing(state)
+            await bot.send_message(chat_id, texts.card_unavailable())
+            return
+        await state.set_state(CardEdit.example)
+        await bot.send_message(
+            chat_id,
+            texts.card_edit_example(card),
+            reply_markup=keyboards.card_edit_step(card.id),
+        )
+
+    async def _ask_notes(
+        chat_id: int, *, bot: Bot, user: User, services: Services, state: FSMContext
+    ) -> None:
+        card = await _edit_card(state, user, services)
+        if card is None:
+            await _leave_editing(state)
+            await bot.send_message(chat_id, texts.card_unavailable())
+            return
+        await state.set_state(CardEdit.notes)
+        await bot.send_message(
+            chat_id,
+            texts.card_edit_notes(card),
+            reply_markup=keyboards.card_edit_step(card.id),
+        )
+
+    async def _finish_editing(
+        chat_id: int, *, bot: Bot, user: User, services: Services, state: FSMContext
+    ) -> None:
+        data = await state.get_data()
+        card_id = data.get(CARD_ID_KEY)
+        card = None
+        if isinstance(card_id, int):
+            card = await services.card_service.update_content(
+                user,
+                card_id,
+                translation=_edited(data, EDITED_TRANSLATION_KEY),
+                example=_edited(data, EDITED_EXAMPLE_KEY),
+                notes=_edited(data, EDITED_NOTES_KEY),
+            )
+        if card is None:
+            await _leave_editing(state)
+            await bot.send_message(chat_id, texts.card_unavailable())
+            return
+        await services.commit()
+        await _leave_editing(state)
+        await bot.send_message(chat_id, texts.card_edit_saved(card))
+
+    async def _leave_editing(state: FSMContext) -> None:
+        """Drop the edit keys and return to whatever flow owned the chat."""
+        data = await state.get_data()
+        previous = data.get(EDIT_PREVIOUS_STATE_KEY)
+        await state.update_data(
+            {
+                CARD_ID_KEY: None,
+                EDITED_TRANSLATION_KEY: None,
+                EDITED_EXAMPLE_KEY: None,
+                EDITED_NOTES_KEY: None,
+                EDIT_PREVIOUS_STATE_KEY: None,
+            }
+        )
+        await state.set_state(previous if isinstance(previous, str) else None)
+
     async def _send_front(
         bot: Bot, chat_id: int, card: Card, state: FSMContext, services: Services
     ) -> None:
@@ -488,6 +753,11 @@ def build_router() -> Router:
             chat_id=chat_id,
             message_id=front_message if isinstance(front_message, int) else None,
             text=result,
+            # The reveal is the moment a wrong translation becomes obvious, so
+            # this is where the card offers to be corrected. The button outlives
+            # the run: the message stays in the history and the card id travels
+            # in the payload.
+            reply_markup=keyboards.card_edit(card.id),
         )
 
         # A word that keeps failing earns an offer of help. The menu is a
