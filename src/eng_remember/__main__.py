@@ -170,10 +170,11 @@ async def reminder_loop(
     when it comes up at 09:00, and nothing is sent at 03:00 because a timer
     drifted.
 
-    Each tick gets its own session, and the service commits after every batch of
-    candidates — not once at the end. A crash halfway through a large tick
-    therefore leaves the watermarks of the batches that were already delivered,
-    so the next tick skips those learners instead of messaging them twice.
+    Each tick gets its own session, and the service commits after every learner
+    it messages — not once per batch or per tick. A crash or a stop request
+    halfway through a large tick therefore keeps the watermarks of everyone
+    already delivered, so the next tick skips them instead of messaging them
+    twice; at most the one delivery that was in flight repeats.
 
     ``notifier`` exists for tests and for a caller that already has a delivery
     channel; production omits it and gets a :class:`BotNotifier`.
@@ -190,19 +191,9 @@ async def reminder_loop(
     while not stopping.is_set():
         # Retention is a daily housekeeping job, not a per-tick one: the audit
         # table changes slowly and a delete on every ten-minute tick would be
-        # pure overhead. The UTC date is the boundary because the table stores
-        # UTC and nothing here depends on a learner's clock.
-        today = local_date("UTC")
-        if settings.llm_call_retention_days > 0 and pruned_on != today:
-            try:
-                await prune_llm_calls(session_factory, settings)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                # A failed cleanup must not stop reminders; the next tick retries.
-                log.warning("llm_calls_prune_failed", error=str(exc))
-            else:
-                pruned_on = today
+        # pure overhead. The helper owns the UTC-day boundary so the cron entry
+        # point prunes on exactly the same rule.
+        pruned_on = await prune_llm_calls_if_due(session_factory, settings, pruned_on)
 
         started = time.monotonic()
         try:
@@ -281,8 +272,49 @@ async def prune_llm_calls(
     async with session_factory() as session:
         removed = await LlmCallRepository(session).delete_older_than(cutoff)
         await session.commit()
-    log.info("llm_calls_pruned", removed=removed, retention_days=days)
+    # The cron entry point has no memory of earlier runs and prunes on each
+    # invocation; "nothing to delete" is the normal case and must not fill its
+    # log with one event every ten minutes.
+    if removed:
+        log.info("llm_calls_pruned", removed=removed, retention_days=days)
+    else:
+        log.debug("llm_calls_pruned", removed=0, retention_days=days)
     return removed
+
+
+async def prune_llm_calls_if_due(
+    session_factory: SessionFactory,
+    settings: Settings,
+    last_run: date | None = None,
+    *,
+    now: datetime | None = None,
+) -> date | None:
+    """Run the audit prune unless ``last_run`` says it already ran today.
+
+    Returns the UTC day the prune last ran within this process. Shared by the
+    in-process loop and the cron entry point so the two cannot disagree about
+    the boundary, and so a deployment that has no loop still gets the cleanup.
+    The UTC date — not a monotonic timer — survives a restart and matches the
+    timezone the audit column stores. A one-shot caller has no stamp to carry
+    between runs and passes ``None``: it prunes on every invocation, which is
+    safe because the DELETE is idempotent and indexed.
+
+    A failed cleanup is logged and the stamp is not advanced: the next tick
+    retries rather than skipping a whole day. ``CancelledError`` still
+    propagates, so shutdown is never delayed by housekeeping.
+    """
+    today = local_date("UTC", now=now)
+    if settings.llm_call_retention_days <= 0 or last_run == today:
+        return last_run
+    try:
+        await prune_llm_calls(session_factory, settings, now=now)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        # A failed cleanup must not stop reminders; the caller's next turn retries.
+        log.warning("llm_calls_prune_failed", error=str(exc))
+        return last_run
+    return today
 
 
 def run() -> None:

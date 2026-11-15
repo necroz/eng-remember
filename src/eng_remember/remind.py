@@ -22,6 +22,10 @@ from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
+# The prune helper lives next to the loop so both entry points share one rule for
+# the UTC-day boundary. Importing it does not start anything: ``__main__`` runs
+# only under its own guard.
+from eng_remember.__main__ import prune_llm_calls_if_due
 from eng_remember.bot.notifier import BotNotifier
 from eng_remember.config import get_settings, require_bot_token
 from eng_remember.db.engine import create_engine, create_session_factory
@@ -46,10 +50,18 @@ async def main() -> int:
     # No LLM transport here: a reminder tick does not call the model, and a
     # client that nobody uses would only need closing.
     try:
+        # The documented multi-replica deployment runs with the in-process loop
+        # switched off, so this pass is the only place the daily audit prune can
+        # happen. A one-shot process has no memory of the previous run, so it
+        # checks the day afresh on every invocation; the delete is idempotent
+        # and indexed, so a no-op costs one query.
+        await prune_llm_calls_if_due(session_factory, settings)
+
         async with session_factory() as session:
             service = build_reminder_service(session, settings, BotNotifier(bot))
+            # The service commits each delivery itself; there is no batch left
+            # to flush here.
             outcome = await service.run()
-            await session.commit()
     finally:
         # The engine must be disposed even if closing the bot session fails.
         try:

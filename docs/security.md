@@ -65,12 +65,19 @@
 | `reminder_failed` / `reminder_unreachable` | services/reminders.py | напоминание не доставлено |
 | `reminder_tick_finished` | __main__.py | тик завершён: `duration_ms`, `users_processed`, `sent`, `failed`, `unreachable` |
 | `reminder_tick_crashed` | __main__.py | тик упал (traceback); дублируется алертом в `BOT__ADMIN_CHAT_ID` |
-| `bot_heartbeat` | __main__.py | раз в N тиков: `pool_checked_out`/`pool_size` — процесс жив |
-| `llm_calls_pruned` / `llm_calls_prune_failed` | __main__.py | суточная чистка аудита: строк удалено / чистка не удалась |
+| `bot_heartbeat` | __main__.py | раз в N тиков: `pool_checked_out`/`pool_size` — процесс жив (только in-process цикл) |
+| `llm_calls_pruned` / `llm_calls_prune_failed` | __main__.py, remind.py | суточная чистка аудита: строк удалено / чистка не удалась |
 | `user_unblocked` | bot/middlewares/user.py | ранее недоставляемый аккаунт снова написал боту — флаг снят |
 
 Минимальный алерт: непустой поток `llm_quota_exceeded`, `handler_failed` и
 `reminder_tick_crashed` (последний также уходит в admin-чат, если он задан).
+
+`reminder_tick_crashed`, `reminder_tick_finished` и `bot_heartbeat` — события
+in-process цикла, а не процесса. При `REMINDERS__ENABLED=false` (несколько
+реплик, напоминания из cron) цикла нет, поэтому этих событий не будет: живость
+проверяет внешний монитор (systemd timer, cron с алертом на ненулевой код
+выхода, проверка свежих `llm_calls_pruned`/`reminder_tick` в логах). Суточная
+чистка аудита от этого не зависит: её делает и cron-команда.
 
 ## Runbook
 
@@ -96,8 +103,10 @@
 
 ## Хранение и приватность
 
-- `llm_calls` — аудит на 90 дней по умолчанию: раз в сутки тик удаляет строки
+- `llm_calls` — аудит на 90 дней по умолчанию: раз в сутки удаляются строки
   старше `LLM_CALL_RETENTION_DAYS` (по умолчанию 90, `0` — хранить бессрочно).
+  Чистку делает и in-process цикл, и cron-команда `eng-remember-remind`, так что
+  от формы деплоя она не зависит; правило границы суток у них общее (UTC-дата).
   Индекс по `created_at` держит удаление дешёвым. Событие `llm_calls_pruned`
   пишет, сколько строк удалено. Тексты запроса и ответа хранятся в тех же
   строках и только при включённом `LOG_LLM_PAYLOADS`; если включали, почистите
