@@ -129,11 +129,12 @@ class ReminderService:
     async def run(self, *, now: datetime | None = None) -> ReminderRun:
         """One pass over everyone who might be owed a reminder.
 
-        Every batch is committed as soon as its watermarks are written. A crash
-        halfway through the walk therefore loses nothing that was already sent:
-        the next tick skips those learners instead of messaging them twice. The
-        batches are also why one tick does not hold a single transaction open for
-        the whole candidate list.
+        Every delivery is committed as soon as its watermark is written — per
+        learner, not once per batch, let alone once per tick. A crash or a stop
+        request halfway through a batch therefore keeps every earlier learner
+        marked: the next tick skips them instead of messaging them again, and
+        only the message that was actually in flight can repeat. The commits
+        also keep one transaction from staying open for the whole candidate list.
         """
         run = ReminderRun()
         if not self._reminders.enabled:
@@ -162,7 +163,7 @@ class ReminderService:
 
             for plan in await self._plan(batch, now=moment):
                 await self._deliver(plan, run, now=moment)
-            await self._commit_batch()
+                await self._commit_delivery()
 
         if run.sent_count or run.failed or run.unreachable:
             log.info(
@@ -177,8 +178,13 @@ class ReminderService:
             log.debug("reminder_tick_idle", candidates=run.candidates)
         return run
 
-    async def _commit_batch(self) -> None:
-        """Make the batch's watermarks durable before fetching the next one."""
+    async def _commit_delivery(self) -> None:
+        """Make this learner's watermark durable before the next send.
+
+        Per learner rather than per batch: shutdown cancels the loop task
+        immediately, so a batch-sized transaction would drop up to
+        ``batch_size - 1`` sends that already happened.
+        """
         if self._commit is not None:
             await self._commit()
 
