@@ -37,6 +37,7 @@ __all__ = [
     "QUESTIONS_KEY",
     "QUESTION_INDEX_KEY",
     "QUESTION_KEY",
+    "RENAME_PREVIOUS_STATE_KEY",
     "ROUND_KEY",
     "SESSION_KEY",
     "SESSION_LIMIT_KEY",
@@ -119,6 +120,10 @@ FILE_FILLED_KEY = "file_filled"
 # rather than carried by the message, because the learner answers the prompt in
 # a message of their own and it must not be able to rename another deck.
 DECK_ID_KEY = "deck_id"
+# The flow the chat was in before the rename dialogue opened. Renaming starts
+# from the deck list, which can be reached with a review still waiting for an
+# answer, so leaving the dialogue must put that flow back.
+RENAME_PREVIOUS_STATE_KEY = "rename_previous_state"
 
 # The card-edit dialogue: which card is being edited, the values typed so far
 # (``None`` is "not edited", not "clear"), and the state to return to. Editing

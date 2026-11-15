@@ -434,6 +434,12 @@ def build_router() -> Router:
 
         # Read before the state changes: this is the flow to return to.
         previous = await state.get_state()
+        # A second tap (callbacks are not deduplicated) would otherwise record
+        # CardEdit itself as the flow to return to; leaving then restores a
+        # zombie edit state that swallows the answer to the waiting card.
+        if previous in CARD_EDIT_STATES:
+            await query.answer(texts.stale_button(), show_alert=True)
+            return
         await state.set_state(CardEdit.translation)
         await state.update_data(
             {

@@ -257,3 +257,40 @@ async def test_update_content_normalises_what_it_stores(
     stored = await load_card(session_factory, card.id)
     assert stored.translation == "вездесущий"
     assert stored.notes == "заметка"
+
+
+async def test_a_second_edit_tap_keeps_the_review_run(
+    dispatcher: Dispatcher,
+    bot: Bot,
+    recording: RecordingSession,
+    services: Services,
+    user: User,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Tapping «Правка» twice must not make the edit its own previous flow.
+
+    The second tap is stale: re-entering would record ``CardEdit.translation``
+    as the flow to return to, and finishing would leave a zombie edit state that
+    swallows the answer to the card already waiting on screen.
+    """
+    first = await services.card_service.add_draft(
+        user, CardDraft(term="alpha", translation="альфа")
+    )
+    await services.card_service.add_draft(user, CardDraft(term="beta", translation="бета"))
+    await services.commit()
+    await make_due(session_factory)
+
+    await send(dispatcher, bot, "/review", update_id=20)
+    await send(dispatcher, bot, "альфа", update_id=21, date=utcnow())
+    assert "beta" in recording.last_text()
+
+    await tap(dispatcher, bot, CardEditCB(card_id=first.id).pack(), update_id=30)
+    await tap(dispatcher, bot, CardEditCB(card_id=first.id).pack(), update_id=31)
+    assert last_callback_answer(recording).show_alert
+
+    await tap(
+        dispatcher, bot, CardEditStepCB(action="finish", card_id=first.id).pack(), update_id=32
+    )
+    await send(dispatcher, bot, "бета", update_id=33, date=utcnow())
+
+    assert "Повторение завершено" in recording.last_text()

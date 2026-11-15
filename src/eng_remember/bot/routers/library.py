@@ -15,7 +15,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 from eng_remember.bot import keyboards, rendering, texts
 from eng_remember.bot.callbacks import DeckCB, PauseCB
 from eng_remember.bot.rendering import callback_chat_id, require_state
-from eng_remember.bot.states import DECK_ID_KEY, DeckRename
+from eng_remember.bot.states import DECK_ID_KEY, RENAME_PREVIOUS_STATE_KEY, DeckRename
 from eng_remember.models.user import User
 from eng_remember.services.container import Services
 from eng_remember.services.digest import heatmap_days
@@ -37,6 +37,19 @@ def build_router() -> Router:
         rows = [(deck.name, counts.get(deck.id, 0)) for deck in decks]
         return texts.deck_list(rows, sum(counts.values())), keyboards.deck_manager(decks)
 
+    async def leave_rename(state: FSMContext) -> None:
+        """Drop the rename keys and return to whatever flow owned the chat.
+
+        Renaming can be started from the deck list while a review is waiting
+        for an answer, so the state saved on entry is restored rather than
+        cleared: the name typed next must not cost the learner the rest of
+        the run.
+        """
+        data = await state.get_data()
+        previous = data.get(RENAME_PREVIOUS_STATE_KEY)
+        await state.update_data({DECK_ID_KEY: None, RENAME_PREVIOUS_STATE_KEY: None})
+        await state.set_state(previous if isinstance(previous, str) else None)
+
     @router.message(Command("decks"))
     @router.message(F.text == texts.BTN_DECKS)
     async def list_decks(
@@ -46,7 +59,7 @@ def build_router() -> Router:
         # it: the name typed next would otherwise land on a deck the learner had
         # already walked away from.
         if await state.get_state() == DeckRename.awaiting_name.state:
-            await state.clear()
+            await leave_rename(state)
         text, markup = await deck_overview(user, services)
         await message.answer(text, reply_markup=markup)
 
@@ -119,8 +132,17 @@ def build_router() -> Router:
             await query.answer(texts.deck_unavailable(), show_alert=True)
             return
 
+        # A second tap on «✏️» must not record DeckRename itself as the flow to
+        # return to, or cancelling/finishing would leave a zombie rename state
+        # that consumes the answer to a waiting card.
+        if await state.get_state() == DeckRename.awaiting_name.state:
+            await query.answer(texts.stale_button(), show_alert=True)
+            return
+
+        # Read before the state changes: this is the flow to return to.
+        previous = await state.get_state()
         await state.set_state(DeckRename.awaiting_name)
-        await state.update_data({DECK_ID_KEY: deck.id})
+        await state.update_data({DECK_ID_KEY: deck.id, RENAME_PREVIOUS_STATE_KEY: previous})
         await query.answer()
         await bot.send_message(
             callback_chat_id(query),
@@ -143,14 +165,14 @@ def build_router() -> Router:
         data = await state.get_data()
         deck_id = data.get(DECK_ID_KEY)
         if not isinstance(deck_id, int):
-            # Nothing to rename: the dialogue lost its subject. Dropping the
-            # state is the honest answer; the text falls to the capture router.
-            await state.clear()
+            # Nothing to rename: the dialogue lost its subject. Return to the
+            # flow that owned the chat; the text falls to the capture router.
+            await leave_rename(state)
             return
 
         deck = await services.decks.get(deck_id, user_id=user.id)
         if deck is None:
-            await state.clear()
+            await leave_rename(state)
             await message.answer(texts.deck_unavailable())
             return
 
@@ -166,7 +188,7 @@ def build_router() -> Router:
         old_name = deck.name
         await services.decks.rename(deck, name)
         await services.commit()
-        await state.clear()
+        await leave_rename(state)
 
         text, markup = await deck_overview(user, services)
         await message.answer(f"{texts.deck_renamed(old_name, name)}\n\n{text}", reply_markup=markup)
@@ -179,7 +201,7 @@ def build_router() -> Router:
     ) -> None:
         if not await require_state(query, state, DeckRename.awaiting_name):
             return
-        await state.clear()
+        await leave_rename(state)
         await query.answer()
         await rendering.edit_or_send(query, texts.deck_rename_cancelled(), bot=bot)
 

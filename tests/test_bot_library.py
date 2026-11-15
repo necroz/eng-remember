@@ -7,13 +7,15 @@ from aiogram.methods import AnswerCallbackQuery
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from eng_remember.bot import texts
 from eng_remember.bot.callbacks import DeckCB
 from eng_remember.models.card import Card
 from eng_remember.models.deck import Deck
 from eng_remember.models.user import User
 from eng_remember.repositories.cards import CardDraft
 from eng_remember.services.container import Services
-from tests.conftest import RecordingSession
+from eng_remember.utils.time import utcnow
+from tests.conftest import RecordingSession, make_due
 from tests.helpers import send, tap
 
 
@@ -211,3 +213,37 @@ async def test_rename_can_be_cancelled(
         kept = await check.get(Deck, deck.id)
     assert kept is not None
     assert kept.name == "Книги"
+
+
+async def test_rename_while_review_is_waiting_keeps_the_run(
+    dispatcher: Dispatcher,
+    bot: Bot,
+    recording: RecordingSession,
+    services: Services,
+    user: User,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Opening the rename dialogue mid-review must not eat the next answer.
+
+    The rename prompt is entered from the deck list while a card is waiting.
+    The flow the chat was in is saved and put back, so the name cannot be
+    mistaken for a translation and the review still grades what comes after.
+    """
+    deck = await make_deck(services, user, "Книги")
+    await services.card_service.add_draft(user, CardDraft(term="alpha", translation="альфа"))
+    await services.card_service.add_draft(user, CardDraft(term="beta", translation="бета"))
+    await services.commit()
+    await make_due(session_factory)
+
+    await send(dispatcher, bot, "/review", update_id=20)
+    await send(dispatcher, bot, "альфа", update_id=21, date=utcnow())
+    assert "beta" in recording.last_text()
+
+    await send(dispatcher, bot, texts.BTN_DECKS, update_id=22)
+    await tap(dispatcher, bot, DeckCB(action="rn", deck_id=deck.id).pack(), update_id=23)
+    await send(dispatcher, bot, "Чтиво", update_id=24)
+
+    assert await deck_name(session_factory, deck.id) == "Чтиво"
+
+    await send(dispatcher, bot, "бета", update_id=25, date=utcnow())
+    assert "Повторение завершено" in recording.last_text()
