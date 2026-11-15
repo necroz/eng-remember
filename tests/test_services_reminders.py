@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 from sqlalchemy import select, update
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from eng_remember.config import Settings
 from eng_remember.domain.enums import CardState, ReviewRating
@@ -612,6 +612,46 @@ class TestBatching:
         assert run.candidates == 5
         assert run.sent_count == 5
         assert len({plan.user.id for plan in notifier.sent}) == 5
+
+    async def test_a_finished_batch_is_committed_before_the_next_one(
+        self,
+        services: Services,
+        session: AsyncSession,
+        session_factory: async_sessionmaker[AsyncSession],
+        settings: Settings,
+        user: User,
+        notifier: RecordingNotifier,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A crash while fetching page two keeps page one's watermarks.
+
+        Those learners were really messaged; rolling them back would send the
+        same reminder again on the next tick.
+        """
+        settings.reminders.batch_size = 1
+        service = build_reminder_service(session, settings, notifier)
+        await give_work(services, user)
+        other, _ = await services.users.get_or_create(TelegramProfile(telegram_id=200300))
+        await give_work(services, other)
+
+        original = UserRepository.list_reminder_candidates
+        calls = 0
+
+        async def flaky(self: UserRepository, **kwargs: Any) -> list[User]:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise RuntimeError("database went away")
+            return await original(self, **kwargs)
+
+        monkeypatch.setattr(UserRepository, "list_reminder_candidates", flaky)
+
+        with pytest.raises(RuntimeError):
+            await service.run(now=moment(9, 0))
+
+        async with session_factory() as fresh:
+            rows = (await fresh.scalars(select(User).order_by(User.id))).all()
+            assert [row.last_reminder_on for row in rows] == [TEST_DAY, None]
 
     async def test_a_second_tick_re_examines_but_sends_nothing(
         self, reminders: ReminderService, services: Services, session: AsyncSession, user: User

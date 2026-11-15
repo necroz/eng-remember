@@ -12,6 +12,7 @@ from the in-process loop.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from typing import Protocol
@@ -108,18 +109,27 @@ class ReminderService:
         streaks: StreakRepository,
         notifier: Notifier,
         settings: Settings,
+        commit: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self._users = users
         self._cards = cards
         self._reviews = reviews
         self._streaks = streaks
         self._notifier = notifier
+        self._commit = commit
         self._reminders: ReminderSettings = settings.reminders
         self._streak_settings = settings.streak
         self._new_cards_per_day = settings.bot.new_cards_per_day
 
     async def run(self, *, now: datetime | None = None) -> ReminderRun:
-        """One pass over everyone who might be owed a reminder."""
+        """One pass over everyone who might be owed a reminder.
+
+        Every batch is committed as soon as its watermarks are written. A crash
+        halfway through the walk therefore loses nothing that was already sent:
+        the next tick skips those learners instead of messaging them twice. The
+        batches are also why one tick does not hold a single transaction open for
+        the whole candidate list.
+        """
         run = ReminderRun()
         if not self._reminders.enabled:
             return run
@@ -147,6 +157,7 @@ class ReminderService:
 
             for plan in await self._plan(batch, now=moment):
                 await self._deliver(plan, run, now=moment)
+            await self._commit_batch()
 
         if run.sent_count or run.failed or run.unreachable:
             log.info(
@@ -160,6 +171,11 @@ class ReminderService:
             # Every ten minutes "nothing to do" at INFO would drown the log.
             log.debug("reminder_tick_idle", candidates=run.candidates)
         return run
+
+    async def _commit_batch(self) -> None:
+        """Make the batch's watermarks durable before fetching the next one."""
+        if self._commit is not None:
+            await self._commit()
 
     async def _plan(self, batch: list[User], *, now: datetime) -> list[ReminderPlan]:
         """Decide the whole batch, with the counting queries batched as well."""
@@ -375,4 +391,5 @@ def build_reminder_service(
         streaks=StreakRepository(session),
         notifier=notifier,
         settings=settings,
+        commit=session.commit,
     )

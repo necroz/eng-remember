@@ -23,7 +23,7 @@ from eng_remember.services.enrichment import BackfillQueue
 from eng_remember.services.enrichment_worker import enrichment_worker
 from eng_remember.services.llm.budget import BudgetAlert, global_budget
 from eng_remember.services.llm.client import LlmTransport
-from eng_remember.services.reminders import build_reminder_service
+from eng_remember.services.reminders import Notifier, build_reminder_service
 
 log = structlog.get_logger(__name__)
 
@@ -134,11 +134,17 @@ async def main() -> None:
             if task is not None:
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
-        await bot.session.close()
-        if llm_transport is not None:
-            await llm_transport.aclose()
-        await engine.dispose()
-        log.info("bot_stopped")
+        # Nested finallys so a failure in one close still runs the others: a
+        # hung bot session must not leave the HTTP client and the pool open.
+        try:
+            await bot.session.close()
+        finally:
+            try:
+                if llm_transport is not None:
+                    await llm_transport.aclose()
+            finally:
+                await engine.dispose()
+                log.info("bot_stopped")
 
 
 async def reminder_loop(
@@ -147,6 +153,7 @@ async def reminder_loop(
     session_factory: SessionFactory,
     settings: Settings,
     stopping: asyncio.Event,
+    notifier: Notifier | None = None,
 ) -> None:
     """Send reminders every ``REMINDERS__TICK_SECONDS`` until asked to stop.
 
@@ -155,19 +162,22 @@ async def reminder_loop(
     when it comes up at 09:00, and nothing is sent at 03:00 because a timer
     drifted.
 
-    Each tick gets its own session and commits at the end, so a long-running
-    process never accumulates one huge transaction, and a crash mid-tick leaves
-    the already-sent watermarks in place rather than repeating them.
+    Each tick gets its own session, and the service commits after every batch of
+    candidates — not once at the end. A crash halfway through a large tick
+    therefore leaves the watermarks of the batches that were already delivered,
+    so the next tick skips those learners instead of messaging them twice.
+
+    ``notifier`` exists for tests and for a caller that already has a delivery
+    channel; production omits it and gets a :class:`BotNotifier`.
     """
-    notifier = BotNotifier(bot)
+    delivery = notifier if notifier is not None else BotNotifier(bot)
     interval = settings.reminders.tick_seconds
 
     while not stopping.is_set():
         try:
             async with session_factory() as session:
-                service = build_reminder_service(session, settings, notifier)
+                service = build_reminder_service(session, settings, delivery)
                 await service.run()
-                await session.commit()
         except asyncio.CancelledError:
             raise
         except Exception:
