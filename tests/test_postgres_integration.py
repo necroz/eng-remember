@@ -699,8 +699,15 @@ async def test_crash_mid_tick_keeps_committed_watermarks_on_postgres(
     )
     for learner in (pg_user, second):
         learner.reminder_time = time(0, 0)
-        await pg_services.card_service.add_draft(
-            learner, CardDraft(term=f"due-{learner.id}", translation="повтор")
+        # Due yesterday, not next day: the tick below uses a simulated "today at
+        # 09:00", and a card added through ``add_draft`` would not arrive until
+        # tomorrow, leaving the learner with no work at that hour.
+        deck = await pg_services.card_service.default_deck(learner)
+        await pg_services.cards.add(
+            user_id=learner.id,
+            deck_id=deck.id,
+            draft=CardDraft(term=f"due-{learner.id}", translation="повтор"),
+            schedule=schedule(-1),
         )
     await pg_session.commit()
 
