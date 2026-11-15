@@ -707,7 +707,7 @@ class TestCardPairs:
         first = await services.review_service.build_queue(user, now=forward.due_at)
         assert [card.id for card in first.cards] == [forward.id]
 
-        await services.review_service.answer(user, forward, ReviewRating.GOOD)
+        await services.review_service.answer(user, forward, ReviewRating.GOOD, now=forward.due_at)
         await services.commit()
 
         later_today = await services.review_service.build_queue(

@@ -145,11 +145,12 @@ async def test_the_review_flow_survives_a_real_scheduler(
     assert len(queue.cards) == 3
 
     for card in queue.cards:
-        await pg_services.review_service.answer(pg_user, card, ReviewRating.GOOD)
+        await pg_services.review_service.answer(pg_user, card, ReviewRating.GOOD, now=arrives)
     await pg_session.commit()
 
     assert await pg_services.review_service.get_next(pg_user) is None
-    assert await pg_services.reviews.count_since(pg_user.id, since=utcnow().replace(hour=0)) == 3
+    today = utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    assert await pg_services.reviews.count_since(pg_user.id, since=today) == 3
 
 
 async def test_concurrent_answers_log_one_review(
