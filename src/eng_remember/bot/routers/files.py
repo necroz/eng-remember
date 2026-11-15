@@ -33,6 +33,7 @@ from eng_remember.domain.languages import (
     detect_script_language,
     resolve_language,
 )
+from eng_remember.domain.term_match import fold_term
 from eng_remember.errors import LlmError
 from eng_remember.models.user import User
 from eng_remember.repositories.cards import CardDraft
@@ -259,8 +260,8 @@ async def _prepare_rows(
 
     for row in cleaned:
         language = row.language or DEFAULT_LANGUAGE
-        key = (language, row.term.casefold())
-        if key in seen or row.term.casefold() in known_by_language.get(language, set()):
+        key = (language, fold_term(row.term))
+        if key in seen or fold_term(row.term) in known_by_language.get(language, set()):
             duplicates += 1
             continue
         seen.add(key)
@@ -290,7 +291,7 @@ async def _prepare_rows(
                 log.warning("file_import_translation_failed", error=str(exc))
                 mapping = {}
             for index in batch:
-                translated = mapping.get(rows[index].term.casefold())
+                translated = mapping.get(fold_term(rows[index].term))
                 if translated:
                     rows[index] = replace_translation(rows[index], translated)
                     filled += 1

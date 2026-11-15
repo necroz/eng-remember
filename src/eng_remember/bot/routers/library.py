@@ -144,7 +144,7 @@ def build_router() -> Router:
         # return to, or cancelling/finishing would leave a zombie rename state
         # that consumes the answer to a waiting card.
         if await state.get_state() == DeckRename.awaiting_name.state:
-            await query.answer(texts.stale_button(), show_alert=True)
+            await query.answer(texts.deck_rename_stale(), show_alert=True)
             return
 
         # Read before the state changes: this is the flow to return to.
@@ -174,7 +174,8 @@ def build_router() -> Router:
         deck_id = data.get(DECK_ID_KEY)
         if not isinstance(deck_id, int):
             # Nothing to rename: the dialogue lost its subject. Return to the
-            # flow that owned the chat; the text falls to the capture router.
+            # flow that owned the chat; no handler claims this text, so it is
+            # dropped silently rather than parsed as a new batch.
             await leave_rename(state)
             return
 

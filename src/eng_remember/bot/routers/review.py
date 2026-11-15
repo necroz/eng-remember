@@ -320,7 +320,7 @@ def build_router() -> Router:
         """The two actions that only a configured model can fulfil."""
         key = (callback_data.card_id, callback_data.action)
         if key in preparing:
-            await query.answer(texts.stale_button(), show_alert=True)
+            await query.answer(texts.leech_already_preparing(), show_alert=True)
             return
         preparing.add(key)
         try:
@@ -599,7 +599,11 @@ def build_router() -> Router:
         await state.set_state(CardEdit.example)
         await bot.send_message(
             chat_id,
-            rendering.fit_text(texts.card_edit_example(card)),
+            rendering.fit_text(
+                texts.card_edit_example(
+                    card, example=pick_example(card.examples or [], card.example, card.reps)
+                )
+            ),
             reply_markup=keyboards.card_edit_step(card.id),
         )
 

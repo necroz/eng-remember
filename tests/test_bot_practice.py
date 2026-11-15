@@ -404,3 +404,11 @@ def test_quiz_option_labels_fit_bytes_and_unique() -> None:
     assert len(labels) == 4
     assert all(len(label.encode("utf-8")) <= 60 for label in labels)
     assert len(set(labels)) == 4
+
+
+def test_quiz_labels_stay_unique_even_against_a_natural_numbered_label() -> None:
+    """A label that already looks numbered must not collide with the suffix."""
+    labels = keyboards.practice_labels(["A", "A", "A (2)"])
+
+    assert len(set(labels)) == 3
+    assert all(len(label.encode("utf-8")) <= 60 for label in labels)

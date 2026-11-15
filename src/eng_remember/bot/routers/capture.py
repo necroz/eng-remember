@@ -481,7 +481,7 @@ def build_router() -> Router:
         if await state.get_state() == ImportFile.confirming.state:
             # A typed message is not a confirmation: parsing it as a new batch
             # would throw away the import waiting for one.
-            await message.answer(texts.file_import_pending())
+            await message.answer(texts.file_import_pending(), reply_markup=keyboards.main_menu())
             return
 
         if await state.get_state() == AddWords.clarifying.state:

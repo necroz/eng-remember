@@ -405,11 +405,11 @@ def card_edit_translation(card: Card) -> str:
     )
 
 
-def card_edit_example(card: Card) -> str:
-    if card.example:
+def card_edit_example(card: Card, *, example: str | None = None) -> str:
+    shown = example if example is not None else card.example
+    if shown:
         return (
-            f"Пример сейчас:\n<i>{escape(card.example)}</i>\n\n"
-            "Пришлите новый пример — или пропустите шаг."
+            f"Пример сейчас:\n<i>{escape(shown)}</i>\n\nПришлите новый пример — или пропустите шаг."
         )
     return "Примера пока нет. Пришлите его — или пропустите шаг."
 
@@ -568,6 +568,10 @@ def leech_paused(card: Card) -> str:
 def leech_preparing() -> str:
     """Shown while the model works: the buttons must not be tappable twice."""
     return "🧠 Готовлю… Это займёт несколько секунд."
+
+
+def leech_already_preparing() -> str:
+    return "Уже готовлю — секунду."
 
 
 def leech_left(card: Card) -> str:
@@ -1218,7 +1222,12 @@ def deck_delete_confirm(name: str, cards: int) -> str:
 
 
 def deck_deleted(name: str) -> str:
-    return f"Колода «{escape(name)}» удалена."
+    # Shown as a callback toast, which has no parse_mode: raw text, no escaping.
+    return f"Колода «{name}» удалена."
+
+
+def deck_rename_stale() -> str:
+    return "Переименование уже открыто — введите имя или нажмите «Отмена»."
 
 
 def deck_delete_cancelled() -> str:
