@@ -64,14 +64,23 @@ class UserMiddleware(BaseMiddleware):
         data["user"] = user
         data["is_new_user"] = created
 
-        if user.is_blocked:
+        unblocked = user.is_blocked
+        if unblocked:
             # Telegram delivers updates only to a bot the account has not blocked,
             # so this event disproves the flag the reminder loop set. Clear it and
             # answer as usual: that is what makes a returning learner recoverable.
             await services.users.set_blocked(user, blocked=False)
-            log.info("user_unblocked", telegram_id=from_user.id)
 
-        return await handler(event, data)
+        result = await handler(event, data)
+
+        if unblocked:
+            # Logged only after the handler finished. The enclosing
+            # ``DbSessionMiddleware`` commits right after this return, so a
+            # handler that raised no longer leaves an "unblocked" line behind for
+            # an update that was rolled back. A failing commit can still lose the
+            # flag, but that is a visibly failed update, not a silent one.
+            log.info("user_unblocked", telegram_id=from_user.id)
+        return result
 
 
 def as_user(data: dict[str, Any]) -> User:

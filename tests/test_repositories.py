@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import timedelta
 
 import pytest
-from sqlalchemy import String, Text
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import String, Text, event
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from eng_remember.domain.enums import CardDirection, CardState, ReviewRating
 from eng_remember.domain.languages import DEFAULT_LANGUAGE
@@ -19,6 +21,30 @@ from eng_remember.repositories.reviews import ReviewRepository
 from eng_remember.repositories.users import TelegramProfile, UserRepository
 from eng_remember.utils.time import utcnow
 from tests.factories import schedule
+
+
+@contextmanager
+def record_statements(engine: AsyncEngine) -> Iterator[list[str]]:
+    """Collect the SQL a block really sends, for query-shape assertions."""
+    statements: list[str] = []
+
+    def record(
+        conn: object,
+        cursor: object,
+        statement: str,
+        parameters: object,
+        context: object,
+        executemany: bool,
+    ) -> None:
+        del conn, cursor, parameters, context, executemany
+        statements.append(statement)
+
+    target = engine.sync_engine
+    event.listen(target, "before_cursor_execute", record)
+    try:
+        yield statements
+    finally:
+        event.remove(target, "before_cursor_execute", record)
 
 
 @pytest.fixture
@@ -100,6 +126,46 @@ class TestUsers:
 
         assert updated.username == "new"
 
+    async def test_touch_is_throttled_to_once_per_five_minutes(
+        self, session: AsyncSession, engine: AsyncEngine
+    ) -> None:
+        """Every update must not rewrite ``last_seen_at``.
+
+        The value only powers "when did we last hear from this learner", so a
+        second contact a minute later has nothing to add and an UPDATE per
+        keystroke is pure write amplification.
+        """
+        repository = UserRepository(session)
+        user, _ = await repository.get_or_create(TelegramProfile(telegram_id=778))
+        await session.commit()
+        first = utcnow()
+
+        with record_statements(engine) as statements:
+            await repository.touch(user, when=first)
+            await session.commit()
+            await repository.touch(user, when=first + timedelta(minutes=1))
+            await session.commit()
+
+        updates = [sql for sql in statements if sql.lstrip().upper().startswith("UPDATE")]
+        assert len(updates) == 1
+        assert user.last_seen_at == first
+
+    async def test_touch_updates_again_once_the_window_has_passed(
+        self, session: AsyncSession
+    ) -> None:
+        repository = UserRepository(session)
+        user, _ = await repository.get_or_create(TelegramProfile(telegram_id=779))
+        await session.commit()
+        first = utcnow()
+        await repository.touch(user, when=first)
+        await session.commit()
+
+        later = first + timedelta(minutes=5)
+        await repository.touch(user, when=later)
+        await session.commit()
+
+        assert user.last_seen_at == later
+
 
 class TestDecks:
     async def test_default_deck_is_created_once(
@@ -131,6 +197,20 @@ class TestDecks:
         await session.commit()
 
         assert await decks.get(deck.id, user_id=user.id) is None
+
+    async def test_count_for_user_lets_the_database_count(
+        self, session: AsyncSession, decks: DeckRepository, user: User, engine: AsyncEngine
+    ) -> None:
+        """Pulling every id into Python to call ``len`` was busywork."""
+        await decks.create(user.id, "One")
+        await decks.create(user.id, "Two")
+        await session.commit()
+
+        with record_statements(engine) as statements:
+            assert await decks.count_for_user(user.id) == 2
+
+        counts = [sql for sql in statements if "count(" in sql.lower()]
+        assert counts, statements
 
 
 def test_normalized_draft_keeps_and_resolves_its_language() -> None:
