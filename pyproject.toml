@@ -38,6 +38,7 @@ dev = [
     "pre-commit>=4.0",
     "pytest>=8.3",
     "pytest-asyncio>=0.25",
+    "pytest-cov>=7.1.0",
     "ruff>=0.9",
 ]
 
@@ -91,3 +92,17 @@ markers = [
     "integration: tests that need a real PostgreSQL instance (docker compose up -d db)",
 ]
 addopts = "-q"
+
+[tool.coverage.run]
+source = ["src/eng_remember"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+# No fail_under on purpose: the report is for spotting untested corners, not a
+# number to satisfy. A threshold set today would be met by writing tests for the
+# number, or lowered the first time it got in the way.
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]

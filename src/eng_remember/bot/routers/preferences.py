@@ -32,6 +32,12 @@ REMIND_USAGE = (
     "<i>Время указывается в вашем часовом поясе.</i>"
 )
 
+REMIND_ORDER_ERROR = (
+    "Вечернее напоминание должно идти после утреннего: "
+    "сейчас утро — <code>{morning}</code>, вечер — <code>{evening}</code>.\n"
+    "Измените время: <code>/remind 8:30</code> или <code>/remind evening 20:00</code>."
+)
+
 WEEKDAY_NAMES = ("пн", "вт", "ср", "чт", "пт", "сб", "вс")
 
 
@@ -91,11 +97,15 @@ def build_router() -> Router:
             )
             return
 
-        if not argument.isdigit() or not MIN_NEW_CARDS <= int(argument) <= MAX_NEW_CARDS:
+        # ``str.isdigit`` is not a number check: it accepts "²" (which ``int``
+        # then refuses) and "٣" (which ``int`` reads as 3). Only ASCII digits are
+        # a number the learner meant to type.
+        limit = int(argument) if argument.isascii() and argument.isdigit() else None
+        if limit is None or not MIN_NEW_CARDS <= limit <= MAX_NEW_CARDS:
             await message.answer(f"Нужно число от {MIN_NEW_CARDS} до {MAX_NEW_CARDS}.")
             return
 
-        user.new_cards_per_day = int(argument)
+        user.new_cards_per_day = limit
         await services.commit()
         await message.answer(
             f"Хорошо, не больше {user.new_cards_per_day} новых слов в день.",
@@ -108,6 +118,15 @@ def build_router() -> Router:
         if user.evening_reminder:
             evening = user.evening_reminder_time or settings.default_streak_time
         return morning, evening
+
+    def _order_error(morning: time, evening: time | None) -> str | None:
+        """Reject an evening that would fire before (or at) the morning slot."""
+        if evening is None or morning < evening:
+            return None
+        return REMIND_ORDER_ERROR.format(
+            morning=humanize_clock(morning),
+            evening=humanize_clock(evening),
+        )
 
     async def _show_reminders(message: Message, user: User, services: Services) -> None:
         settings = services.settings.reminders
@@ -166,14 +185,28 @@ def build_router() -> Router:
 
         if argument.startswith("evening"):
             rest = argument.removeprefix("evening").strip()
+            settings = services.settings.reminders
+            morning = _effective(user, settings)[0]
+
             if rest in {"on", "off"}:
+                if rest == "on":
+                    wanted_evening = user.evening_reminder_time or settings.default_streak_time
+                    error = _order_error(morning, wanted_evening)
+                    if error is not None:
+                        await message.answer(error)
+                        return
                 user.evening_reminder = rest == "on"
                 await services.commit()
                 await _show_reminders(message, user, services)
                 return
+
             parsed_evening = parse_clock(rest) if rest else None
             if parsed_evening is None:
                 await message.answer(REMIND_USAGE)
+                return
+            error = _order_error(morning, parsed_evening)
+            if error is not None:
+                await message.answer(error)
                 return
             user.evening_reminder = True
             user.evening_reminder_time = parsed_evening
@@ -184,6 +217,11 @@ def build_router() -> Router:
         parsed = parse_clock(argument)
         if parsed is None:
             await message.answer(REMIND_USAGE)
+            return
+        evening = _effective(user, services.settings.reminders)[1]
+        error = _order_error(parsed, evening)
+        if error is not None:
+            await message.answer(error)
             return
         user.reminder_time = parsed
         await services.commit()
@@ -255,7 +293,6 @@ def build_router() -> Router:
         )
 
     @router.message(Command("settings"))
-    @router.message(F.text == texts.BTN_HELP)
     async def show_settings(message: Message, user: User, services: Services) -> None:
         morning, evening = _effective(user, services.settings.reminders)
         reminder_state = "🔔 включены" if user.reminders_enabled else "🔕 выключены"
@@ -267,15 +304,14 @@ def build_router() -> Router:
             f"Новых слов в день: <b>{user.new_cards_per_day}</b> — сменить: <code>/limit 30</code>\n"
             f"Напоминания: <b>{reminder_state}</b> — "
             f"утро <code>{humanize_clock(morning)}</code>, вечер <code>{evening_text}</code>\n\n"
-            "<b>Команды</b>\n"
-            "/review — начать повторение\n"
-            "/add — добавить слова\n"
-            "/decks — колоды\n"
-            "/stats — статистика\n"
-            "/level — уровень изучаемого языка\n"
-            "/remind — напоминания\n"
-            "/cancel — отменить текущее действие",
+            "Все команды — /help.",
             reply_markup=keyboards.main_menu(),
         )
+
+    @router.message(F.text == texts.BTN_HELP)
+    async def show_help(message: Message) -> None:
+        # The «Помощь» button and /help render one text: two lists of commands
+        # inevitably drifted, and the button showed the shorter one.
+        await message.answer(texts.help_text(), reply_markup=keyboards.main_menu())
 
     return router

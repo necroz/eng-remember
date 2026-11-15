@@ -49,8 +49,13 @@ __all__ = [
 ]
 
 # Control characters (including newlines and tabs) become spaces; everything
-# else keeps its meaning.
+# else keeps its meaning. The second variant is for free text whose line
+# structure is the input itself (a list typed one word per line): the newline
+# survives as a separator, every other control character still becomes a space.
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+# Prose keeps its paragraphs: only the other control characters are stripped.
+_CONTROL_CHARS_EXCEPT_NEWLINES = re.compile(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]")
+_HORIZONTAL_WHITESPACE = re.compile(r"[ \t\f\v]+")
 _ANGLE_BRACKETS = re.compile(r"[<>]")
 
 # Caps are generous for the field they guard: a term is a word or a short
@@ -58,7 +63,9 @@ _ANGLE_BRACKETS = re.compile(r"[<>]")
 TERM_LIMIT = 80
 TRANSLATION_LIMIT = 200
 TRANSCRIPTION_LIMIT = 80
-PART_OF_SPEECH_LIMIT = 40
+# Equal to the ``part_of_speech`` column width: a longer value would only be
+# cut by the database (or rejected) later.
+PART_OF_SPEECH_LIMIT = 32
 EXAMPLE_LIMIT = 300
 NOTES_LIMIT = 300
 MNEMONIC_LIMIT = 200
@@ -66,6 +73,14 @@ TAG_LIMIT = 40
 TOPIC_LIMIT = 80
 QUESTION_LIMIT = 200
 OPTION_LIMIT = 48
+
+# An explanation may be several paragraphs, but it is still one Telegram
+# message; the ceiling is what keeps a runaway answer from filling the chat.
+ANSWER_LIMIT = 2000
+
+# The biggest batch a user can plausibly ask for. Everything past it is dropped
+# in code rather than rejected: the first cards of a long answer are still good.
+CARDS_LIMIT = 50
 
 # The prompts ask for up to three examples; the hard ceiling is higher so a
 # generous model is not rejected, and everything past it is dropped in code.
@@ -95,13 +110,36 @@ _FREQUENCY_ALIASES: dict[str, str] = {
 }
 
 
-def flatten_line(value: str, *, limit: int, strip_brackets: bool = False) -> str:
-    """One line, whitespace collapsed, capped at ``limit``.
+def flatten_line(
+    value: str,
+    *,
+    limit: int,
+    strip_brackets: bool = False,
+    keep_newlines: bool = False,
+) -> str:
+    """Sanitise free text, capped at ``limit``.
+
+    By default everything becomes one line with whitespace collapsed — the rule
+    for a value that is stored (a term, a topic, an option) or placed inside a
+    wrapper where a newline would be structure. ``keep_newlines`` is for a whole
+    message whose line breaks are the learner's own formatting, such as a
+    vocabulary list typed one word per line: newlines survive as separators,
+    every other control character is neutralised, runs of horizontal whitespace
+    collapse to one space, each line is stripped, and only the outer edges are
+    trimmed after the cap.
 
     ``strip_brackets`` is for values that will be interpolated into a prompt
     wrapper or a Telegram message: with ``<`` and ``>`` gone the value cannot
     imitate the tags around it.
     """
+    if keep_newlines:
+        text = value.replace("\r\n", "\n").replace("\r", "\n")
+        text = _CONTROL_CHARS_EXCEPT_NEWLINES.sub(" ", text)
+        if strip_brackets:
+            text = _ANGLE_BRACKETS.sub("", text)
+        lines = (_HORIZONTAL_WHITESPACE.sub(" ", line).strip() for line in text.split("\n"))
+        return "\n".join(lines).strip()[:limit].strip()
+
     flat = _CONTROL_CHARS.sub(" ", value)
     if strip_brackets:
         flat = _ANGLE_BRACKETS.sub("", flat)
@@ -443,6 +481,19 @@ class ParseResponse(BaseModel):
         cleaned = flatten_line(value or "", limit=TOPIC_LIMIT, strip_brackets=True)
         return cleaned or None
 
+    @field_validator("answer")
+    @classmethod
+    def _cap_answer(cls, value: str | None) -> str | None:
+        """Explanations are prose, so newlines stay; only the ceiling applies.
+
+        Other control characters do not: the answer is stored and sent to
+        Telegram, and a stray NUL or escape sequence is never part of prose.
+        """
+        if not value:
+            return None
+        cleaned = _CONTROL_CHARS_EXCEPT_NEWLINES.sub(" ", value)
+        return cleaned[:ANSWER_LIMIT].strip() or None
+
     @field_validator("intent", mode="before")
     @classmethod
     def _coerce_intent(cls, value: object) -> object:
@@ -463,7 +514,10 @@ class ParseResponse(BaseModel):
     @field_validator("cards")
     @classmethod
     def _drop_incomplete(cls, cards: list[ParsedCard]) -> list[ParsedCard]:
-        return [card for card in cards if card.term and card.translation]
+        # Drop first, then cap: a truncated answer's last card is still a whole
+        # card, not an empty slot.
+        complete = [card for card in cards if card.term and card.translation]
+        return complete[:CARDS_LIMIT]
 
     def to_drafts(self) -> list[CardDraft]:
         return [card.to_draft() for card in self.cards]
@@ -485,7 +539,7 @@ class ExpansionResponse(BaseModel):
     @field_validator("cards")
     @classmethod
     def _drop_incomplete(cls, cards: list[ParsedCard]) -> list[ParsedCard]:
-        return [card for card in cards if card.term and card.translation]
+        return [card for card in cards if card.term and card.translation][:CARDS_LIMIT]
 
     def to_drafts(self) -> list[CardDraft]:
         return [card.to_draft() for card in self.cards]
@@ -606,12 +660,44 @@ class AnswerCheckResponse(BaseModel):
 _FENCE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
 
 
+def _matching_brace(text: str, start: int) -> int | None:
+    """Index of the ``}`` that closes the ``{`` at ``start``, if any.
+
+    Quoted strings are skipped, including escaped quotes inside them: a ``}``
+    in ``{"c": "}"}`` is text, not structure.
+    """
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
 def extract_json_object(raw: str) -> str:
     """Pull a JSON object out of a model answer.
 
     Local models routinely wrap the payload in a markdown fence or add a
-    sentence around it even when asked not to, so the client tries the fenced
-    block first and then the outermost braces before giving up.
+    sentence around it even when asked not to. Slicing from the first ``{`` to
+    the last ``}`` breaks as soon as prose contains braces of its own or the
+    answer holds two objects, so this scans for the first balanced object that
+    actually parses instead.
     """
     text = raw.strip()
     fenced = _FENCE.search(text)
@@ -620,10 +706,22 @@ def extract_json_object(raw: str) -> str:
 
     try:
         json.loads(text)
-    except json.JSONDecodeError:
-        start = text.find("{")
-        end = text.rfind("}")
-        if start == -1 or end <= start:
-            raise
-        text = text[start : end + 1]
-    return text
+    except json.JSONDecodeError as exc:
+        first_error = exc
+    else:
+        return text
+
+    start = text.find("{")
+    while start != -1:
+        end = _matching_brace(text, start)
+        if end is not None:
+            candidate = text[start : end + 1]
+            try:
+                json.loads(candidate)
+            except json.JSONDecodeError:
+                pass
+            else:
+                return candidate
+        start = text.find("{", start + 1)
+
+    raise first_error

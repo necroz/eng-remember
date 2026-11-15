@@ -19,11 +19,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from eng_remember.bot import texts
 from eng_remember.bot.callbacks import ReviewCB
 from eng_remember.domain.enums import CardDirection, ReviewRating
+from eng_remember.errors import ScheduleConflictError
 from eng_remember.models.card import Card
 from eng_remember.models.deck import Deck
 from eng_remember.models.review import Review
 from eng_remember.models.user import User
-from eng_remember.repositories.cards import CardDraft
+from eng_remember.repositories.cards import CardDraft, CardRepository
 from eng_remember.services.container import Services
 from eng_remember.services.llm.schema import AnswerCheckResponse
 from eng_remember.services.review import ReviewService
@@ -33,18 +34,9 @@ from tests.factories import (
     TEST_USER_ID,
     ScriptedClient,
     card_payload,
-    make_callback_update,
-    make_message_update,
     parse_payload,
 )
-
-
-async def send(dispatcher: Dispatcher, bot: Bot, text: str, **kwargs: object) -> None:
-    await dispatcher.feed_update(bot, make_message_update(text, **kwargs))  # type: ignore[arg-type]
-
-
-async def tap(dispatcher: Dispatcher, bot: Bot, data: str, **kwargs: object) -> None:
-    await dispatcher.feed_update(bot, make_callback_update(data, **kwargs))  # type: ignore[arg-type]
+from tests.helpers import send, tap
 
 
 def button_with(recording: RecordingSession, needle: str) -> str:
@@ -361,6 +353,31 @@ class TestReview:
 
         await send(dispatcher, bot, "/review", update_id=23)
         assert "gamma" in recording.last_text()
+
+    async def test_a_conflicting_answer_shows_the_stale_path_not_an_error(
+        self,
+        dispatcher: Dispatcher,
+        bot: Bot,
+        recording: RecordingSession,
+        card_id: int,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A card answered elsewhere is stale, not a broken bot.
+
+        The schedule write refuses an outdated ``reps``; the learner must see the
+        page saying the card moved on, not the global "что-то сломалось".
+        """
+
+        async def conflict(_self: CardRepository, _card: Card, _schedule: object) -> None:
+            raise ScheduleConflictError(card_id)
+
+        monkeypatch.setattr(CardRepository, "update_schedule", conflict)
+
+        await send(dispatcher, bot, "/review", update_id=20)
+        await send(dispatcher, bot, "вездесущий", update_id=21, date=utcnow())
+
+        assert texts.card_unavailable() in recording.sent_texts()
+        assert texts.global_error() not in recording.sent_texts()
 
     async def test_a_fast_correct_answer_is_graded_easy(
         self,
@@ -749,6 +766,55 @@ class TestOtherCommands:
 
         assert "Нужно число" in recording.last_text()
 
+    @pytest.mark.parametrize("digits", ["²", "٣", "٨"])
+    async def test_the_daily_limit_rejects_unicode_digits(
+        self,
+        digits: str,
+        dispatcher: Dispatcher,
+        bot: Bot,
+        recording: RecordingSession,
+        session_factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        """Only ASCII digits are a number the learner meant to type.
+
+        ``²`` is a digit to ``str.isdigit`` and not a number to ``int`` — the old
+        handler crashed there. ``٣`` and ``٨`` are worse: ``int`` reads them as 3
+        and 8, so the old check accepted a value nobody typed and quietly moved
+        the daily budget. All three must get the validation message and leave the
+        setting alone.
+        """
+        await send(dispatcher, bot, f"/limit {digits}")
+
+        assert "Нужно число" in recording.last_text()
+        async with session_factory() as check:
+            user = (await check.scalars(select(User))).one()
+            assert user.new_cards_per_day == 20
+
+    async def test_an_explicit_zero_limit_is_kept_and_stats_show_no_new_words(
+        self,
+        dispatcher: Dispatcher,
+        bot: Bot,
+        recording: RecordingSession,
+        session_factory: async_sessionmaker[AsyncSession],
+        card_id: int,
+    ) -> None:
+        """``/limit 0`` is a legal choice and means exactly zero new words.
+
+        The due card behind ``card_id`` keeps the collection non-empty: only the
+        new-card figure may read zero.
+        """
+        await send(dispatcher, bot, "/limit 0")
+
+        async with session_factory() as check:
+            user = (await check.scalars(select(User))).one()
+            assert user.new_cards_per_day == 0
+        assert "не больше 0" in recording.last_text()
+
+        recording.clear()
+        await send(dispatcher, bot, "/stats")
+
+        assert "Новых в очереди: <b>0</b>" in recording.last_text()
+
     async def test_the_daily_limit_can_be_changed(
         self,
         dispatcher: Dispatcher,
@@ -760,23 +826,3 @@ class TestOtherCommands:
         async with session_factory() as check:
             user = (await check.scalars(select(User))).one()
             assert user.new_cards_per_day == 5
-
-
-class TestBlockedUser:
-    async def test_a_blocked_user_gets_no_replies(
-        self,
-        dispatcher: Dispatcher,
-        bot: Bot,
-        recording: RecordingSession,
-        session_factory: async_sessionmaker[AsyncSession],
-    ) -> None:
-        await send(dispatcher, bot, "/start")
-        async with session_factory() as setup:
-            user = (await setup.scalars(select(User))).one()
-            user.is_blocked = True
-            await setup.commit()
-        recording.clear()
-
-        await send(dispatcher, bot, "run - бежать")
-
-        assert recording.sent_texts() == []

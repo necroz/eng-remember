@@ -33,7 +33,7 @@ from aiogram.types import CallbackQuery, Message
 
 from eng_remember.bot import keyboards, texts
 from eng_remember.bot.callbacks import ClarifyCB, ImportCB
-from eng_remember.bot.rendering import callback_chat_id, edit_or_send
+from eng_remember.bot.rendering import callback_chat_id, edit_or_send, require_state
 from eng_remember.bot.states import (
     CONTEXT_KEY,
     COUNT_KEY,
@@ -47,6 +47,7 @@ from eng_remember.bot.states import (
     ROUND_KEY,
     TOPIC_KEY,
     AddWords,
+    ImportFile,
 )
 from eng_remember.config import DiscoverySettings
 from eng_remember.domain.languages import DEFAULT_LANGUAGE, resolve_target_language
@@ -477,6 +478,12 @@ def build_router() -> Router:
         text = message.text or ""
         chat_id = message.chat.id
 
+        if await state.get_state() == ImportFile.confirming.state:
+            # A typed message is not a confirmation: parsing it as a new batch
+            # would throw away the import waiting for one.
+            await message.answer(texts.file_import_pending())
+            return
+
         if await state.get_state() == AddWords.clarifying.state:
             data = await state.get_data()
             language = data.get(LANGUAGE_KEY)
@@ -514,6 +521,8 @@ def build_router() -> Router:
         services: Services,
         state: FSMContext,
     ) -> None:
+        if not await require_state(query, state, AddWords.clarifying):
+            return
         data = await state.get_data()
         options = data.get(OPTIONS_KEY) or []
         if not isinstance(options, list) or not 0 <= callback_data.index < len(options):
@@ -552,6 +561,8 @@ def build_router() -> Router:
         Falls back to the deck's own topic, which is why the deck remembers it:
         the user's earlier request is often enough context for this one.
         """
+        if not await require_state(query, state, AddWords.clarifying):
+            return
         data = await state.get_data()
         await state.clear()
         await edit_or_send(query, texts.clarification_skipped(), bot=bot)
@@ -582,6 +593,8 @@ def build_router() -> Router:
         services: Services,
         state: FSMContext,
     ) -> None:
+        if not await require_state(query, state, AddWords.confirming):
+            return
         data = await state.get_data()
         await state.clear()
 
@@ -628,6 +641,8 @@ def build_router() -> Router:
         themselves stays on the button, because they asked for it to be saved
         and did not withdraw it by asking to look further.
         """
+        if not await require_state(query, state, AddWords.confirming):
+            return
         data = await state.get_data()
         found_raw = data.get(DRAFT_KEY) or []
         own_raw = data.get(OWN_KEY) or []
@@ -660,6 +675,8 @@ def build_router() -> Router:
 
     @router.callback_query(ImportCB.filter(F.action == "cancel"))
     async def cancel_import(query: CallbackQuery, bot: Bot, state: FSMContext) -> None:
+        if not await require_state(query, state, AddWords.confirming):
+            return
         await state.clear()
         await edit_or_send(query, texts.import_cancelled(), bot=bot)
         await query.answer()
@@ -675,6 +692,17 @@ def build_router() -> Router:
         """
         await message.answer(
             texts.unknown_command(),
+            reply_markup=keyboards.main_menu(),
+        )
+
+    # Registered after every text handler and after the files router, so a CSV
+    # attachment keeps going to the import flow: this only sees messages that
+    # carry no text at all.
+    @router.message(~F.text)
+    async def unsupported_content(message: Message) -> None:
+        """A photo, a voice note or a sticker: nothing here can read it."""
+        await message.answer(
+            texts.unsupported_content(),
             reply_markup=keyboards.main_menu(),
         )
 

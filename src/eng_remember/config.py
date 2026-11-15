@@ -14,15 +14,27 @@ from datetime import time
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import BaseModel, Field, SecretStr, model_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ParseModeName = Literal["HTML", "MarkdownV2", "Markdown"]
+
+# The engine is async, so each URL must name an async driver: a bare
+# ``postgresql://`` would hand SQLAlchemy the synchronous psycopg2 and fail at
+# the first query instead of at startup. SQLite needs no driver for the sync
+# form used by tooling.
+ALLOWED_DATABASE_SCHEMES = ("postgresql+asyncpg://", "sqlite+aiosqlite://", "sqlite://")
+
+LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 
 
 class BotSettings(BaseModel):
     """How the Telegram side behaves."""
 
+    # Every text the bot sends is HTML: values are escaped where they are
+    # interpolated and the emphasis is written as tags. Another parse mode would
+    # show those tags to the learner, so it is a startup error rather than an
+    # option. The type stays wide for compatibility; the validator narrows it.
     parse_mode: ParseModeName = "HTML"
     default_deck_name: str = "Основная колода"
     default_timezone: str = "UTC"
@@ -39,8 +51,13 @@ class BotSettings(BaseModel):
         ge=1,
         description="Maximum updates processed concurrently per bot process",
     )
+    user_concurrency_limit: int = Field(
+        default=3,
+        ge=1,
+        description="Maximum updates from one learner processed at once",
+    )
     messages_per_minute: int = Field(
-        default=10,
+        default=30,
         ge=1,
         description="Inbound messages allowed per learner in any rolling minute",
     )
@@ -65,6 +82,13 @@ class BotSettings(BaseModel):
             raise ValueError("review_session_min_cards must not exceed review_session_max_cards")
         return self
 
+    @field_validator("parse_mode")
+    @classmethod
+    def _html_only(cls, value: ParseModeName) -> ParseModeName:
+        if value != "HTML":
+            raise ValueError("bot texts are HTML-only: parse_mode must be 'HTML'")
+        return value
+
 
 class LlmSettings(BaseModel):
     """OpenAI-compatible chat completions endpoint.
@@ -79,12 +103,13 @@ class LlmSettings(BaseModel):
     api_key: SecretStr | None = None
     model: str = "gpt-4o-mini"
     temperature: float = Field(default=0.0, ge=0.0, le=2.0)
-    # Structured JSON tasks do not need chain-of-thought, and reasoning tokens
-    # count against max_output_tokens. "none" keeps the whole budget for the
-    # answer; a provider that rejects the parameter disables it automatically.
-    # Set to "low"/"medium"/"high" to keep some thinking, or leave empty to
-    # let the provider decide.
-    reasoning_effort: str | None = Field(default="none")
+    # Structured JSON tasks do not need chain-of-thought, but not every provider
+    # knows this parameter: "none" is a 400 on gpt-4o-mini. It is therefore
+    # unset by default and not sent at all, letting the provider apply its own
+    # default; a provider that rejects it once is remembered for the process.
+    # Set to "none" to spend the whole output budget on the answer, or to
+    # "low"/"medium"/"high" to keep some thinking.
+    reasoning_effort: str | None = Field(default=None)
     # Reasoning models spend part of this timeout thinking before they write a
     # single character; a discovery batch of 28 cards takes tens of seconds.
     timeout_seconds: float = Field(default=120.0, gt=0)
@@ -239,12 +264,22 @@ class Settings(BaseSettings):
     # Port matches the mapping published by docker-compose.yml.
     database_url: str = "postgresql+asyncpg://eng:eng@localhost:55432/eng_remember"
     db_echo: bool = False
-    db_pool_size: int = Field(default=5, ge=1)
-    db_max_overflow: int = Field(default=10, ge=0)
+    # Every concurrent update may hold a session while it waits for the model,
+    # and the reminder tick, the digest and the pruner connect on their own.
+    # The pool therefore has to cover BOT__TASKS_CONCURRENCY_LIMIT plus
+    # background work; a smaller pool queues requests here instead of running
+    # them. 10 + 15 = 25 for the default limit of 20.
+    db_pool_size: int = Field(default=10, ge=1)
+    db_max_overflow: int = Field(default=15, ge=0)
 
     log_level: str = "INFO"
     log_json: bool = True
     log_llm_payloads: bool = False
+    llm_call_retention_days: int = Field(
+        default=90,
+        ge=0,
+        description="Prune LLM audit rows older than this many days; 0 keeps them forever",
+    )
 
     bot: BotSettings = BotSettings()
     llm: LlmSettings = LlmSettings()
@@ -257,6 +292,29 @@ class Settings(BaseSettings):
     @property
     def is_sqlite(self) -> bool:
         return self.database_url.startswith("sqlite")
+
+    @field_validator("database_url")
+    @classmethod
+    def _known_database_scheme(cls, value: str) -> str:
+        url = value.strip()
+        if not url:
+            raise ValueError(
+                "database_url is empty; use one of " + ", ".join(ALLOWED_DATABASE_SCHEMES)
+            )
+        if not url.startswith(ALLOWED_DATABASE_SCHEMES):
+            raise ValueError(
+                f"database_url must start with one of {', '.join(ALLOWED_DATABASE_SCHEMES)}; "
+                f"got {url.split(':', 1)[0]}"
+            )
+        return url
+
+    @field_validator("log_level")
+    @classmethod
+    def _known_log_level(cls, value: str) -> str:
+        level = value.strip().upper()
+        if level not in LOG_LEVELS:
+            raise ValueError(f"log_level must be one of {', '.join(LOG_LEVELS)}; got {value!r}")
+        return level
 
 
 def require_bot_token(settings: Settings) -> str:

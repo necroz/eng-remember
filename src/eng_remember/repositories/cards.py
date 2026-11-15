@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from datetime import datetime
 from typing import Any, cast
 
@@ -14,18 +14,44 @@ from sqlalchemy import (
     exists,
     func,
     select,
+    update,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
+from sqlalchemy.orm.attributes import set_committed_value
 
 from eng_remember.domain.enums import CardDirection
 from eng_remember.domain.examples import merge_examples
 from eng_remember.domain.languages import DEFAULT_LANGUAGE, resolve_target_language
 from eng_remember.domain.srs import CardSchedule
+from eng_remember.domain.term_match import fold_term
+from eng_remember.errors import ScheduleConflictError
 from eng_remember.models.card import Card
 from eng_remember.utils.time import ensure_utc
 
-__all__ = ["CardDraft", "CardRepository", "QueueCounts"]
+__all__ = ["COLUMN_WIDTHS", "CardDraft", "CardRepository", "QueueCounts"]
+
+# Declared widths of the String fields a ``CardDraft`` carries. Text columns
+# the draft also fills (translation, example, notes) are unbounded, so nothing
+# is cut there; ``source``, ``direction`` and the scheduler's ``state`` are set
+# by the repository, not the parser, and are not in the table.
+# ``CardDraft.normalized()`` is the last stop before persistence: a value that
+# slipped past its own layer — a CSV row, a model answer, a future caller — is
+# cut to fit here instead of failing at INSERT time.
+COLUMN_WIDTHS: dict[str, int] = {
+    "term": 255,
+    "language": 8,
+    "transcription": 128,
+    "part_of_speech": 32,
+    "cefr": 2,
+    "frequency": 8,
+}
+
+# Columns a :class:`CardSchedule` owns. ``update_schedule`` copies them onto the
+# ORM object as committed values after the conditional write, so a successful
+# answer needs no second UPDATE. Derived from the domain object so a new field
+# cannot be written to the row and forgotten in the identity map.
+_SCHEDULE_FIELDS = tuple(item.name for item in fields(CardSchedule))
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,21 +92,22 @@ class CardDraft:
 
         The example list keeps its invariant here: the main example is the
         first element, so rotation always starts with the sentence the learner
-        may have pinned themselves.
+        may have pinned themselves. Widths of the String columns are enforced
+        here too, as the last stop before persistence.
         """
         examples = tuple(merge_examples(self.example, self.examples))
         return CardDraft(
-            term=self.term.strip(),
+            term=_fit(self.term, "term") or "",
             translation=self.translation.strip(),
-            transcription=_clean(self.transcription),
-            part_of_speech=_clean(self.part_of_speech),
+            transcription=_fit(self.transcription, "transcription"),
+            part_of_speech=_fit(self.part_of_speech, "part_of_speech"),
             example=examples[0] if examples else None,
             examples=examples,
             notes=_clean(self.notes),
             tags=tuple(tag.strip() for tag in self.tags if tag.strip()),
-            cefr=_clean(self.cefr),
-            frequency=_clean(self.frequency),
-            language=resolve_target_language(self.language),
+            cefr=_fit(self.cefr, "cefr"),
+            frequency=_fit(self.frequency, "frequency"),
+            language=_fit(resolve_target_language(self.language), "language") or DEFAULT_LANGUAGE,
         )
 
 
@@ -89,6 +116,14 @@ def _clean(value: str | None) -> str | None:
         return None
     stripped = value.strip()
     return stripped or None
+
+
+def _fit(value: str | None, column: str) -> str | None:
+    """Trim and cut a value to the declared width of the column storing it."""
+    cleaned = _clean(value)
+    if cleaned is None:
+        return None
+    return cleaned[: COLUMN_WIDTHS[column]].rstrip() or None
 
 
 class CardRepository:
@@ -136,6 +171,22 @@ class CardRepository:
         stmt = select(Card).where(Card.id == card_id, Card.user_id == user_id)
         return await self._session.scalar(stmt)
 
+    async def refresh(self, card: Card) -> Card | None:
+        """Re-read a card's stored state, replacing what this session holds.
+
+        Someone else may have committed an edit while a slow task kept its
+        snapshot: the enrichment worker only learns about a sentence the learner
+        added during the model call by asking the database again.
+        ``populate_existing`` is what makes the query overwrite the identity-mapped
+        instance instead of handing the stale object back.
+        """
+        stmt = (
+            select(Card)
+            .where(Card.id == card.id, Card.user_id == card.user_id)
+            .execution_options(populate_existing=True)
+        )
+        return await self._session.scalar(stmt)
+
     async def find_by_term(
         self, user_id: int, term: str, language: str = DEFAULT_LANGUAGE
     ) -> Card | None:
@@ -171,7 +222,7 @@ class CardRepository:
         if language is not None:
             stmt = stmt.where(Card.language == resolve_target_language(language))
         stmt = stmt.limit(limit)
-        return {term.casefold() for term in (await self._session.scalars(stmt)).all()}
+        return {fold_term(term) for term in (await self._session.scalars(stmt)).all()}
 
     async def existing_terms(
         self,
@@ -189,7 +240,7 @@ class CardRepository:
         )
         if language is not None:
             stmt = stmt.where(Card.language == resolve_target_language(language))
-        return {term.casefold() for term in (await self._session.scalars(stmt)).all()}
+        return {fold_term(term) for term in (await self._session.scalars(stmt)).all()}
 
     async def list_due(
         self,
@@ -255,6 +306,11 @@ class CardRepository:
         now: datetime,
     ) -> dict[int, QueueCounts]:
         """Due and new counts for many learners in one query.
+
+        These are raw counts: they say how much sits in the collection, not how
+        much today's session will serve. The daily new-card budget is applied by
+        the caller, which knows the learner's settings and their introduction
+        count for today.
 
         The reminder tick examines a batch of users; asking per user would be one
         round trip per notification, which is exactly the shape that turns a
@@ -382,19 +438,59 @@ class CardRepository:
         return list((await self._session.scalars(stmt.limit(limit))).all())
 
     async def update_schedule(self, card: Card, schedule: CardSchedule) -> None:
-        card.apply_schedule(schedule)
-        await self._session.flush()
+        """Persist a schedule only if the card has not moved since it was read.
+
+        The write is conditional on the ``reps`` the caller saw: two answers
+        logged from the same read state both carry the same value, and only the
+        first may land. The loser gets :class:`ScheduleConflictError` instead of
+        silently overwriting the winner's schedule.
+
+        The ORM object is updated only after the write succeeds, and through
+        committed values: reassigning plain attributes would queue a second
+        unconditional UPDATE for the next flush, which is exactly the write this
+        check exists to prevent. For the same reason synchronization is disabled
+        on the statement itself — the automatic strategies copy the new values
+        onto an in-memory card even when the conditional UPDATE matched no row.
+        """
+        expected_reps = card.reps
+        stmt = (
+            update(Card)
+            .where(Card.id == card.id, Card.reps == expected_reps)
+            .values(
+                due_at=schedule.due_at,
+                state=schedule.state,
+                step=schedule.step,
+                stability=schedule.stability,
+                difficulty=schedule.difficulty,
+                last_review_at=schedule.last_review_at,
+                reps=schedule.reps,
+                lapses=schedule.lapses,
+            )
+        )
+        result = await self._session.execute(stmt.execution_options(synchronize_session=False))
+        if cast("CursorResult[Any]", result).rowcount == 0:
+            raise ScheduleConflictError(card.id)
+        for name in _SCHEDULE_FIELDS:
+            set_committed_value(card, name, getattr(schedule, name))
 
     async def update_content(self, card: Card, draft: CardDraft) -> None:
-        card.translation = draft.translation
-        card.transcription = draft.transcription
-        card.part_of_speech = draft.part_of_speech
-        card.example = draft.example
-        card.examples = list(draft.examples)
-        card.notes = draft.notes
-        card.tags = list(draft.tags)
-        card.cefr = draft.cefr
-        card.frequency = draft.frequency
+        """Replace the editable text of a card; the schedule stays as it is.
+
+        Normalised here, like :meth:`add`: an edit is the other way a value can
+        reach the row, and it must not be the way an untrimmed or over-long one
+        does. The term and the language are not assigned: the queue, the
+        duplicate index and the reverse twin are keyed on them.
+        """
+        cleaned = draft.normalized()
+        card.translation = cleaned.translation
+        card.transcription = cleaned.transcription
+        card.part_of_speech = cleaned.part_of_speech
+        card.example = cleaned.example
+        card.examples = list(cleaned.examples)
+        card.notes = cleaned.notes
+        card.tags = list(cleaned.tags)
+        card.cefr = cleaned.cefr
+        card.frequency = cleaned.frequency
         await self._session.flush()
 
     async def update_examples(self, card: Card, examples: list[str]) -> None:

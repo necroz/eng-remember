@@ -11,25 +11,38 @@ skipped.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import AsyncIterator
+from datetime import timedelta
+from typing import Any
 
 import pytest
-from sqlalchemy import select, text
+from aiogram import Bot
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 import eng_remember.models  # noqa: F401  — registers tables on Base.metadata
-from eng_remember.config import Settings
+from eng_remember.bot.callbacks import DeckCB
+from eng_remember.bot.dispatcher import build_dispatcher
+from eng_remember.config import ReminderSettings, Settings
 from eng_remember.db import Base, create_engine, create_session_factory
 from eng_remember.domain.enums import CardDirection, CardState, ReviewRating
+from eng_remember.errors import ScheduleConflictError
 from eng_remember.models.card import Card
+from eng_remember.models.deck import Deck
+from eng_remember.models.review import Review
 from eng_remember.models.user import User
-from eng_remember.repositories.cards import CardDraft
+from eng_remember.repositories.cards import CardDraft, CardRepository
 from eng_remember.repositories.users import TelegramProfile
 from eng_remember.services.container import Services, build_services
 from eng_remember.utils.time import utcnow
+from tests.conftest import TEST_TOKEN, RecordingSession
 from tests.factories import schedule
+from tests.helpers import tap
 
 pytestmark = pytest.mark.integration
 
@@ -125,6 +138,31 @@ async def test_the_unique_constraint_includes_the_language(
     await pg_session.rollback()
 
 
+async def test_case_insensitive_duplicate_rejected_by_db(
+    pg_services: Services, pg_session: AsyncSession, pg_user: User
+) -> None:
+    """``run`` и ``Run`` — одно слово даже для базы, а не только для сервиса.
+
+    The service already folds the case, so the card is inserted through the
+    repository, which does no duplicate lookup: only the unique index stands
+    between a race of two imports and two spellings of one word.
+    """
+    card = await pg_services.card_service.add_draft(
+        pg_user, CardDraft(term="run", translation="бегать")
+    )
+    await pg_session.commit()
+
+    with pytest.raises(IntegrityError):
+        await pg_services.cards.add(
+            user_id=pg_user.id,
+            deck_id=card.deck_id,
+            draft=CardDraft(term="Run", translation="бегать"),
+            schedule=schedule(0),
+            direction=CardDirection.FORWARD,
+        )
+    await pg_session.rollback()
+
+
 async def test_the_review_flow_survives_a_real_scheduler(
     pg_services: Services, pg_session: AsyncSession, pg_user: User
 ) -> None:
@@ -141,11 +179,63 @@ async def test_the_review_flow_survives_a_real_scheduler(
     assert len(queue.cards) == 3
 
     for card in queue.cards:
-        await pg_services.review_service.answer(pg_user, card, ReviewRating.GOOD)
+        await pg_services.review_service.answer(pg_user, card, ReviewRating.GOOD, now=arrives)
     await pg_session.commit()
 
     assert await pg_services.review_service.get_next(pg_user) is None
-    assert await pg_services.reviews.count_since(pg_user.id, since=utcnow().replace(hour=0)) == 3
+    today = utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    assert await pg_services.reviews.count_since(pg_user.id, since=today) == 3
+
+
+async def test_concurrent_answers_log_one_review(
+    pg_session_factory: async_sessionmaker[AsyncSession],
+    pg_services: Services,
+    pg_session: AsyncSession,
+    pg_user: User,
+) -> None:
+    """Two sessions answer the same card from one read state; only one may land.
+
+    The loser must learn it lost rather than overwrite the winner's schedule,
+    and the journal must keep exactly one answer.
+    """
+    card = await pg_services.card_service.add_draft(
+        pg_user, CardDraft(term="race", translation="гонка")
+    )
+    await pg_session.commit()
+    card_id = card.id
+    user_id = pg_user.id
+    settings = Settings(_env_file=None, database_url=DATABASE_URL)
+
+    async def open_row(session: AsyncSession) -> tuple[User, Card]:
+        user = await session.get(User, user_id)
+        assert user is not None
+        stale = await CardRepository(session).get(card_id, user_id=user_id)
+        assert stale is not None
+        return user, stale
+
+    async with pg_session_factory() as first, pg_session_factory() as second:
+        first_services = build_services(first, settings)
+        second_services = build_services(second, settings)
+        first_user, first_card = await open_row(first)
+        second_user, second_card = await open_row(second)
+        second_read = second_card.schedule
+
+        await first_services.review_service.answer(first_user, first_card, ReviewRating.GOOD)
+        second_write = asyncio.create_task(
+            second_services.review_service.answer(second_user, second_card, ReviewRating.GOOD)
+        )
+        await first.commit()
+
+        with pytest.raises(ScheduleConflictError):
+            await second_write
+        # The rejected UPDATE must not repaint the losing session's object: the
+        # card there still shows exactly what it read, not the value it tried to
+        # write and not the winner's schedule.
+        assert second_card.schedule == second_read
+        await second.rollback()
+
+    async with pg_session_factory() as check:
+        assert await check.scalar(select(func.count(Review.id))) == 1
 
 
 async def test_json_tags_round_trip(
@@ -162,6 +252,30 @@ async def test_json_tags_round_trip(
 
     assert reloaded is not None
     assert reloaded.tags == ["business", "money"]
+
+
+async def test_normalized_draft_truncates_to_column_widths(
+    pg_services: Services, pg_session: AsyncSession, pg_user: User
+) -> None:
+    """A 40-character part of speech must not fail at INSERT (the column is 32)."""
+    part_of_speech = "adjective" * 5
+    card = await pg_services.card_service.add_draft(
+        pg_user,
+        CardDraft(
+            term="ubiquitous",
+            translation="вездесущий",
+            transcription="/" + "ɪ" * 200 + "/",
+            part_of_speech=part_of_speech,
+        ),
+    )
+    await pg_session.commit()
+    pg_session.expunge_all()
+
+    reloaded = await pg_services.cards.get(card.id, user_id=pg_user.id)
+
+    assert reloaded is not None
+    assert reloaded.part_of_speech == part_of_speech[:32]
+    assert len(reloaded.transcription or "") == 128
 
 
 async def test_the_state_check_constraint_is_enforced(
@@ -206,6 +320,37 @@ async def test_deleting_a_user_removes_its_data(
         assert remaining == 0, f"{table} still has rows"
 
 
+async def test_concurrent_get_or_create_reports_one_user(
+    pg_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Two updates from an unknown account must not race into an IntegrityError.
+
+    Telegram can deliver the first two messages of a new learner almost together;
+    a check-then-insert turns that pair into a unique-constraint violation. The
+    upsert must leave exactly one row, and exactly one caller may call itself the
+    creator.
+    """
+    from eng_remember.repositories.users import UserRepository
+
+    profile = TelegramProfile(telegram_id=100600, first_name="Racer")
+
+    async def contact() -> tuple[User, bool]:
+        async with pg_session_factory() as session:
+            user, created = await UserRepository(session).get_or_create(profile)
+            await session.commit()
+            return user, created
+
+    results = await asyncio.gather(contact(), contact())
+
+    assert results[0][0].id == results[1][0].id
+    assert {created for _, created in results} == {True, False}
+    async with pg_session_factory() as check:
+        rows = await check.scalar(
+            select(func.count(User.id)).where(User.telegram_id == profile.telegram_id)
+        )
+    assert rows == 1
+
+
 async def test_the_daily_new_card_budget_uses_real_timestamps(
     pg_services: Services, pg_session: AsyncSession, pg_user: User
 ) -> None:
@@ -226,6 +371,60 @@ async def test_the_daily_new_card_budget_uses_real_timestamps(
 
     second = await pg_services.review_service.build_queue(pg_user, now=arrives)
     assert second.cards == []
+
+
+async def test_introduced_counts_handles_several_boundaries(
+    pg_services: Services, pg_session: AsyncSession, pg_user: User
+) -> None:
+    """Batched introduction counting against per-learner midnights.
+
+    The query compares a collection of ``timestamptz`` values and applies
+    ``HAVING min(reviewed_at)``; SQLite is more forgiving about those types, so
+    the real column is exercised here.
+    """
+    from eng_remember.repositories.users import UserRepository
+
+    other, _ = await UserRepository(pg_session).get_or_create(
+        TelegramProfile(telegram_id=100501, first_name="Other")
+    )
+    now = utcnow()
+
+    async def introduce(learner: User, term: str, hours_ago: float) -> None:
+        deck = await pg_services.card_service.default_deck(learner)
+        card = await pg_services.cards.add(
+            user_id=learner.id,
+            deck_id=deck.id,
+            draft=CardDraft(term=term, translation="слово"),
+            schedule=schedule(0),
+        )
+        await pg_services.reviews.add(
+            Review(
+                card_id=card.id,
+                user_id=learner.id,
+                rating=ReviewRating.GOOD,
+                reviewed_at=now - timedelta(hours=hours_ago),
+                state_before=CardState.LEARNING,
+                state_after=CardState.LEARNING,
+            )
+        )
+
+    # A fresh card each; the second card was already known before that learner's
+    # own boundary, so it is not an introduction for them.
+    await introduce(pg_user, "fresh", 0.1)
+    await introduce(pg_user, "known", 30)
+    await introduce(other, "fresh", 0.1)
+    await introduce(other, "known", 2)
+    await pg_session.commit()
+
+    counted = await pg_services.reviews.introduced_counts(
+        [pg_user.id, other.id],
+        since_by_user={
+            pg_user.id: now - timedelta(hours=12),
+            other.id: now - timedelta(hours=1),
+        },
+    )
+
+    assert counted == {pg_user.id: 1, other.id: 1}
 
 
 async def test_a_card_keeps_its_instant_when_the_timezone_changes(
@@ -369,6 +568,20 @@ async def test_llm_calls_has_the_user_created_index(pg_session: AsyncSession) ->
     assert "ix_llm_calls_user_id_created_at" in {row[0] for row in rows}
 
 
+async def test_reviews_covering_index_exists(pg_session: AsyncSession) -> None:
+    """Первые ответы группируются по карточке, ни разу не заглядывая в таблицу."""
+    rows = await pg_session.execute(
+        text(
+            "SELECT indexdef FROM pg_indexes "
+            "WHERE tablename = 'reviews' AND indexname = 'ix_reviews_user_id_card_id_reviewed_at'"
+        )
+    )
+
+    definition = rows.scalar_one_or_none()
+    assert definition is not None
+    assert definition.endswith("(user_id, card_id, reviewed_at)")
+
+
 async def test_the_llm_quota_window_uses_real_timestamps(
     pg_session: AsyncSession, pg_user: User
 ) -> None:
@@ -429,3 +642,140 @@ async def test_the_llm_quota_window_uses_real_timestamps(
         await call(2)
     # A limit of three passes, so the two-day-old rows did not leak in.
     await call(3)
+
+
+async def test_delete_older_than_prunes_only_old_on_postgres(
+    pg_session: AsyncSession,
+) -> None:
+    """The retention DELETE compares ``timestamptz`` against an aware cutoff."""
+    from datetime import timedelta
+
+    from eng_remember.models.llm_call import LlmCall
+    from eng_remember.repositories.llm_calls import LlmCallRepository
+
+    now = utcnow()
+    pg_session.add_all(
+        [
+            LlmCall(
+                purpose="parse_message",
+                provider_model="m",
+                created_at=now - timedelta(days=91),
+            ),
+            LlmCall(
+                purpose="parse_message",
+                provider_model="m",
+                created_at=now - timedelta(days=89),
+            ),
+        ]
+    )
+    await pg_session.commit()
+
+    removed = await LlmCallRepository(pg_session).delete_older_than(now - timedelta(days=90))
+    await pg_session.commit()
+
+    assert removed == 1
+    remaining = (await pg_session.scalars(select(func.count(LlmCall.id)))).one()
+    assert remaining == 1
+
+
+async def test_crash_mid_tick_keeps_committed_watermarks_on_postgres(
+    pg_session: AsyncSession,
+    pg_session_factory: async_sessionmaker[AsyncSession],
+    pg_services: Services,
+    pg_user: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A crash while fetching page two leaves page one's watermark committed.
+
+    The unit suite proves this against SQLite; here the same batches cross real
+    ``timestamptz`` columns and a second connection must see the first commit.
+    """
+    from datetime import time
+
+    from eng_remember.repositories.users import UserRepository
+    from eng_remember.services.reminders import build_reminder_service
+    from tests.test_reminder_loop import RecordingNotifier
+
+    settings = Settings(
+        _env_file=None,
+        database_url=DATABASE_URL,
+        reminders=ReminderSettings(digest_enabled=False),
+    )
+    settings.reminders.batch_size = 1
+    second, _ = await UserRepository(pg_session).get_or_create(
+        TelegramProfile(telegram_id=100501, first_name="Second")
+    )
+    for learner in (pg_user, second):
+        learner.reminder_time = time(0, 0)
+        # Due yesterday, not next day: the tick below uses a simulated "today at
+        # 09:00", and a card added through ``add_draft`` would not arrive until
+        # tomorrow, leaving the learner with no work at that hour.
+        deck = await pg_services.card_service.default_deck(learner)
+        await pg_services.cards.add(
+            user_id=learner.id,
+            deck_id=deck.id,
+            draft=CardDraft(term=f"due-{learner.id}", translation="повтор"),
+            schedule=schedule(-1),
+        )
+    await pg_session.commit()
+
+    notifier = RecordingNotifier()
+    service = build_reminder_service(pg_session, settings, notifier)
+    now = utcnow().replace(hour=9, minute=0, second=0, microsecond=0)
+
+    original = UserRepository.list_reminder_candidates
+    calls = 0
+
+    async def flaky(self: UserRepository, **kwargs: Any) -> list[User]:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("database went away")
+        return await original(self, **kwargs)
+
+    monkeypatch.setattr(UserRepository, "list_reminder_candidates", flaky)
+
+    with pytest.raises(RuntimeError):
+        await service.run(now=now)
+
+    async with pg_session_factory() as fresh:
+        rows = (await fresh.scalars(select(User).order_by(User.id))).all()
+    assert [row.id for row in rows] == [pg_user.id, second.id]
+    assert rows[0].last_reminder_on is not None
+    assert rows[1].last_reminder_on is None
+
+
+async def test_deleting_a_deck_through_the_bot_removes_its_cards(
+    pg_session_factory: async_sessionmaker[AsyncSession],
+    pg_services: Services,
+    pg_session: AsyncSession,
+    pg_user: User,
+) -> None:
+    """The cascade is the database's job, and PostgreSQL is where it is enforced.
+
+    The cards are deleted together with the deck through the /decks buttons, so
+    the assertion covers the handler, the repository statement and the schema's
+    ``ON DELETE CASCADE`` at once.
+    """
+    deck = await pg_services.decks.create(pg_user.id, "Книги")
+    await pg_services.card_service.add_draft(
+        pg_user, CardDraft(term="tome", translation="фолиант"), deck=deck
+    )
+    await pg_session.commit()
+
+    settings = Settings(_env_file=None, database_url=DATABASE_URL)
+    recording = RecordingSession()
+    bot = Bot(
+        token=TEST_TOKEN,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+        session=recording,
+    )
+    dispatcher = build_dispatcher(settings, pg_session_factory)
+
+    await tap(dispatcher, bot, DeckCB(action="dl", deck_id=deck.id).pack())
+    assert "Удалить колоду" in recording.last_text()
+    await tap(dispatcher, bot, DeckCB(action="ok", deck_id=deck.id).pack(), update_id=11)
+
+    async with pg_session_factory() as check:
+        assert await check.get(Deck, deck.id) is None
+        assert await check.scalar(select(func.count(Card.id)).where(Card.deck_id == deck.id)) == 0

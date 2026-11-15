@@ -2,22 +2,50 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import timedelta
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import String, Text, event
+from sqlalchemy.exc import InvalidRequestError
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from eng_remember.domain.enums import CardDirection, CardState, ReviewRating
 from eng_remember.domain.languages import DEFAULT_LANGUAGE
 from eng_remember.models.card import Card
 from eng_remember.models.review import Review
 from eng_remember.models.user import User
-from eng_remember.repositories.cards import CardDraft, CardRepository
+from eng_remember.repositories.cards import COLUMN_WIDTHS, CardDraft, CardRepository
 from eng_remember.repositories.decks import DeckRepository
 from eng_remember.repositories.reviews import ReviewRepository
 from eng_remember.repositories.users import TelegramProfile, UserRepository
 from eng_remember.utils.time import utcnow
 from tests.factories import schedule
+
+
+@contextmanager
+def record_statements(engine: AsyncEngine) -> Iterator[list[str]]:
+    """Collect the SQL a block really sends, for query-shape assertions."""
+    statements: list[str] = []
+
+    def record(
+        conn: object,
+        cursor: object,
+        statement: str,
+        parameters: object,
+        context: object,
+        executemany: bool,
+    ) -> None:
+        del conn, cursor, parameters, context, executemany
+        statements.append(statement)
+
+    target = engine.sync_engine
+    event.listen(target, "before_cursor_execute", record)
+    try:
+        yield statements
+    finally:
+        event.remove(target, "before_cursor_execute", record)
 
 
 @pytest.fixture
@@ -99,6 +127,46 @@ class TestUsers:
 
         assert updated.username == "new"
 
+    async def test_touch_is_throttled_to_once_per_five_minutes(
+        self, session: AsyncSession, engine: AsyncEngine
+    ) -> None:
+        """Every update must not rewrite ``last_seen_at``.
+
+        The value only powers "when did we last hear from this learner", so a
+        second contact a minute later has nothing to add and an UPDATE per
+        keystroke is pure write amplification.
+        """
+        repository = UserRepository(session)
+        user, _ = await repository.get_or_create(TelegramProfile(telegram_id=778))
+        await session.commit()
+        first = utcnow()
+
+        with record_statements(engine) as statements:
+            await repository.touch(user, when=first)
+            await session.commit()
+            await repository.touch(user, when=first + timedelta(minutes=1))
+            await session.commit()
+
+        updates = [sql for sql in statements if sql.lstrip().upper().startswith("UPDATE")]
+        assert len(updates) == 1
+        assert user.last_seen_at == first
+
+    async def test_touch_updates_again_once_the_window_has_passed(
+        self, session: AsyncSession
+    ) -> None:
+        repository = UserRepository(session)
+        user, _ = await repository.get_or_create(TelegramProfile(telegram_id=779))
+        await session.commit()
+        first = utcnow()
+        await repository.touch(user, when=first)
+        await session.commit()
+
+        later = first + timedelta(minutes=5)
+        await repository.touch(user, when=later)
+        await session.commit()
+
+        assert user.last_seen_at == later
+
 
 class TestDecks:
     async def test_default_deck_is_created_once(
@@ -131,6 +199,55 @@ class TestDecks:
 
         assert await decks.get(deck.id, user_id=user.id) is None
 
+    async def test_count_for_user_lets_the_database_count(
+        self, session: AsyncSession, decks: DeckRepository, user: User, engine: AsyncEngine
+    ) -> None:
+        """Pulling every id into Python to call ``len`` was busywork."""
+        await decks.create(user.id, "One")
+        await decks.create(user.id, "Two")
+        await session.commit()
+
+        with record_statements(engine) as statements:
+            assert await decks.count_for_user(user.id) == 2
+
+        counts = [sql for sql in statements if "count(" in sql.lower()]
+        assert counts, statements
+
+
+class TestUserModel:
+    async def test_loading_a_user_does_not_select_decks_or_streak(
+        self, session: AsyncSession, engine: AsyncEngine
+    ) -> None:
+        """The collections are never read; eager loads were pure overhead."""
+        repository = UserRepository(session)
+        created, _ = await repository.get_or_create(TelegramProfile(telegram_id=9090))
+        await session.commit()
+        user_id = created.id
+        session.expire_all()
+
+        with record_statements(engine) as statements:
+            loaded = await session.get(User, user_id)
+
+        assert loaded is not None
+        assert len(statements) == 1, statements
+        assert "decks" not in statements[0].lower()
+        assert "streaks" not in statements[0].lower()
+
+    async def test_the_collections_refuse_implicit_loads(self, session: AsyncSession) -> None:
+        repository = UserRepository(session)
+        created, _ = await repository.get_or_create(TelegramProfile(telegram_id=9091))
+        await session.commit()
+        user_id = created.id
+        session.expire_all()
+
+        loaded = await session.get(User, user_id)
+        assert loaded is not None
+
+        with pytest.raises(InvalidRequestError):
+            _ = loaded.decks
+        with pytest.raises(InvalidRequestError):
+            _ = loaded.streak
+
 
 def test_normalized_draft_keeps_and_resolves_its_language() -> None:
     assert CardDraft(term=" run ", translation=" бежать ").normalized().language == "eng"
@@ -141,6 +258,73 @@ def test_normalized_draft_keeps_and_resolves_its_language() -> None:
     assert (
         CardDraft(term="привет", translation="привет", language="ru").normalized().language == "eng"
     )
+
+
+# Columns of ``Card`` a draft never sets: the card's origin and direction, and
+# its scheduling state. Every other bounded String column a draft can fill has
+# to be in ``COLUMN_WIDTHS``; adding one without a width fails this test.
+_NON_DRAFT_COLUMNS = frozenset({"source", "state", "direction"})
+
+
+def test_every_string_column_of_a_draft_has_a_declared_width() -> None:
+    """The truncation table must cover every bounded String field a draft fills.
+
+    Text columns are unbounded by design; the three ``_NON_DRAFT_COLUMNS`` are
+    set by the repository and the scheduler, not the parser. The rest is exactly
+    what ``_fit`` cuts, and the widths must match the model.
+    """
+    bounded = {
+        name: column.type.length
+        for name, column in Card.__table__.c.items()
+        if isinstance(column.type, String) and not isinstance(column.type, Text)
+    }
+
+    assert set(bounded) - set(COLUMN_WIDTHS) == _NON_DRAFT_COLUMNS
+    assert {name: bounded[name] for name in COLUMN_WIDTHS} == COLUMN_WIDTHS
+
+
+def test_normalized_draft_truncates_to_column_widths() -> None:
+    draft = CardDraft(
+        term="t" * 300,
+        translation="я" * 1000,
+        transcription="/" + "ɪ" * 200 + "/",
+        part_of_speech="adjective" * 10,
+        example="e" * 1000,
+        notes="n" * 1000,
+        cefr="B2",
+        frequency="common",
+    ).normalized()
+
+    assert draft.term == "t" * 255
+    assert len(draft.transcription or "") == 128
+    assert len(draft.part_of_speech or "") == 32
+    # Text columns have no declared width: their content is kept whole.
+    assert draft.translation == "я" * 1000
+    assert draft.example == "e" * 1000
+    assert draft.notes == "n" * 1000
+    assert draft.cefr == "B2"
+    assert draft.frequency == "common"
+
+
+def test_normalized_draft_truncates_every_short_level_field() -> None:
+    """The three narrow fields are as easy to overflow as the term."""
+    draft = CardDraft(
+        term="ubiquitous",
+        translation="вездесущий",
+        frequency="very common",
+        cefr="B2/C1",
+        language="portuguese",
+    ).normalized()
+
+    assert draft.frequency == "very com"
+    assert draft.cefr == "B2"
+    assert draft.language == "por"
+
+
+def test_normalized_draft_drops_the_space_left_by_truncation() -> None:
+    draft = CardDraft(term="t" * 254 + " tail", translation="перевод").normalized()
+
+    assert draft.term == "t" * 254
 
 
 class TestCards:
@@ -431,6 +615,57 @@ class TestReviewLog:
         )
 
         assert introduced == 1
+
+    async def test_introductions_are_counted_per_learner_in_one_pass(
+        self,
+        reviews: ReviewRepository,
+        cards: CardRepository,
+        decks: DeckRepository,
+        session: AsyncSession,
+        user: User,
+        deck: int,
+    ) -> None:
+        """The reminder tick counts a whole batch against different midnights.
+
+        Each learner gets their own boundary, so one call answers "how many
+        introductions today" for everyone without a query per account.
+        """
+        other, _ = await UserRepository(session).get_or_create(
+            TelegramProfile(telegram_id=200200, first_name="Other")
+        )
+        other_deck = (await decks.get_or_create_default(other.id, name="Основная колода")).id
+        now = utcnow()
+
+        async def introduce(learner: User, deck_id: int, term: str, hours_ago: float) -> None:
+            card = await add(cards, session, learner, deck_id, term)
+            await reviews.add(
+                Review(
+                    card_id=card.id,
+                    user_id=learner.id,
+                    rating=ReviewRating.GOOD,
+                    reviewed_at=now - timedelta(hours=hours_ago),
+                    state_before=CardState.LEARNING,
+                    state_after=CardState.LEARNING,
+                )
+            )
+
+        # One fresh card each, plus a card each learner already knew before
+        # their own boundary: only the fresh ones are introductions.
+        await introduce(user, deck, "fresh", 0.1)
+        await introduce(user, deck, "known", 30)
+        await introduce(other, other_deck, "fresh", 0.1)
+        await introduce(other, other_deck, "known", 2)
+        await session.commit()
+
+        counted = await reviews.introduced_counts(
+            [user.id, other.id],
+            since_by_user={
+                user.id: now - timedelta(hours=12),
+                other.id: now - timedelta(hours=1),
+            },
+        )
+
+        assert counted == {user.id: 1, other.id: 1}
 
     async def test_a_card_seen_before_today_is_not_a_new_introduction(
         self,

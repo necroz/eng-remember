@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, time, timedelta
+import asyncio
+from datetime import UTC, date, datetime, time, timedelta
+from typing import Any
 
 import pytest
 from sqlalchemy import select, update
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from eng_remember.config import Settings
 from eng_remember.domain.enums import CardState, ReviewRating
@@ -17,7 +19,7 @@ from eng_remember.models.card import Card
 from eng_remember.models.review import Review
 from eng_remember.models.user import User
 from eng_remember.repositories.cards import CardDraft
-from eng_remember.repositories.users import TelegramProfile
+from eng_remember.repositories.users import TelegramProfile, UserRepository
 from eng_remember.services.container import Services
 from eng_remember.services.reminders import ReminderPlan, ReminderService, build_reminder_service
 from eng_remember.utils.time import local_date, utcnow
@@ -49,6 +51,9 @@ class RecordingNotifier:
         if plan.user.id in self.broken:
             raise ConnectionError("network is down")
         self.sent.append(plan)
+
+    async def send_alert(self, text: str) -> None:
+        """The service does not alert; the loop does. Nothing to record here."""
 
 
 @pytest.fixture
@@ -83,6 +88,50 @@ async def give_work(services: Services, user: User, *, due: int = 1, new: int = 
             deck_id=deck.id,
             draft=CardDraft(term=f"new{index}", translation="новое"),
             schedule=schedule(0),
+        )
+    await services.commit()
+
+
+async def give_new_cards(services: Services, user: User, *, count: int) -> None:
+    """New cards that already came due: added earlier, never answered.
+
+    ``schedule(0)`` anchors to the real clock, which a test that mocks "today at
+    09:00" cannot rely on; a due date in the past is stable at any hour.
+    """
+    from tests.factories import schedule
+
+    deck = await services.card_service.default_deck(user)
+    for index in range(count):
+        await services.cards.add(
+            user_id=user.id,
+            deck_id=deck.id,
+            draft=CardDraft(term=f"new{index}", translation="новое"),
+            schedule=schedule(-1),
+        )
+    await services.commit()
+
+
+async def give_introductions(services: Services, user: User, *, count: int) -> None:
+    """Cards whose first answer happened today: they spend the daily budget."""
+    from tests.factories import schedule
+
+    deck = await services.card_service.default_deck(user)
+    for index in range(count):
+        card = await services.cards.add(
+            user_id=user.id,
+            deck_id=deck.id,
+            draft=CardDraft(term=f"seen{index}", translation="видел"),
+            schedule=schedule(1, state=CardState.REVIEW, reps=2),
+        )
+        await services.reviews.add(
+            Review(
+                card_id=card.id,
+                user_id=user.id,
+                rating=ReviewRating.GOOD,
+                reviewed_at=utcnow(),
+                state_before=CardState.LEARNING,
+                state_after=CardState.REVIEW,
+            )
         )
     await services.commit()
 
@@ -317,6 +366,102 @@ class TestLearnerSettings:
         assert notifier.sent[0].local_day == TEST_DAY
 
 
+class TestNewCardBudget:
+    """A reminder must not promise new words the daily budget will not serve."""
+
+    async def test_reminder_does_not_promise_new_over_budget(
+        self,
+        reminders: ReminderService,
+        services: Services,
+        session: AsyncSession,
+        user: User,
+    ) -> None:
+        """20 of 20 introduced, 100 still untouched, nothing due: no work at all.
+
+        The morning slot sees an empty queue and stays silent rather than
+        inviting the learner to a session that would refuse to start.
+        """
+        user.new_cards_per_day = 20
+        await session.commit()
+        await give_introductions(services, user, count=20)
+        await give_new_cards(services, user, count=100)
+
+        morning = await reminders.run(now=moment(9, 0))
+
+        assert morning.sent_count == 0
+
+    async def test_an_explicit_zero_limit_promises_no_new_words(
+        self,
+        reminders: ReminderService,
+        services: Services,
+        session: AsyncSession,
+        user: User,
+        notifier: RecordingNotifier,
+    ) -> None:
+        """A due review is worth a reminder; the untouched backlog is not.
+
+        ``/limit 0`` is a choice, so the configured default of twenty must not
+        sneak back in and turn five untouched words into a promise.
+        """
+        user.new_cards_per_day = 0
+        await session.commit()
+        await give_new_cards(services, user, count=5)
+        await give_work(services, user, due=1)
+
+        run = await reminders.run(now=moment(9, 0))
+
+        assert run.sent_count == 1
+        plan = notifier.sent[-1]
+        assert plan.kind is ReminderKind.MORNING
+        assert plan.due_now == 1
+        assert plan.new_available == 0
+
+    async def test_a_due_card_is_promised_without_the_exhausted_budget(
+        self,
+        reminders: ReminderService,
+        services: Services,
+        session: AsyncSession,
+        user: User,
+        notifier: RecordingNotifier,
+    ) -> None:
+        """Work remains — due reviews — but new words are no longer advertised."""
+        user.new_cards_per_day = 20
+        await session.commit()
+        await give_introductions(services, user, count=20)
+        await give_new_cards(services, user, count=100)
+        await give_work(services, user, due=2)
+
+        run = await reminders.run(now=moment(9, 0))
+
+        assert run.sent_count == 1
+        plan = notifier.sent[-1]
+        assert plan.kind is ReminderKind.MORNING
+        assert plan.due_now == 2
+        assert plan.new_available == 0
+
+    async def test_reminder_new_count_respects_partial_budget(
+        self,
+        reminders: ReminderService,
+        services: Services,
+        session: AsyncSession,
+        user: User,
+        notifier: RecordingNotifier,
+    ) -> None:
+        """5 of 20 introduced leaves 15 of the 100 untouched words available."""
+        user.new_cards_per_day = 20
+        await session.commit()
+        await give_introductions(services, user, count=5)
+        await give_new_cards(services, user, count=100)
+
+        run = await reminders.run(now=moment(9, 0))
+
+        assert run.sent_count == 1
+        plan = notifier.sent[-1]
+        assert plan.kind is ReminderKind.MORNING
+        assert plan.due_now == 0
+        assert plan.new_available == 15
+
+
 class TestDelivery:
     async def test_a_blocked_bot_is_retired_not_retried(
         self,
@@ -430,6 +575,169 @@ class TestBatching:
 
         assert run.sent_count == 5
         assert len({plan.user.id for plan in notifier.sent}) == 5
+
+    async def test_the_cursor_walks_past_the_first_batch(
+        self,
+        services: Services,
+        session: AsyncSession,
+        settings: Settings,
+        notifier: RecordingNotifier,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Five learners with a page size of two: all of them, not the first page.
+
+        The tick restarts from the lowest id every time, so a walk that stopped
+        at one batch would leave everybody past the first page unreminded — and
+        no later tick would pick them up either.
+        """
+        settings.reminders.batch_size = 2
+        service = build_reminder_service(session, settings, notifier)
+
+        pages: list[int] = []
+        fetch = UserRepository.list_reminder_candidates
+
+        async def counting(self: UserRepository, **kwargs: Any) -> list[User]:
+            found = await fetch(self, **kwargs)
+            pages.append(len(found))
+            return found
+
+        monkeypatch.setattr(UserRepository, "list_reminder_candidates", counting)
+
+        for index in range(5):
+            learner, _ = await services.users.get_or_create(
+                TelegramProfile(telegram_id=400000 + index)
+            )
+            await give_work(services, learner)
+        await session.commit()
+
+        run = await service.run(now=moment(9, 0))
+
+        assert pages == [2, 2, 1, 0], pages
+        assert run.candidates == 5
+        assert run.sent_count == 5
+        assert len({plan.user.id for plan in notifier.sent}) == 5
+
+    @pytest.mark.parametrize(
+        ("failure", "expected_sent", "error"),
+        [
+            ("cancelled", 2, asyncio.CancelledError),
+            ("crash", 3, RuntimeError),
+        ],
+    )
+    async def test_a_stop_mid_batch_keeps_only_the_delivered_learners(
+        self,
+        services: Services,
+        session: AsyncSession,
+        session_factory: async_sessionmaker[AsyncSession],
+        settings: Settings,
+        notifier: RecordingNotifier,
+        monkeypatch: pytest.MonkeyPatch,
+        failure: str,
+        expected_sent: int,
+        error: type[BaseException],
+    ) -> None:
+        """Watermarks are durable per learner, not per batch.
+
+        ``task.cancel()`` during the third send, or a crash while recording it,
+        must leave the first two learners marked: they were really messaged, and
+        rolling them back would repeat up to ``batch_size - 1`` messages after a
+        restart. Only the delivery that was in flight may repeat — at most one.
+        """
+        settings.reminders.batch_size = 5
+        learners: list[User] = []
+        for index in range(4):
+            learner, _ = await services.users.get_or_create(
+                TelegramProfile(telegram_id=200400 + index)
+            )
+            await give_work(services, learner)
+            learners.append(learner)
+        await session.commit()
+        service = build_reminder_service(session, settings, notifier)
+
+        if failure == "cancelled":
+            original_send = notifier.send_reminder
+            sends = 0
+
+            async def cancel_on_third(plan: ReminderPlan) -> None:
+                nonlocal sends
+                sends += 1
+                if sends == 3:
+                    raise asyncio.CancelledError
+                await original_send(plan)
+
+            monkeypatch.setattr(notifier, "send_reminder", cancel_on_third)
+        else:
+            original_record = UserRepository.record_reminder
+            records = 0
+
+            async def crash_on_third(
+                self_: UserRepository,
+                user: User,
+                *,
+                kind: ReminderKind,
+                on: date,
+            ) -> None:
+                nonlocal records
+                records += 1
+                if records == 3:
+                    raise RuntimeError("database went away")
+                await original_record(self_, user, kind=kind, on=on)
+
+            monkeypatch.setattr(UserRepository, "record_reminder", crash_on_third)
+
+        with pytest.raises(error):
+            await service.run(now=moment(9, 0))
+
+        assert len(notifier.sent) == expected_sent
+        async with session_factory() as fresh:
+            rows = (await fresh.scalars(select(User).order_by(User.id))).all()
+        assert [row.id for row in rows] == [learner.id for learner in learners]
+        assert [row.last_reminder_on for row in rows] == [
+            TEST_DAY,
+            TEST_DAY,
+            None,
+            None,
+        ]
+
+    async def test_a_delivered_learner_is_committed_before_the_next_page(
+        self,
+        services: Services,
+        session: AsyncSession,
+        session_factory: async_sessionmaker[AsyncSession],
+        settings: Settings,
+        user: User,
+        notifier: RecordingNotifier,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A crash while fetching page two keeps page one's watermarks.
+
+        Those learners were really messaged; rolling them back would send the
+        same reminder again on the next tick.
+        """
+        settings.reminders.batch_size = 1
+        service = build_reminder_service(session, settings, notifier)
+        await give_work(services, user)
+        other, _ = await services.users.get_or_create(TelegramProfile(telegram_id=200300))
+        await give_work(services, other)
+
+        original = UserRepository.list_reminder_candidates
+        calls = 0
+
+        async def flaky(self: UserRepository, **kwargs: Any) -> list[User]:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise RuntimeError("database went away")
+            return await original(self, **kwargs)
+
+        monkeypatch.setattr(UserRepository, "list_reminder_candidates", flaky)
+
+        with pytest.raises(RuntimeError):
+            await service.run(now=moment(9, 0))
+
+        async with session_factory() as fresh:
+            rows = (await fresh.scalars(select(User).order_by(User.id))).all()
+            assert [row.last_reminder_on for row in rows] == [TEST_DAY, None]
 
     async def test_a_second_tick_re_examines_but_sends_nothing(
         self, reminders: ReminderService, services: Services, session: AsyncSession, user: User
@@ -551,6 +859,33 @@ class TestDigestPlanning:
         assert digest is not None
         assert digest.new_words == 1
         assert digest.weak == (("run", 4),)
+
+    async def test_a_late_digest_closes_the_evening_slot(
+        self,
+        services: Services,
+        session: AsyncSession,
+        settings: Settings,
+        user: User,
+        notifier: RecordingNotifier,
+    ) -> None:
+        """A digest sent after the evening hour carries the queue itself.
+
+        Leaving the evening slot open would send a second message ten minutes
+        later — the same information, reworded, right after the long summary.
+        """
+        settings.reminders.digest_enabled = True
+        settings.reminders.digest_weekday = TODAY.weekday()
+        service = build_reminder_service(session, settings, notifier)
+        await give_work(services, user)
+        user.evening_reminder_time = time(18, 0)
+        await session.commit()
+
+        first = await service.run(now=moment(19, 0))
+        second = await service.run(now=moment(19, 10))
+
+        assert [plan.kind for plan in notifier.sent] == [ReminderKind.DIGEST]
+        assert first.sent_count == 1
+        assert second.sent_count == 0
 
     async def test_the_digest_marks_both_watermarks(
         self,

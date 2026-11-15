@@ -7,11 +7,13 @@ and never in wording.
 
 from __future__ import annotations
 
+from html import escape
+
 import structlog
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 
-from eng_remember.bot import keyboards, texts
+from eng_remember.bot import keyboards, rendering, texts
 from eng_remember.domain.reminders import ReminderKind
 from eng_remember.errors import RecipientUnreachable
 from eng_remember.services.reminders import ReminderPlan
@@ -22,8 +24,22 @@ log = structlog.get_logger(__name__)
 
 
 class BotNotifier:
-    def __init__(self, bot: Bot) -> None:
+    def __init__(self, bot: Bot, *, admin_chat_id: int | None = None) -> None:
         self._bot = bot
+        self._admin_chat_id = admin_chat_id
+
+    async def send_alert(self, text: str) -> None:
+        """Operational alert for the admin chat; silent when it is not set."""
+        if self._admin_chat_id is None:
+            return
+        try:
+            await self._bot.send_message(
+                self._admin_chat_id,
+                rendering.fit_text(escape(text)),
+            )
+        except Exception as exc:
+            # Losing an alert must not take down the process that raised it.
+            log.warning("admin_alert_failed", error=str(exc))
 
     async def send_reminder(self, plan: ReminderPlan) -> None:
         if plan.kind is ReminderKind.DIGEST and plan.digest is not None:
@@ -49,7 +65,7 @@ class BotNotifier:
         try:
             await self._bot.send_message(
                 plan.user.telegram_id,
-                body,
+                rendering.fit_text(body),
                 reply_markup=keyboards.main_menu(),
             )
         except TelegramForbiddenError as exc:

@@ -201,6 +201,9 @@ def _restore_questions(raw: object) -> list[QuizQuestion]:
             or not isinstance(options, list)
             or not isinstance(correct, int)
             or not all(isinstance(option, str) for option in options)
+            # An index outside the options is a corrupted record: keeping it
+            # would raise on the next tap instead of skipping the question.
+            or not 0 <= correct < len(options)
         ):
             continue
         restored.append(

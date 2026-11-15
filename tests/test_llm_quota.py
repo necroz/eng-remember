@@ -7,6 +7,8 @@ than by mocking the repository.
 
 from __future__ import annotations
 
+import asyncio
+from datetime import datetime
 from typing import Any
 
 import pytest
@@ -20,7 +22,7 @@ from eng_remember.repositories.llm_calls import LlmCallRecord, LlmCallRepository
 from eng_remember.repositories.users import TelegramProfile, UserRepository
 from eng_remember.services.llm.budget import GlobalBudgetMonitor
 from eng_remember.services.llm.factory import build_llm_client
-from eng_remember.services.llm.quota import QuotaLimitedClient
+from eng_remember.services.llm.quota import GlobalUsageCache, QuotaLimitedClient
 from eng_remember.services.llm.schema import ParseResponse
 
 
@@ -213,6 +215,184 @@ async def test_global_token_budget_refuses_even_under_the_user_limit(
         await make_call(client, user.id)
 
     assert inner.calls == 0
+
+
+class CountingCalls(LlmCallRepository):
+    """A repository that counts the aggregate queries the gate issues."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        super().__init__(session)
+        self.global_queries = 0
+        self.user_queries = 0
+
+    async def global_usage_since(self, *, since: datetime) -> dict[str, int]:
+        self.global_queries += 1
+        return await super().global_usage_since(since=since)
+
+    async def usage_since(
+        self,
+        user_id: int,
+        *,
+        since: datetime,
+        background_purpose: str | None = None,
+    ) -> dict[str, int]:
+        self.user_queries += 1
+        return await super().usage_since(
+            user_id,
+            since=since,
+            background_purpose=background_purpose,
+        )
+
+
+class FakeClock:
+    """A monotonic clock the test advances by hand."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+async def make_anonymous_call(client: QuotaLimitedClient) -> None:
+    await client.complete_json(
+        purpose="parse_message",
+        system="system",
+        user="user",
+        schema=ParseResponse,
+        user_id=None,
+    )
+
+
+async def test_global_budget_enforced_without_user_id(
+    session: AsyncSession,
+    user: User,
+) -> None:
+    """A call with no learner still spends the operator's budget."""
+    await record_usage(session, user.id, calls=1, tokens_per_call=1000)
+    inner = RecordingModel()
+    client = QuotaLimitedClient(
+        inner,
+        calls=LlmCallRepository(session),
+        settings=LlmSettings(
+            max_calls_per_day=60,
+            max_tokens_per_day=0,
+            max_tokens_per_day_global=1000,
+        ),
+        budget=GlobalBudgetMonitor(),
+    )
+
+    with pytest.raises(LlmGlobalBudgetExceededError):
+        await make_anonymous_call(client)
+
+    assert inner.calls == 0
+
+
+async def test_global_usage_is_read_once_per_ttl(
+    session: AsyncSession,
+    user: User,
+) -> None:
+    """One SUM per TTL, and no per-learner query without a learner."""
+    await record_usage(session, user.id, calls=1, tokens_per_call=10)
+    calls = CountingCalls(session)
+    clock = FakeClock()
+    client = QuotaLimitedClient(
+        RecordingModel(),
+        calls=calls,
+        settings=LlmSettings(
+            max_calls_per_day=0,
+            max_tokens_per_day=0,
+            max_tokens_per_day_global=1_000_000,
+        ),
+        budget=GlobalBudgetMonitor(),
+        usage_cache=GlobalUsageCache(),
+        clock=clock,
+    )
+
+    await make_anonymous_call(client)
+    await make_anonymous_call(client)
+
+    assert calls.global_queries == 1
+    assert calls.user_queries == 0
+
+    clock.now = 31.0
+    await make_anonymous_call(client)
+
+    assert calls.global_queries == 2
+
+
+async def test_the_global_total_is_shared_by_wrapper_instances(
+    session: AsyncSession,
+    user: User,
+) -> None:
+    """Production builds a wrapper per request, so its cache must outlive one."""
+    await record_usage(session, user.id, calls=1, tokens_per_call=10)
+    calls = CountingCalls(session)
+    settings = LlmSettings(
+        max_calls_per_day=0,
+        max_tokens_per_day=0,
+        max_tokens_per_day_global=1_000_000,
+    )
+    first = QuotaLimitedClient(
+        RecordingModel(),
+        calls=calls,
+        settings=settings,
+        budget=GlobalBudgetMonitor(),
+    )
+    second = QuotaLimitedClient(
+        RecordingModel(),
+        calls=calls,
+        settings=settings,
+        budget=GlobalBudgetMonitor(),
+    )
+
+    await make_anonymous_call(first)
+    await make_anonymous_call(second)
+
+    assert calls.global_queries == 1
+
+
+class SlowGlobalCalls(LlmCallRepository):
+    """A repository whose global SUM yields so concurrent callers can pile up."""
+
+    def __init__(self, session: AsyncSession, *, tokens: int = 10) -> None:
+        super().__init__(session)
+        self.global_queries = 0
+        self._tokens = tokens
+
+    async def global_usage_since(self, *, since: datetime) -> dict[str, int]:
+        self.global_queries += 1
+        # The SUM is slow relative to the check, so without single-flight every
+        # waiter sees the cold cache and starts its own query.
+        await asyncio.sleep(0)
+        return {"calls": 1, "tokens": self._tokens}
+
+
+async def test_concurrent_cold_reads_issue_exactly_one_sum(
+    session: AsyncSession,
+) -> None:
+    """One SUM per TTL even when every handler misses the cache together."""
+    calls = SlowGlobalCalls(session)
+    settings = LlmSettings(
+        max_calls_per_day=0,
+        max_tokens_per_day=0,
+        max_tokens_per_day_global=1_000_000,
+    )
+    # Production builds a wrapper per request; all of them share the process
+    # cache, and a burst after the TTL must still produce one aggregate query.
+    clients = [
+        QuotaLimitedClient(
+            RecordingModel(),
+            calls=calls,
+            settings=settings,
+            budget=GlobalBudgetMonitor(),
+        )
+        for _ in range(10)
+    ]
+
+    await asyncio.gather(*(make_anonymous_call(client) for client in clients))
+
+    assert calls.global_queries == 1
 
 
 async def test_calls_older_than_a_day_do_not_count(

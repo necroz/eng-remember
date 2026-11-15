@@ -14,7 +14,6 @@ from sqlalchemy import (
     SmallInteger,
     String,
     Text,
-    UniqueConstraint,
     false,
     text,
 )
@@ -57,26 +56,37 @@ class Card(Base, TimestampMixin):
 
     __tablename__ = "cards"
     __table_args__ = (
-        UniqueConstraint(
+        # Uniqueness is case-insensitive on the term: "run" and "Run" are the
+        # same word for a learner, and the repository's duplicate check already
+        # folds the case. The database has to agree, or a race between two
+        # imports stores both spellings. A functional index rather than a
+        # UniqueConstraint because the latter cannot carry an expression, and
+        # ``text("lower(term)")`` is understood by both PostgreSQL and SQLite.
+        Index(
+            "uq_cards_user_id_deck_id_term_language_direction",
             "user_id",
             "deck_id",
-            "term",
+            text("lower(term)"),
             "language",
             "direction",
-            name="uq_cards_user_id_deck_id_term_language_direction",
+            unique=True,
         ),
+        # One index per queue shape instead of single-column duplicates: every
+        # card query is scoped to a learner (and optionally a deck) and sorted
+        # or filtered by ``due_at``, so these composites cover the old
+        # ``ix_cards_user_id`` and ``ix_cards_deck_id``. The old
+        # ``ix_cards_due_at`` is gone as well: no query filters or sorts by
+        # ``due_at`` without a ``user_id``.
         Index("ix_cards_user_id_due_at", "user_id", "due_at"),
         Index("ix_cards_deck_id_due_at", "deck_id", "due_at"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
-    deck_id: Mapped[int] = mapped_column(ForeignKey("decks.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    deck_id: Mapped[int] = mapped_column(ForeignKey("decks.id", ondelete="CASCADE"))
 
     # --- content -----------------------------------------------------------
-    term: Mapped[str] = mapped_column(
-        String(255), index=True, doc="Word or phrase in the studied language"
-    )
+    term: Mapped[str] = mapped_column(String(255), doc="Word or phrase in the studied language")
     translation: Mapped[str] = mapped_column(Text, doc="Russian meaning")
     language: Mapped[str] = mapped_column(
         String(8),
@@ -106,7 +116,7 @@ class Card(Base, TimestampMixin):
     )
 
     # --- FSRS memory state -------------------------------------------------
-    due_at: Mapped[datetime] = mapped_column(UtcDateTime, index=True)
+    due_at: Mapped[datetime] = mapped_column(UtcDateTime)
     state: Mapped[CardState] = mapped_column(
         _CARD_STATE_TYPE,
         default=CardState.LEARNING,

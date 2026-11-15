@@ -8,8 +8,6 @@ which templates this particular learner has already seen.
 from __future__ import annotations
 
 import random
-from collections.abc import Mapping
-from typing import Any
 
 from eng_remember.domain.enums import ReviewRating
 from eng_remember.domain.praise import (
@@ -57,10 +55,13 @@ class PraiseService:
     def _history(user: User) -> dict[str, list[int]]:
         """History as stored, defensively typed.
 
-        The column is JSON, so anything could be in there after a manual edit;
-        the selector itself already tolerates nonsense indices.
+        The column is JSON, so anything could be in there after a manual edit —
+        including a list where the mapping belongs. The selector itself already
+        tolerates nonsense indices.
         """
-        raw: Mapping[str, Any] = user.praise_history or {}
+        raw: object = user.praise_history
+        if not isinstance(raw, dict):
+            return {}
         return {
             str(key): [int(item) for item in value if isinstance(item, int)]
             for key, value in raw.items()

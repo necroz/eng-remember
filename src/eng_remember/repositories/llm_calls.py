@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any, cast
 
-from sqlalchemy import case, func, literal, select
+from sqlalchemy import case, delete, func, literal, select
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eng_remember.models.llm_call import LlmCall
@@ -98,3 +100,13 @@ class LlmCallRepository:
         ).where(LlmCall.created_at >= since)
         calls, tokens = (await self._session.execute(stmt)).one()
         return {"calls": int(calls or 0), "tokens": int(tokens or 0)}
+
+    async def delete_older_than(self, cutoff: datetime) -> int:
+        """Remove audit rows created before ``cutoff`` and say how many went.
+
+        The index on ``created_at`` serves this range delete directly. The
+        caller commits: retention runs in its own short transaction, separate
+        from whatever the process is doing.
+        """
+        result = await self._session.execute(delete(LlmCall).where(LlmCall.created_at < cutoff))
+        return cast(CursorResult[Any], result).rowcount

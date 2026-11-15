@@ -1,4 +1,10 @@
-from eng_remember.domain.term_match import contains_term, term_spans
+from eng_remember.domain.term_match import contains_term, fold_term, term_spans
+
+
+def test_fold_term_casefold_german() -> None:
+    """One spelling of a German word must produce one de-duplication key."""
+    assert fold_term("Straße") == fold_term("STRASSE")
+    assert fold_term("  Straße  ") == fold_term("straße")
 
 
 def test_chinese_term_is_a_substring() -> None:
@@ -17,6 +23,15 @@ def test_arabic_diacritics_do_not_hide_the_word() -> None:
 def test_latin_forms_match_by_stem() -> None:
     assert contains_term("They are negotiating the price.", "negotiate", "eng")
     assert contains_term("runs", "run", "eng")
+
+
+def test_a_short_token_only_matches_itself() -> None:
+    """A two-letter word is not a stem: "go" must not hide "good" or "goes"."""
+    assert contains_term("You should go now.", "go", "eng")
+    assert contains_term("go", "go", "eng")
+    assert not contains_term("This is a good idea.", "go", "eng")
+    assert not contains_term("He goes home.", "go", "eng")
+    assert not contains_term("go", "good", "eng")
 
 
 def test_latin_diacritics_are_significant() -> None:

@@ -8,6 +8,8 @@ that make a bad parse debuggable.
 
 from __future__ import annotations
 
+import asyncio
+import time
 from typing import Any
 
 import httpx2
@@ -51,6 +53,19 @@ class FakeOpenAi:
 
     async def close(self) -> None:
         self.closed = True
+
+
+class HangingEndpoint(FakeEndpoint):
+    """An endpoint that never answers inside the test's budget."""
+
+    def __init__(self, delay: float) -> None:
+        super().__init__([])
+        self._delay = delay
+
+    async def create(self, **kwargs: Any) -> Any:
+        self.calls.append(kwargs)
+        await asyncio.sleep(self._delay)
+        return completion('{"intent": "unknown"}')
 
 
 def http_response(status: int, text: str = "{}") -> httpx2.Response:
@@ -137,23 +152,55 @@ async def test_valid_answer_is_parsed() -> None:
     assert record.provider_model == "test-model"
 
 
-async def test_json_mode_is_requested() -> None:
+async def test_json_schema_is_requested_with_the_strict_contract() -> None:
     client, fake = make_client([completion('{"intent": "unknown"}')])
 
     await complete(client)
 
-    assert fake.endpoint.calls[0]["response_format"] == {"type": "json_object"}
+    response_format = fake.endpoint.calls[0]["response_format"]
+    assert response_format["type"] == "json_schema"
+    assert response_format["json_schema"] == {
+        "name": "ParseResponse",
+        "schema": ParseResponse.model_json_schema(),
+        "strict": True,
+    }
     assert fake.endpoint.calls[0]["model"] == "test-model"
     assert fake.endpoint.calls[0]["temperature"] == 0.0
 
 
-async def test_reasoning_is_disabled_by_default() -> None:
-    """Structured JSON needs the output budget, not chain-of-thought."""
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Unsupported parameter: json_schema",
+        "Invalid schema for response_format 'ParseResponse': 'required' is required",
+    ],
+)
+async def test_json_schema_rejection_degrades_once_to_json_object(message: str) -> None:
+    """A rejected strict schema falls back to plain JSON mode exactly once."""
+    client, fake = make_client(
+        [
+            api_error("bad_request", message, 400),
+            completion('{"intent": "unknown"}'),
+            completion('{"intent": "unknown"}'),
+        ]
+    )
+
+    await complete(client)
+    await complete(client)
+
+    assert len(fake.endpoint.calls) == 3
+    assert fake.endpoint.calls[0]["response_format"]["type"] == "json_schema"
+    assert fake.endpoint.calls[1]["response_format"] == {"type": "json_object"}
+    assert fake.endpoint.calls[2]["response_format"] == {"type": "json_object"}
+
+
+async def test_reasoning_is_not_sent_by_default() -> None:
+    """An unset parameter is not sent, so every provider accepts the request."""
     client, fake = make_client([completion('{"intent": "unknown"}')])
 
     await complete(client)
 
-    assert fake.endpoint.calls[0]["reasoning_effort"] == "none"
+    assert "reasoning_effort" not in fake.endpoint.calls[0]
 
 
 async def test_fenced_answer_is_accepted() -> None:
@@ -185,6 +232,25 @@ async def test_malformed_answer_is_sent_back_with_the_error() -> None:
     assert [record.attempt for record in sink.records] == [1, 2]
 
 
+async def test_repair_echoes_truncated_bad_answer() -> None:
+    """A runaway answer is not sent back in full: the repair prompt stays cheap."""
+    client, fake = make_client(
+        [
+            completion("x" * 5000),
+            completion('{"intent": "add_cards", "cards": []}'),
+        ]
+    )
+
+    await complete(client)
+
+    repair_messages = fake.endpoint.calls[1]["messages"]
+    echoed = repair_messages[-2]
+    assert echoed["role"] == "assistant"
+    assert len(echoed["content"]) <= 2000
+    assert "(обрезано)" in echoed["content"]
+    assert echoed["content"].startswith("x")
+
+
 async def test_schema_violation_also_triggers_a_repair() -> None:
     """A syntactically valid answer with unusable content must not be trusted."""
     client, fake = make_client(
@@ -210,6 +276,34 @@ async def test_retries_are_bounded_and_reported() -> None:
     assert len(fake.endpoint.calls) == 3  # retries=2 → three attempts
     assert all(not record.success for record in sink.records)
     assert len(sink.records) == 3
+
+
+async def test_total_deadline_bounds_retries() -> None:
+    """A hanging provider must not block for retries × timeout.
+
+    The per-attempt timeout belongs to the SDK; the caller-level deadline is
+    what keeps the whole repair loop inside one user-visible budget.
+    """
+    sink = Sink()
+    fake = FakeOpenAi([])
+    endpoint = HangingEndpoint(delay=30.0)
+    fake.endpoint = endpoint
+    fake.chat = FakeChat(endpoint)
+    client = OpenAiCompatibleClient(
+        llm_settings(retries=3, timeout_seconds=0.1),
+        sink=sink,
+        client=fake,
+    )
+
+    started = time.perf_counter()
+    with pytest.raises(LlmResponseError, match="deadline"):
+        await complete(client)
+    elapsed = time.perf_counter() - started
+
+    assert elapsed < 1.0
+    assert len(endpoint.calls) == 1
+    assert sink.records[-1].success is False
+    assert "deadline" in (sink.records[-1].error or "")
 
 
 @pytest.mark.parametrize(
@@ -265,7 +359,8 @@ async def test_provider_without_reasoning_effort_still_works() -> None:
         [
             api_error("bad_request", "Unsupported parameter: reasoning_effort", 400),
             completion('{"intent": "unknown"}'),
-        ]
+        ],
+        reasoning_effort="none",
     )
 
     result = await complete(client)
@@ -283,7 +378,8 @@ async def test_both_optional_parameters_degrade_in_one_call() -> None:
             api_error("bad_request", "Unsupported parameter: reasoning_effort", 400),
             api_error("bad_request", "Unsupported parameter: response_format", 400),
             completion('{"intent": "unknown"}'),
-        ]
+        ],
+        reasoning_effort="none",
     )
 
     result = await complete(client)

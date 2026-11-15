@@ -163,13 +163,15 @@ def record_activity(
 ) -> StreakTransition:
     """Count today for the streak, absorbing any gap since the last activity.
 
-    Idempotent within a day: answering ten cards counts the day once.
+    Idempotent within a day: answering ten cards counts the day once. A clock or
+    timezone move that puts "today" before the accounted day changes nothing —
+    same protection as :func:`roll_forward`.
     """
     rolled = roll_forward(state, today, settings)
     current_state = rolled.state
     events = list(rolled.events)
 
-    if current_state.accounted_on == today:
+    if current_state.accounted_on is not None and today <= current_state.accounted_on:
         return StreakTransition(state=current_state, events=tuple(events))
 
     current = current_state.current + 1

@@ -13,7 +13,8 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from eng_remember.bot import texts
+from eng_remember.bot import keyboards, texts
+from eng_remember.bot.routers.practice import _restore_questions
 from eng_remember.domain.enums import CardState
 from eng_remember.models.card import Card
 from eng_remember.models.review import Review
@@ -22,7 +23,7 @@ from eng_remember.repositories.cards import CardDraft
 from eng_remember.services.container import Services
 from tests.conftest import TEST_TOKEN, RecordingSession
 from tests.factories import schedule
-from tests.test_bot_flow import send, tap
+from tests.helpers import send, tap
 
 
 async def seed_seen(
@@ -368,3 +369,38 @@ async def test_a_restart_during_an_in_flight_answer_keeps_the_new_session_alive(
     )
 
     assert not last_callback_answer(recording).show_alert
+
+
+def test_restore_skips_out_of_range_index() -> None:
+    """A corrupt index in FSM storage must not raise on the next tap.
+
+    The stored questions are plain dicts, so a hand-edited or wrongly migrated
+    storage can hold an index no option answers.
+    """
+    raw = [
+        {"card_id": 1, "term": "run", "options": ["бежать", "идти"], "correct": 99},
+        {"card_id": 2, "term": "swim", "options": ["плавать", "летать"], "correct": -1},
+        {"card_id": 3, "term": "fly", "options": ["летать", "падать"], "correct": 1},
+    ]
+
+    restored = _restore_questions(raw)
+
+    assert [question.card_id for question in restored] == [3]
+    assert restored[0].correct_index == 1
+
+
+def test_quiz_option_labels_fit_bytes_and_unique() -> None:
+    """Translation buttons must fit 64 Telegram bytes, and stay distinguishable.
+
+    Options sharing a long prefix are cut to the same text; without the number
+    the learner would see one answer offered twice and lose the meaning.
+    """
+    common = "общий префикс " * 10
+    options = [common + "альфа", common + "бета", "третий", "четвёртый"]
+
+    markup = keyboards.practice_options(options, token=7, question=0)
+
+    labels = [button.text for row in markup.inline_keyboard for button in row]
+    assert len(labels) == 4
+    assert all(len(label.encode("utf-8")) <= 60 for label in labels)
+    assert len(set(labels)) == 4

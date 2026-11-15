@@ -20,7 +20,7 @@ from eng_remember.services.reminders import ReminderPlan, WeeklyDigest
 from eng_remember.utils.time import parse_clock
 from tests.conftest import RecordingSession
 from tests.factories import TEST_USER_ID
-from tests.test_bot_flow import send
+from tests.helpers import send
 
 
 async def with_card(services: Services, user: User) -> None:
@@ -57,6 +57,11 @@ class TestClockParsing:
         """Guessing 08:00 for someone who meant 20:00 is worse than asking again."""
         assert parse_clock(raw) is None
 
+    @pytest.mark.parametrize("raw", ["①②:③④", "８:３０", "٣:٠٥"])
+    def test_unicode_digits_are_not_a_clock(self, raw: str) -> None:
+        """Only ASCII digits are a clock: decorated digits are a format error."""
+        assert parse_clock(raw) is None
+
 
 class TestRemindCommand:
     async def test_it_shows_the_current_settings(
@@ -90,6 +95,50 @@ class TestRemindCommand:
         await send(dispatcher, bot, "/remind evening 22:45")
 
         assert "22:45" in recording.last_text()
+
+    async def test_remind_rejects_evening_before_morning(
+        self,
+        dispatcher: Dispatcher,
+        bot: Bot,
+        recording: RecordingSession,
+        session_factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        await send(dispatcher, bot, "/remind evening 07:00")
+
+        async with session_factory() as check:
+            user = (await check.scalars(select(User))).one()
+            assert user.evening_reminder_time is None
+        assert "должно идти после утреннего" in recording.last_text()
+
+    async def test_remind_rejects_morning_after_evening(
+        self,
+        dispatcher: Dispatcher,
+        bot: Bot,
+        recording: RecordingSession,
+        session_factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        await send(dispatcher, bot, "/remind 22:00")
+
+        async with session_factory() as check:
+            user = (await check.scalars(select(User))).one()
+            assert user.reminder_time is None
+        assert "должно идти после утреннего" in recording.last_text()
+
+    async def test_remind_rejects_enabling_evening_before_morning(
+        self,
+        dispatcher: Dispatcher,
+        bot: Bot,
+        recording: RecordingSession,
+        session_factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        await send(dispatcher, bot, "/remind evening off", update_id=10)
+        await send(dispatcher, bot, "/remind 21:00", update_id=11)
+        await send(dispatcher, bot, "/remind evening on", update_id=12)
+
+        async with session_factory() as check:
+            user = (await check.scalars(select(User))).one()
+            assert not user.evening_reminder
+        assert "должно идти после утреннего" in recording.last_text()
 
     async def test_the_evening_warning_can_be_switched_off(
         self,
@@ -312,6 +361,25 @@ class TestNotifier:
 
         with pytest.raises(RecipientUnreachable):
             await BotNotifier(bot).send_reminder(plan_for(user))
+
+    async def test_an_alert_goes_to_the_admin_chat(
+        self, bot: Bot, recording: RecordingSession
+    ) -> None:
+        notifier = BotNotifier(bot, admin_chat_id=777)
+
+        await notifier.send_alert("Тик напоминаний упал: boom")
+
+        assert len(recording.requests) == 1
+        assert getattr(recording.requests[0], "chat_id", None) == 777
+        assert "Тик напоминаний упал" in recording.last_text()
+
+    async def test_an_alert_is_dropped_without_an_admin_chat(
+        self, bot: Bot, recording: RecordingSession
+    ) -> None:
+        """No admin configured is not an error: the log still has the crash."""
+        await BotNotifier(bot).send_alert("Тик напоминаний упал: boom")
+
+        assert recording.requests == []
 
 
 class TestMessageTexts:

@@ -6,14 +6,21 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from eng_remember.domain.enums import CardDirection
-from eng_remember.domain.srs import CardSchedule, SrsScheduler
-from eng_remember.errors import DuplicateCardError
+from eng_remember.domain.srs import CardSchedule, SrsScheduler, new_allowance
+from eng_remember.domain.term_match import fold_term
+from eng_remember.errors import DuplicateCardError, EmptyDraftError
 from eng_remember.models.card import Card
 from eng_remember.models.deck import Deck
 from eng_remember.models.user import User
 from eng_remember.repositories.cards import CardDraft, CardRepository
 from eng_remember.repositories.decks import DeckRepository
 from eng_remember.repositories.reviews import ReviewRepository
+from eng_remember.services.llm.schema import (
+    EXAMPLE_LIMIT,
+    NOTES_LIMIT,
+    TRANSLATION_LIMIT,
+    flatten_line,
+)
 from eng_remember.utils.time import ensure_utc, local_day_start, next_local_day_start, utcnow
 
 __all__ = ["CardService", "ImportOutcome", "UserStats"]
@@ -58,12 +65,14 @@ class CardService:
         reviews: ReviewRepository,
         scheduler: SrsScheduler,
         default_deck_name: str,
+        new_cards_per_day: int = 20,
     ) -> None:
         self._cards = cards
         self._decks = decks
         self._reviews = reviews
         self._scheduler = scheduler
         self._default_deck_name = default_deck_name
+        self._new_cards_per_day = new_cards_per_day
 
     async def default_deck(self, user: User) -> Deck:
         return await self._decks.get_or_create_default(user.id, name=self._default_deck_name)
@@ -92,7 +101,7 @@ class CardService:
         """
         cleaned = draft.normalized()
         if not cleaned.term or not cleaned.translation:
-            raise DuplicateCardError(cleaned.term or "<empty>")
+            raise EmptyDraftError()
 
         target = deck or await self.default_deck(user)
         if (
@@ -152,7 +161,7 @@ class CardService:
         for cleaned in cleaned_drafts:
             if not cleaned.term or not cleaned.translation:
                 continue
-            folded = cleaned.term.casefold()
+            folded = fold_term(cleaned.term)
             key = (cleaned.language, folded)
             if key in seen:
                 outcome.skipped_in_batch.append(cleaned.term)
@@ -216,6 +225,61 @@ class CardService:
         await self._cards.delete(card)
         return card
 
+    async def update_content(
+        self,
+        user: User,
+        card_id: int,
+        *,
+        translation: str | None = None,
+        example: str | None = None,
+        notes: str | None = None,
+    ) -> Card | None:
+        """Change the text of a card, leaving its schedule untouched.
+
+        Only the fields the learner actually changed are passed: ``None`` means
+        "not edited", never "clear". The term and the language are immutable —
+        the queue, the duplicate index and the reverse twin are keyed on them —
+        so the draft is rebuilt from the stored card and the edits on top.
+
+        The three editable fields are Text columns with no database ceiling, so
+        they pass through the same ``flatten_line`` and the same limits the model
+        answers obey: a manual paste must not store five thousand characters
+        that the next card and review would then try to send. Line breaks are
+        the learner's formatting in notes, not in the one-line fields.
+
+        Returns ``None`` when the card does not exist or belongs to someone
+        else; the caller answers with the stale-card page.
+        """
+        card = await self._cards.get(card_id, user_id=user.id)
+        if card is None:
+            return None
+
+        draft = CardDraft(
+            term=card.term,
+            translation=(
+                card.translation
+                if translation is None
+                else flatten_line(translation, limit=TRANSLATION_LIMIT)
+            ),
+            transcription=card.transcription,
+            part_of_speech=card.part_of_speech,
+            example=card.example if example is None else flatten_line(example, limit=EXAMPLE_LIMIT),
+            examples=tuple(card.examples or ()),
+            notes=(
+                card.notes
+                if notes is None
+                else flatten_line(notes, limit=NOTES_LIMIT, keep_newlines=True)
+            ),
+            tags=tuple(card.tags or ()),
+            cefr=card.cefr,
+            frequency=card.frequency,
+            language=card.language,
+        )
+        if not draft.normalized().translation:
+            raise EmptyDraftError()
+        await self._cards.update_content(card, draft)
+        return card
+
     async def suspend(self, user: User, card_id: int, *, suspended: bool = True) -> Card | None:
         """Pause or resume the whole word: the twin follows its sibling."""
         card = await self._cards.get(card_id, user_id=user.id)
@@ -228,12 +292,24 @@ class CardService:
         return card
 
     async def stats(self, user: User, *, now: datetime | None = None) -> UserStats:
+        """Collection figures, with new cards measured by what today can serve.
+
+        ``new_cards`` is the available number, not the size of the untouched
+        backlog: once the daily budget is spent, a review session starts with
+        nothing new, and a bigger figure here would promise work the queue
+        refuses — the same rule the queue and the reminder tick follow.
+        """
         moment = ensure_utc(now) or utcnow()
         day_start = local_day_start(user.timezone, now=moment)
+        new_today = await self._reviews.count_cards_introduced_since(user.id, since=day_start)
+        allowance = new_allowance(user.new_cards_per_day, self._new_cards_per_day, new_today)
         return UserStats(
             total_cards=await self._cards.count_for_user(user.id),
             due_now=await self._cards.count_due(user.id, now=moment),
-            new_cards=await self._cards.count_new(user.id, now=moment),
+            new_cards=min(
+                await self._cards.count_new(user.id, now=moment),
+                allowance,
+            ),
             reviews_today=await self._reviews.count_since(user.id, since=day_start),
-            new_today=await self._reviews.count_cards_introduced_since(user.id, since=day_start),
+            new_today=new_today,
         )

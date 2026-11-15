@@ -6,14 +6,14 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from eng_remember.domain.enums import CardDirection, CardState, ReviewRating
-from eng_remember.errors import DuplicateCardError
+from eng_remember.errors import DuplicateCardError, EmptyDraftError, ScheduleConflictError
 from eng_remember.models.card import Card
 from eng_remember.models.review import Review
 from eng_remember.models.user import User
-from eng_remember.repositories.cards import CardDraft
+from eng_remember.repositories.cards import CardDraft, CardRepository
 from eng_remember.repositories.users import TelegramProfile
 from eng_remember.services.container import Services
 from eng_remember.utils.time import utcnow
@@ -203,6 +203,56 @@ class TestCardService:
         assert await services.card_service.delete(stranger, card.id) is None
         assert await services.cards.get(card.id, user_id=user.id) is not None
 
+    async def test_stats_show_only_new_cards_the_budget_still_allows(
+        self, services: Services, session: AsyncSession, user: User
+    ) -> None:
+        """The queue would serve nothing new, so the count must say nothing new.
+
+        Otherwise the statistics screen promises a hundred words the review
+        session refuses to start — the same contradiction as in reminders.
+        """
+        user.new_cards_per_day = 1
+        deck = await services.card_service.default_deck(user)
+        for index in range(3):
+            await services.cards.add(
+                user_id=user.id,
+                deck_id=deck.id,
+                draft=CardDraft(term=f"new{index}", translation="новое"),
+                schedule=schedule(0),
+            )
+        await session.commit()
+        first = await services.review_service.build_queue(user)
+        await services.review_service.answer(user, first.cards[0], ReviewRating.GOOD)
+        await session.commit()
+
+        stats = await services.card_service.stats(user)
+
+        assert stats.new_today == 1
+        assert stats.new_cards == 0
+
+    async def test_an_explicit_zero_limit_shows_no_new_cards_in_stats(
+        self, services: Services, session: AsyncSession, user: User
+    ) -> None:
+        """``/limit 0`` must not fall back to the configured default.
+
+        A learner who chose zero still has untouched cards; statistics that
+        advertise them promise work the queue will refuse.
+        """
+        user.new_cards_per_day = 0
+        deck = await services.card_service.default_deck(user)
+        for index in range(3):
+            await services.cards.add(
+                user_id=user.id,
+                deck_id=deck.id,
+                draft=CardDraft(term=f"new{index}", translation="новое"),
+                schedule=schedule(0),
+            )
+        await session.commit()
+
+        stats = await services.card_service.stats(user)
+
+        assert stats.new_cards == 0
+
     async def test_stats_reflect_the_queue(
         self, services: Services, session: AsyncSession, user: User
     ) -> None:
@@ -288,6 +338,133 @@ class TestReviewService:
         assert max(sizes) <= 20
         assert len(sizes) > 1
 
+    async def test_the_candidate_margin_is_not_capped_by_the_session_size(
+        self,
+        services: Services,
+        session: AsyncSession,
+        user: User,
+        deck_id: int,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The margin exists to survive the in-Python filter, so the cap must not eat it.
+
+        Both directions of a word are in the candidate list and only one may be
+        introduced, so a full session needs twice the candidates — even when the
+        session itself is already twenty cards.
+        """
+        await self.queue_cards(services, session, user, deck_id, new=40)
+        limits: list[int] = []
+        original = services.cards.list_new
+
+        async def spy(
+            user_id: int,
+            *,
+            now: datetime,
+            limit: int,
+            deck_id: int | None = None,
+            bury_reviewed_since: datetime | None = None,
+        ) -> list[Card]:
+            limits.append(limit)
+            return await original(
+                user_id,
+                now=now,
+                limit=limit,
+                deck_id=deck_id,
+                bury_reviewed_since=bury_reviewed_since,
+            )
+
+        monkeypatch.setattr(services.cards, "list_new", spy)
+
+        queue = await services.review_service.build_queue(user)
+
+        assert len(queue.cards) == 20
+        assert limits == [40]
+
+    async def test_get_next_does_not_count_the_queue_totals(
+        self,
+        services: Services,
+        session: AsyncSession,
+        user: User,
+        deck_id: int,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """One card needs no totals: the two aggregate COUNTs are pure overhead."""
+        await self.queue_cards(services, session, user, deck_id, new=1)
+        counted: list[str] = []
+
+        async def fail(*_args: object, **_kwargs: object) -> int:
+            counted.append("called")
+            raise AssertionError("a single-card queue must not count totals")
+
+        monkeypatch.setattr(services.cards, "count_due", fail)
+        monkeypatch.setattr(services.cards, "count_new", fail)
+
+        card = await services.review_service.get_next(user)
+
+        assert card is not None
+        assert counted == []
+
+    async def test_an_answer_from_a_stale_read_is_refused(
+        self,
+        services: Services,
+        session: AsyncSession,
+        session_factory: async_sessionmaker[AsyncSession],
+        user: User,
+        deck_id: int,
+    ) -> None:
+        """Two answers logged from one read state must not both land.
+
+        The second write carries the ``reps`` it saw before the first answer; the
+        row no longer matches and the caller learns the card moved on instead of
+        overwriting the schedule.
+        """
+        await self.queue_cards(services, session, user, deck_id, new=1)
+        card = (await services.review_service.build_queue(user)).cards[0]
+
+        async with session_factory() as stale_session:
+            stale = await CardRepository(stale_session).get(card.id, user_id=user.id)
+            assert stale is not None
+
+            await services.review_service.answer(user, card, ReviewRating.GOOD)
+            await session.commit()
+
+            with pytest.raises(ScheduleConflictError):
+                await services.review_service.answer(user, stale, ReviewRating.GOOD)
+
+    async def test_a_conflicting_answer_leaves_the_in_memory_card_untouched(
+        self,
+        services: Services,
+        session: AsyncSession,
+        session_factory: async_sessionmaker[AsyncSession],
+        user: User,
+        deck_id: int,
+    ) -> None:
+        """A rejected write must not paint its schedule onto the loser's object.
+
+        The card is in this session's identity map when another session moves
+        the row. An ORM-enabled UPDATE with the default ``synchronize_session``
+        copies the values onto that object even when ``rowcount`` is zero, so a
+        card that lost the race would show reps and a due date the row never had.
+        """
+        await self.queue_cards(services, session, user, deck_id, new=1)
+        card = (await services.review_service.build_queue(user)).cards[0]
+        before = card.schedule
+        assert before.reps == 0
+
+        async with session_factory() as winner_session:
+            winner = await CardRepository(winner_session).get(card.id, user_id=user.id)
+            assert winner is not None
+            await CardRepository(winner_session).update_schedule(
+                winner, schedule(1, state=CardState.REVIEW, reps=5)
+            )
+            await winner_session.commit()
+
+        with pytest.raises(ScheduleConflictError):
+            await services.review_service.answer(user, card, ReviewRating.GOOD)
+
+        assert card.reps == before.reps
+        assert card.schedule == before
+
     async def test_new_cards_are_capped_by_the_daily_budget(
         self, services: Services, session: AsyncSession, user: User, deck_id: int
     ) -> None:
@@ -314,6 +491,22 @@ class TestReviewService:
 
         assert second.cards == []
         assert second.new_allowance == 0
+
+    async def test_an_explicit_zero_budget_serves_due_but_no_new_cards(
+        self, services: Services, session: AsyncSession, user: User, deck_id: int
+    ) -> None:
+        """``/limit 0`` stops new material, not repetition.
+
+        The zero must survive as a real value: the configured default of twenty
+        is only for a learner who never chose anything.
+        """
+        user.new_cards_per_day = 0
+        await self.queue_cards(services, session, user, deck_id, due=1, new=3)
+
+        queue = await services.review_service.build_queue(user)
+
+        assert [card.term for card in queue.cards] == ["due0"]
+        assert queue.new_allowance == 0
 
     async def test_a_due_card_leaves_the_queue_after_being_answered(
         self, services: Services, session: AsyncSession, user: User, deck_id: int
@@ -461,6 +654,18 @@ class TestCardPairs:
         assert len(outcome.added) == 2
         assert await services.cards.count_for_user(user.id) == 4
 
+    async def test_an_empty_draft_is_a_draft_error_not_a_duplicate(
+        self, services: Services, user: User
+    ) -> None:
+        """Nothing to save is its own error: it is not a word the user already has."""
+        with pytest.raises(EmptyDraftError):
+            await services.card_service.add_draft(
+                user, CardDraft(term="   ", translation="перевод")
+            )
+
+        with pytest.raises(EmptyDraftError):
+            await services.card_service.add_draft(user, CardDraft(term="word", translation="  "))
+
     async def test_a_duplicate_is_still_rejected_per_word(
         self, services: Services, user: User, draft: CardDraft
     ) -> None:
@@ -541,7 +746,7 @@ class TestCardPairs:
         first = await services.review_service.build_queue(user, now=forward.due_at)
         assert [card.id for card in first.cards] == [forward.id]
 
-        await services.review_service.answer(user, forward, ReviewRating.GOOD)
+        await services.review_service.answer(user, forward, ReviewRating.GOOD, now=forward.due_at)
         await services.commit()
 
         later_today = await services.review_service.build_queue(

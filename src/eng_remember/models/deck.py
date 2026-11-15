@@ -19,7 +19,9 @@ class Deck(Base, TimestampMixin):
     __table_args__ = (UniqueConstraint("user_id", "name", name="uq_decks_user_id_name"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    # The unique constraint's index starts with ``user_id``: lookups by owner
+    # use it, a second one-column index would only add write cost.
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     name: Mapped[str] = mapped_column(String(128))
     description: Mapped[str | None] = mapped_column(String(512))
     # The domain or context this deck currently collects words from. Set when

@@ -8,10 +8,11 @@ be able to break the markup.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import datetime
 from html import escape
 
+from eng_remember.bot.rendering import TELEGRAM_TEXT_LIMIT, fit_text, text_units
 from eng_remember.domain.answers import Verdict
 from eng_remember.domain.digest import HEATMAP_DAYS
 from eng_remember.domain.digest import heatmap as digest_heatmap
@@ -35,6 +36,76 @@ from eng_remember.utils.time import ensure_utc, humanize_interval, utcnow
 
 # How many imported rows the preview shows before it starts counting.
 PREVIEW_ROWS = 10
+# Rendering caps: a big batch must stay one readable message, but confirmation
+# still saves every draft — only the preview is shortened.
+PREVIEW_DRAFTS = 30
+PREVIEW_DECKS = 50
+PREVIEW_PAUSED = 20
+# Deck names are typed in a chat window; the limit is short enough to read whole
+# in a button and in the list line, long enough for a topic name.
+DECK_NAME_LIMIT = 64
+
+
+def _joined_length(lines: Sequence[str]) -> int:
+    """Length of the one message these lines join to, in Telegram's units.
+
+    Newlines take one UTF-16 unit each; the content is measured with
+    :func:`text_units`, so emoji cannot quietly eat the budget.
+    """
+    return sum(text_units(line) for line in lines) + max(0, len(lines) - 1)
+
+
+def _fit_entries(
+    head: Sequence[str],
+    entries: Sequence[Sequence[str]],
+    tail: Sequence[str],
+    *,
+    total: int,
+    footer: Callable[[int], str],
+    limit: int = TELEGRAM_TEXT_LIMIT,
+) -> list[str]:
+    """Keep whole entries while the message still fits, then say what was cut.
+
+    ``entries`` are groups of lines: a draft's term, translation and example
+    must never be split, or the preview stops matching the card that will be
+    saved. ``head`` and ``tail`` are always shown; ``footer`` renders the
+    honest count of hidden entries and is added only when something is hidden,
+    so the result stays inside Telegram's limit no matter how long the content
+    is. ``total`` is the real batch size, which can exceed ``len(entries)`` when
+    a count cap already trimmed the list.
+    """
+    chosen: list[str] = []
+    shown = 0
+    for entry in entries:
+        next_shown = shown + 1
+        candidate = [*head, *chosen, *entry]
+        hidden = total - next_shown
+        expected = [*candidate, footer(next_shown)] if hidden > 0 else candidate
+        if _joined_length([*expected, *tail]) > limit:
+            break
+        chosen.extend(entry)
+        shown = next_shown
+
+    lines = [*head, *chosen]
+    if shown < total:
+        lines.append(footer(shown))
+    lines.extend(tail)
+    return lines
+
+
+def _drafts_footer(total: int) -> Callable[[int], str]:
+    def footer(shown: int) -> str:
+        return f"Показаны {shown} из {total} — сохранение добавит все"
+
+    return footer
+
+
+def _more_footer(total: int) -> Callable[[int], str]:
+    def footer(shown: int) -> str:
+        return f"…и ещё {total - shown}"
+
+    return footer
+
 
 __all__ = [
     "BTN_ADD",
@@ -46,26 +117,44 @@ __all__ = [
     "already_checking",
     "answer_accepted",
     "answer_result",
+    "answer_too_early",
     "badge",
     "budget_alert",
     "cannot_parse",
     "card_back",
+    "card_edit_cancelled",
+    "card_edit_example",
+    "card_edit_notes",
+    "card_edit_saved",
+    "card_edit_translation",
     "card_front",
     "card_unavailable",
     "clarification",
     "clarification_answered",
     "clarification_skipped",
+    "deck_default_undeletable",
+    "deck_delete_cancelled",
+    "deck_delete_confirm",
+    "deck_deleted",
     "deck_list",
+    "deck_name_invalid",
+    "deck_name_taken",
+    "deck_rename_cancelled",
+    "deck_rename_prompt",
+    "deck_renamed",
+    "deck_unavailable",
     "discovery_empty",
     "discovery_needs_context",
     "discovery_preview",
     "discovery_unavailable",
     "duplicate_message",
+    "empty_answer",
     "evening_reminder",
     "explain",
     "file_export_caption",
     "file_import_cancelled",
     "file_import_empty",
+    "file_import_pending",
     "file_import_preview",
     "file_import_prompt",
     "file_import_result",
@@ -73,6 +162,7 @@ __all__ = [
     "file_import_unreadable",
     "global_error",
     "heatmap_grid",
+    "help_text",
     "hint_unavailable",
     "import_cancelled",
     "import_preview",
@@ -82,6 +172,7 @@ __all__ = [
     "leech_mnemonic_done",
     "leech_offer",
     "leech_paused",
+    "leech_preparing",
     "level_invalid",
     "level_menu",
     "level_reset",
@@ -109,11 +200,13 @@ __all__ = [
     "queue_reminder",
     "review_finished",
     "stale_button",
+    "stale_callback",
     "stats",
     "streak_notes",
     "streak_summary",
     "too_many_requests",
     "unknown_command",
+    "unsupported_content",
     "weekly_digest",
     "welcome_back",
     "welcome_new",
@@ -157,6 +250,39 @@ def welcome_new(first_name: str | None, deck_name: str) -> str:
         "Если слово никак не даётся, я сам предложу помощь, а приостановленные "
         "слова ждут в /paused. Хочется просто погонять слова — /practice.\n"
         "Выгрузить или загрузить свой список файлом — /export и /import."
+    )
+
+
+def help_text() -> str:
+    """The single help screen behind ``/help`` and the «Помощь» button.
+
+    Every command the bot answers has a line here: a command missing from the
+    help is a command the learner never finds.
+    """
+    return (
+        "❓ <b>Помощь</b>\n\n"
+        "<b>Учёба</b>\n"
+        f"/review — повторить слова, которые пора вспомнить "
+        f"(кнопка «{BTN_REVIEW}»)\n"
+        "/practice — тренировка: выбрать перевод из четырёх\n"
+        "/add — добавить слова\n"
+        "/stats — статистика и серия\n"
+        "/decks — колоды\n"
+        "/paused — слова на паузе\n\n"
+        "<b>Слова файлом</b>\n"
+        "/import — загрузить CSV со словами\n"
+        "/export — выгрузить коллекцию в CSV\n\n"
+        "<b>Настройки</b>\n"
+        "/level — уровень языка (A1–C2)\n"
+        "/remind — напоминания\n"
+        "/tz — часовой пояс\n"
+        "/limit — сколько новых слов в день\n"
+        "/settings — текущие настройки\n\n"
+        "<b>Прочее</b>\n"
+        "/start — приветствие и главное меню\n"
+        "/cancel — отменить текущее действие\n"
+        "/help — эта справка\n\n"
+        "Можно просто написать слово с переводом: <code>bonjour — здравствуйте</code>."
     )
 
 
@@ -265,6 +391,45 @@ def answer_accepted(
     return "\n".join(lines)
 
 
+def card_edit_translation(card: Card) -> str:
+    """The first question of an edit: the translation, the field worth fixing.
+
+    The term and the language are named as fixed here, where the learner can
+    still see what they are about to change.
+    """
+    return (
+        f"✏️ Правка <b>{escape(card.term)}</b>\n\n"
+        f"Перевод сейчас: <b>{escape(card.translation)}</b>\n\n"
+        "Пришлите новый перевод — или пропустите шаг.\n"
+        f"<i>Слово и язык ({language_badge(card.language)}) не меняются.</i>"
+    )
+
+
+def card_edit_example(card: Card) -> str:
+    if card.example:
+        return (
+            f"Пример сейчас:\n<i>{escape(card.example)}</i>\n\n"
+            "Пришлите новый пример — или пропустите шаг."
+        )
+    return "Примера пока нет. Пришлите его — или пропустите шаг."
+
+
+def card_edit_notes(card: Card) -> str:
+    if card.notes:
+        return (
+            f"Заметки: {escape(card.notes)}\n\nПришлите новый текст заметок — или пропустите шаг."
+        )
+    return "Заметок пока нет. Пришлите их — или пропустите шаг."
+
+
+def card_edit_saved(card: Card) -> str:
+    return f"✅ Карточка обновлена.\n\n{card_back(card)}"
+
+
+def card_edit_cancelled() -> str:
+    return "Правка отменена — карточка не изменена."
+
+
 def card_back(card: Card, *, example: str | None = None) -> str:
     lines = [f"<b>{escape(card.term)}</b>"]
     if card.transcription:
@@ -318,8 +483,38 @@ def stale_button() -> str:
     return "Кнопка устарела — начните повторение заново."
 
 
+def stale_callback() -> str:
+    """A button no router recognised: nothing belongs to it any more."""
+    return "Кнопка устарела. Начните действие заново."
+
+
 def already_checking() -> str:
     return "Секунду — уже проверяю предыдущий ответ."
+
+
+def answer_too_early() -> str:
+    """A message sent before the card appeared: not graded, but not ignored.
+
+    Dropping it in silence looks like the answer was lost, so the learner would
+    type it again — and the second copy *would* be graded against the card.
+    """
+    return "Этот ответ пришёл раньше карточки — не засчитываю. Напишите перевод ещё раз."
+
+
+def empty_answer() -> str:
+    return "Пустой ответ не засчитываю — напишите перевод слова."
+
+
+def unsupported_content() -> str:
+    """The message carries no text: a photo, a voice note, a sticker.
+
+    The bot cannot look at any of them, and silence would read as a broken bot.
+    """
+    return (
+        "Я понимаю текст и CSV-файлы. 📄\n\n"
+        "Напишите слово с переводом — например <code>bonjour — здравствуйте</code> — "
+        "или пришлите список слов файлом <code>.csv</code>."
+    )
 
 
 def too_many_requests() -> str:
@@ -365,6 +560,11 @@ def leech_paused(card: Card) -> str:
     )
 
 
+def leech_preparing() -> str:
+    """Shown while the model works: the buttons must not be tappable twice."""
+    return "🧠 Готовлю… Это займёт несколько секунд."
+
+
 def leech_left(card: Card) -> str:
     return f"Ок, оставляю <b>{escape(card.term)}</b> как есть."
 
@@ -379,13 +579,19 @@ def llm_failed() -> str:
 
 def paused_list(cards: Sequence[Card], total: int) -> str:
     header = f"⏸ На паузе {total} {_plural(total, 'слово', 'слова', 'слов')}"
-    if total > len(cards):
-        header += f" (первые {len(cards)})"
-    lines = [header, ""]
-    lines.extend(f"• <b>{escape(card.term)}</b> — {escape(card.translation)}" for card in cards)
-    lines.append("")
-    lines.append("<i>Нажмите на слово, чтобы вернуть его в повторения.</i>")
-    return "\n".join(lines)
+    entries = [
+        [f"• <b>{escape(card.term)}</b> — {escape(card.translation)}"]
+        for card in list(cards)[:PREVIEW_PAUSED]
+    ]
+    shown_total = max(total, len(entries))
+    lines = _fit_entries(
+        [header, ""],
+        entries,
+        ["", "<i>Нажмите на слово, чтобы вернуть его в повторения.</i>"],
+        total=shown_total,
+        footer=_more_footer(shown_total),
+    )
+    return fit_text("\n".join(lines))
 
 
 def paused_empty() -> str:
@@ -452,7 +658,11 @@ def practice_unavailable() -> str:
     return "Для тренировки нужно хотя бы 4 слова в повторениях."
 
 
-def file_export_caption(total: int) -> str:
+def file_export_caption(shown: int, total: int) -> str:
+    """What the file holds; a capped export says plainly what was left out."""
+    if total > shown:
+        word = _plural(total, "слова", "слов", "слов")
+        return f"📄 Показаны {shown} из {total} {word}: остальные не поместились в файл."
     word = _plural(total, "слово", "слова", "слов")
     return f"📄 В файле {total} {word}."
 
@@ -477,12 +687,13 @@ def file_import_preview(
     filled: int,
 ) -> str:
     word = _plural(len(rows), "слово", "слова", "слов")
-    lines = [f"📄 Нашёл {len(rows)} {word} для импорта.", ""]
-    for row in list(rows)[:PREVIEW_ROWS]:
-        language = language_badge(row.language or DEFAULT_LANGUAGE)
-        lines.append(f"• {language} <b>{escape(row.term)}</b> — {escape(row.translation or '')}")
-    if len(rows) > PREVIEW_ROWS:
-        lines.append(f"… и ещё {len(rows) - PREVIEW_ROWS}")
+    entries = [
+        [
+            f"• {language_badge(row.language or DEFAULT_LANGUAGE)} "
+            f"<b>{escape(row.term)}</b> — {escape(row.translation or '')}"
+        ]
+        for row in list(rows)[:PREVIEW_ROWS]
+    ]
 
     notes: list[str] = []
     if duplicates:
@@ -493,10 +704,16 @@ def file_import_preview(
         notes.append(f"нераспознанных строк: {skipped}")
     if filled:
         notes.append(f"переводов добавила модель: {filled}")
-    if notes:
-        lines.append("")
-        lines.append("<i>(" + "; ".join(notes) + ")</i>")
-    return "\n".join(lines)
+    tail = ["", "<i>(" + "; ".join(notes) + ")</i>"] if notes else []
+
+    lines = _fit_entries(
+        [f"📄 Нашёл {len(rows)} {word} для импорта.", ""],
+        entries,
+        tail,
+        total=len(rows),
+        footer=lambda shown: f"… и ещё {len(rows) - shown}",
+    )
+    return fit_text("\n".join(lines))
 
 
 def file_import_result(outcome: ImportOutcome) -> str:
@@ -509,6 +726,15 @@ def file_import_result(outcome: ImportOutcome) -> str:
 
 def file_import_cancelled() -> str:
     return "Импорт отменён."
+
+
+def file_import_pending() -> str:
+    """A message typed over a preview that is waiting for its own decision.
+
+    Handing the text to the parser would start a new batch and silently drop
+    the import the learner already prepared.
+    """
+    return "Сначала подтвердите или отмените импорт — файл ждёт решения."
 
 
 def file_import_empty() -> str:
@@ -537,36 +763,43 @@ def import_preview(
     save button. ``note`` carries what could not be done, so a partial result is
     never read as the whole answer.
     """
-    lines = [f"Разобрал <b>{len(drafts)}</b> {_plural(len(drafts), 'слово', 'слова', 'слов')}:", ""]
-    lines.extend(cards_listing(drafts))
+    own = list(drafts)
+    more = list(found.drafts) if found is not None else []
+    total = len(own) + len(more)
 
+    head = [f"Разобрал <b>{len(own)}</b> {_plural(len(own), 'слово', 'слова', 'слов')}:", ""]
+    entries = [_draft_lines(draft) for draft in own]
+    if found is not None and more:
+        found_entries = [_draft_lines(draft) for draft in more]
+        # The heading belongs to the first found draft: showing it alone when
+        # none of the section fits would promise words that are not visible.
+        found_entries[0] = ["", _more_words_head(found), "", *found_entries[0]]
+        entries.extend(found_entries)
+    # The cap is per message, not per section: own and found share it.
+    entries = entries[:PREVIEW_DRAFTS]
+
+    tail: list[str] = []
     if found is not None and found.drafts:
-        lines.append("")
-        lines.append(_more_words_head(found))
-        lines.append("")
-        lines.extend(cards_listing(found.drafts))
         footnotes = _discovery_footnotes(found)
         if footnotes:
-            lines.append("")
-            lines.extend(footnotes)
-
+            tail.extend(["", *footnotes])
     if note:
-        lines.append("")
-        lines.append(note)
-
-    lines.append("")
+        tail.extend(["", note])
+    tail.append("")
     if engine != "rules":
-        lines.append(
+        tail.append(
             "<i>Если язык определён неверно, укажите его в сообщении: "
             "«французское слово hotel — отель».</i>"
         )
-        lines.append(f"<i>Разобрано моделью {escape(engine)}</i>")
+        tail.append(f"<i>Разобрано моделью {escape(engine)}</i>")
     else:
-        lines.append(
+        tail.append(
             "<i>Без модели язык определяется по письменности; латиница считается английской.</i>"
         )
-        lines.append("<i>Разобрано без модели. Проверьте переводы.</i>")
-    return "\n".join(lines)
+        tail.append("<i>Разобрано без модели. Проверьте переводы.</i>")
+
+    lines = _fit_entries(head, entries, tail, total=total, footer=_drafts_footer(total))
+    return fit_text("\n".join(lines))
 
 
 def _more_words_head(found: DiscoveryResult) -> str:
@@ -599,20 +832,25 @@ def _discovery_footnotes(result: DiscoveryResult) -> list[str]:
     return lines
 
 
+def _draft_lines(draft: CardDraft) -> list[str]:
+    """One draft's lines, kept together so a preview never splits a card."""
+    head = f"• {language_badge(draft.language)} <b>{escape(draft.term)}</b>"
+    if draft.transcription:
+        head += f" <code>{escape(draft.transcription)}</code>"
+    level = badge(draft.cefr, draft.frequency)
+    if level:
+        head += f" · <i>{level}</i>"
+    lines = [head, f"   {escape(draft.translation)}"]
+    if draft.example:
+        lines.append(f"   <i>{escape(draft.example)}</i>")
+    return lines
+
+
 def cards_listing(drafts: Sequence[CardDraft]) -> list[str]:
     """Render cards the same way everywhere they are previewed."""
     lines: list[str] = []
     for draft in drafts:
-        head = f"• {language_badge(draft.language)} <b>{escape(draft.term)}</b>"
-        if draft.transcription:
-            head += f" <code>{escape(draft.transcription)}</code>"
-        level = badge(draft.cefr, draft.frequency)
-        if level:
-            head += f" · <i>{level}</i>"
-        lines.append(head)
-        lines.append(f"   {escape(draft.translation)}")
-        if draft.example:
-            lines.append(f"   <i>{escape(draft.example)}</i>")
+        lines.extend(_draft_lines(draft))
     return lines
 
 
@@ -678,16 +916,22 @@ def discovery_preview(
     else:
         head = f"🔍 Подобрал <b>{result.found}</b> слов:"
 
-    lines = [head, ""]
-    lines.extend(cards_listing(result.drafts))
-
+    entries = [_draft_lines(draft) for draft in result.drafts[:PREVIEW_DRAFTS]]
+    tail: list[str] = []
     footnotes = _discovery_footnotes(result)
     if footnotes:
-        lines.append("")
-        lines.extend(footnotes)
-    lines.append("")
-    lines.append(f"<i>Пойдёт в колоду «{escape(deck_name)}».</i>")
-    return "\n".join(lines)
+        tail.extend(["", *footnotes])
+    tail.extend(["", f"<i>Пойдёт в колоду «{escape(deck_name)}».</i>"])
+
+    total = len(result.drafts)
+    lines = _fit_entries(
+        [head, ""],
+        entries,
+        tail,
+        total=total,
+        footer=_drafts_footer(total),
+    )
+    return fit_text("\n".join(lines))
 
 
 def discovery_empty(*, context_used: bool) -> str:
@@ -951,10 +1195,61 @@ def import_result(outcome: ImportOutcome, deck_name: str) -> str:
 
 
 def deck_list(rows: list[tuple[str, int]], total: int) -> str:
-    lines = [f"📚 <b>Колоды</b> — всего слов: {total}", ""]
-    for name, count in rows:
-        lines.append(f"• {escape(name)} — {count}")
-    return "\n".join(lines)
+    entries = [[f"• {escape(name)} — {count}"] for name, count in rows[:PREVIEW_DECKS]]
+    deck_total = len(rows)
+    lines = _fit_entries(
+        [f"📚 <b>Колоды</b> — всего слов: {total}", ""],
+        entries,
+        ["", "<i>✏️ — переименовать, 🗑 — удалить колоду.</i>"],
+        total=deck_total,
+        footer=_more_footer(deck_total),
+    )
+    return fit_text("\n".join(lines))
+
+
+def deck_delete_confirm(name: str, cards: int) -> str:
+    word = _plural(cards, "карточка", "карточки", "карточек")
+    return f"🗑 Удалить колоду «{escape(name)}»? В ней {cards} {word}. Это необратимо."
+
+
+def deck_deleted(name: str) -> str:
+    return f"Колода «{escape(name)}» удалена."
+
+
+def deck_delete_cancelled() -> str:
+    return "Удаление отменено — колода на месте."
+
+
+def deck_default_undeletable() -> str:
+    """The refusal: the default deck is where uncategorised words land."""
+    return "Основную колоду удалить нельзя — в неё попадают новые слова."
+
+
+def deck_rename_prompt(name: str) -> str:
+    return (
+        f"✏️ Новое имя для колоды «{escape(name)}»?\n\n"
+        f"Напишите его одним сообщением — до {DECK_NAME_LIMIT} символов."
+    )
+
+
+def deck_renamed(old_name: str, new_name: str) -> str:
+    return f"✅ Колода «{escape(old_name)}» теперь «{escape(new_name)}»."
+
+
+def deck_rename_cancelled() -> str:
+    return "Переименование отменено."
+
+
+def deck_name_invalid() -> str:
+    return f"Имя колоды не может быть пустым или длиннее {DECK_NAME_LIMIT} символов."
+
+
+def deck_name_taken(name: str) -> str:
+    return f"Колода «{escape(name)}» уже есть — напишите другое имя."
+
+
+def deck_unavailable() -> str:
+    return "Колода больше не доступна — откройте список заново."
 
 
 def stats(

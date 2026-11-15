@@ -2,10 +2,20 @@
 
 from __future__ import annotations
 
-import pytest
-from pydantic import ValidationError
+import os
 
-from eng_remember.config import BotSettings, LlmSettings, ReviewSettings
+import pytest
+from pydantic import SecretStr, ValidationError
+
+from eng_remember.config import (
+    BotSettings,
+    LlmSettings,
+    ReviewSettings,
+    Settings,
+    require_bot_token,
+)
+from eng_remember.errors import ConfigurationError
+from tests.helpers import neutralize_settings_env
 
 
 def test_twenty_updates_may_be_in_flight_per_process() -> None:
@@ -33,13 +43,66 @@ def test_llm_budget_fits_reasoning_and_a_full_discovery_batch() -> None:
 
     assert llm.max_output_tokens >= 8000
     assert llm.timeout_seconds >= 90
-    assert llm.reasoning_effort == "none"
+    # Off by default: an unset parameter is not sent at all, so providers that
+    # do not know it never reject a request, and a reasoning model keeps its
+    # own default unless the operator asks otherwise.
+    assert llm.reasoning_effort is None
+
+
+def test_pool_defaults_cover_concurrency() -> None:
+    """A connection slot for every in-flight update, plus room for background work.
+
+    Each of the ``tasks_concurrency_limit`` updates may hold a session while it
+    waits for a model answer, and the reminder tick, the digest and the pruner
+    connect on their own. A pool smaller than that makes handlers queue on the
+    pool instead of doing their work.
+    """
+    settings = Settings(_env_file=None)
+
+    assert settings.db_pool_size + settings.db_max_overflow >= (
+        settings.bot.tasks_concurrency_limit + 5
+    )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "postgresql+asyncpg://eng:eng@localhost:55432/eng_remember",
+        "sqlite+aiosqlite:////tmp/eng-remember.db",
+        "sqlite://",
+    ],
+)
+def test_supported_database_urls_are_accepted(url: str) -> None:
+    assert Settings(_env_file=None, database_url=url).database_url == url
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "mysql://eng:eng@localhost/eng_remember",
+        # A synchronous driver would fail at the first query instead of at startup.
+        "postgresql://eng:eng@localhost/eng_remember",
+        "",
+    ],
+)
+def test_database_url_rejects_unknown_scheme(url: str) -> None:
+    with pytest.raises(ValidationError, match="database_url"):
+        Settings(_env_file=None, database_url=url)
+
+
+def test_log_level_normalized_and_validated() -> None:
+    """Operators type lower case; a typo must not silently fall back to INFO."""
+    assert Settings(_env_file=None, log_level="debug").log_level == "DEBUG"
+    assert Settings(_env_file=None, log_level=" Warning ").log_level == "WARNING"
+
+    with pytest.raises(ValidationError, match="log_level"):
+        Settings(_env_file=None, log_level="verbose")
 
 
 def test_inbound_guards_have_safe_defaults() -> None:
     bot = BotSettings()
 
-    assert bot.messages_per_minute == 10
+    assert bot.messages_per_minute == 30
     assert bot.callbacks_per_minute == 30
     assert bot.duplicate_message_ttl_seconds == 60.0
     assert bot.admin_chat_id is None
@@ -67,3 +130,65 @@ def test_the_easy_threshold_leaves_room_for_typing() -> None:
     bar sits at the fast-quartile mark instead of below the whole distribution.
     """
     assert ReviewSettings().easy_threshold_seconds == 10.0
+
+
+def test_parse_mode_markdown_rejected() -> None:
+    """The bot's texts are HTML; another parse mode would show raw tags."""
+    with pytest.raises(ValidationError):
+        BotSettings(parse_mode="MarkdownV2")
+
+
+def test_parse_mode_html_is_the_only_accepted_value() -> None:
+    assert BotSettings().parse_mode == "HTML"
+
+
+class TestBotToken:
+    """The one setting without a default: both entry points refuse to start without it."""
+
+    def test_a_missing_token_explains_where_to_get_one(self) -> None:
+        settings = Settings(_env_file=None)
+
+        with pytest.raises(ConfigurationError) as excinfo:
+            require_bot_token(settings)
+
+        message = str(excinfo.value)
+        assert "BOT_TOKEN" in message
+        assert "@BotFather" in message
+
+    @pytest.mark.parametrize("token", ["", "   ", "\n\t "])
+    def test_an_empty_or_blank_token_is_rejected(self, token: str) -> None:
+        settings = Settings(_env_file=None, bot_token=SecretStr(token))
+
+        with pytest.raises(ConfigurationError, match="BOT_TOKEN"):
+            require_bot_token(settings)
+
+    def test_a_configured_token_is_returned_trimmed(self) -> None:
+        """Whitespace around the value is a copy-paste artefact, not part of the token."""
+        settings = Settings(_env_file=None, bot_token=SecretStr(" 42:TEST-TOKEN\n"))
+
+        assert require_bot_token(settings) == "42:TEST-TOKEN"
+
+
+class TestEnvironmentIsolation:
+    """Exported variables must not change what the suite measures."""
+
+    def test_the_settings_fixture_ignores_an_exported_api_key(
+        self, settings: Settings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The fixture removed it before this test's settings were built."""
+        assert settings.llm.api_key is None
+
+    def test_neutralisation_removes_settings_variables_and_keeps_the_rest(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("LLM__API_KEY", "sk-test")
+        monkeypatch.setenv("BOT_TOKEN", "42:TEST-TOKEN")
+        monkeypatch.setenv("REMINDERS__BATCH_SIZE", "5")
+        monkeypatch.setenv("UNRELATED_SETTING", "keep")
+
+        neutralize_settings_env(monkeypatch)
+
+        assert "LLM__API_KEY" not in os.environ
+        assert "BOT_TOKEN" not in os.environ
+        assert "REMINDERS__BATCH_SIZE" not in os.environ
+        assert os.environ["UNRELATED_SETTING"] == "keep"

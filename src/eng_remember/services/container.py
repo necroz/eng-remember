@@ -22,9 +22,10 @@ from eng_remember.repositories.streaks import StreakRepository
 from eng_remember.repositories.users import UserRepository
 from eng_remember.services.cards import CardService
 from eng_remember.services.discovery import DiscoveryService
-from eng_remember.services.enrichment import EnrichmentService
+from eng_remember.services.enrichment import BackfillQueue, EnrichmentService
 from eng_remember.services.grading import AnswerGradingService
 from eng_remember.services.llm.checker import AnswerChecker
+from eng_remember.services.llm.client import LlmTransport
 from eng_remember.services.llm.enricher import CardEnricher
 from eng_remember.services.llm.explorer import WordExplorer
 from eng_remember.services.llm.factory import build_llm_client
@@ -74,7 +75,21 @@ class Services:
         await self.session.commit()
 
 
-def build_services(session: AsyncSession, settings: Settings) -> Services:
+def build_services(
+    session: AsyncSession,
+    settings: Settings,
+    *,
+    llm_transport: LlmTransport | None = None,
+    backfill: BackfillQueue | None = None,
+) -> Services:
+    """Wire this request's services, optionally through process-wide objects.
+
+    The transport and the backfill queue outlive a single update: the transport
+    owns the provider connection and the lessons learned from rejected
+    parameters, the queue carries work from handlers to the worker. Callers that
+    omit either get an isolated instance, which is convenient for tests but not
+    what the bot does.
+    """
     users = UserRepository(session)
     decks = DeckRepository(session)
     cards = CardRepository(session)
@@ -86,7 +101,7 @@ def build_services(session: AsyncSession, settings: Settings) -> Services:
 
     # One client for every LLM-facing service, so a per-call audit sink and the
     # retry policy cannot differ between the parser and the explorer.
-    llm = build_llm_client(session, settings)
+    llm = build_llm_client(session, settings, transport=llm_transport)
     parser = MessageParser(llm=llm)
     explorer = WordExplorer(llm)
 
@@ -118,6 +133,7 @@ def build_services(session: AsyncSession, settings: Settings) -> Services:
             reviews=reviews,
             scheduler=scheduler,
             default_deck_name=settings.bot.default_deck_name,
+            new_cards_per_day=settings.bot.new_cards_per_day,
         ),
         review_service=review_service,
         answer_checker=answer_checker,
@@ -137,6 +153,7 @@ def build_services(session: AsyncSession, settings: Settings) -> Services:
             cards=cards,
             enricher=CardEnricher(llm),
             settings=settings,
+            queue=backfill,
         ),
         practice=PracticeService(cards=cards, settings=settings),
         translator=TermTranslator(llm),

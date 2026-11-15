@@ -29,6 +29,14 @@ def test_matches_keeps_latin_diacritics_significant() -> None:
     assert not matches("cafe", "café", "fra")
 
 
+def test_apostrophes_do_not_decide_an_answer() -> None:
+    """A learner typing "dont" means "don't": no model call for a dropped mark."""
+    assert matches("dont", "don't")
+    assert matches("don’t", "don't")
+    assert matches("don't know", "dont know")
+    assert normalize("don’t") == normalize("don't") == "dont"
+
+
 def test_normalize_does_not_convert_chinese_variants() -> None:
     assert normalize("书", "cmn") != normalize("書", "cmn")
 

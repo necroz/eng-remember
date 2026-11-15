@@ -37,11 +37,25 @@ class Review(Base):
     """
 
     __tablename__ = "reviews"
-    __table_args__ = (Index("ix_reviews_user_id_reviewed_at", "user_id", "reviewed_at"),)
+    __table_args__ = (
+        # Answers counted per learner per day: the range filter on
+        # ``reviewed_at`` is served after the leading ``user_id``.
+        Index("ix_reviews_user_id_reviewed_at", "user_id", "reviewed_at"),
+        # The "first answer of each card" grouping takes ``min(reviewed_at)``
+        # per card; all three columns live in the index, so PostgreSQL can do
+        # an index-only scan instead of visiting the heap for every review.
+        Index(
+            "ix_reviews_user_id_card_id_reviewed_at",
+            "user_id",
+            "card_id",
+            "reviewed_at",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     card_id: Mapped[int] = mapped_column(ForeignKey("cards.id", ondelete="CASCADE"), index=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    # No standalone index: both composite indexes above start with ``user_id``.
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
 
     rating: Mapped[ReviewRating] = mapped_column(_RATING_TYPE)
     reviewed_at: Mapped[datetime] = mapped_column(UtcDateTime)

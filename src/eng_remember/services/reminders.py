@@ -12,6 +12,7 @@ from the in-process loop.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from typing import Protocol
@@ -24,6 +25,7 @@ from eng_remember.domain.digest import HEATMAP_DAYS, daily_series
 from eng_remember.domain.enums import CardDirection, ReviewRating
 from eng_remember.domain.gamification import StreakState, roll_forward
 from eng_remember.domain.reminders import ReminderContext, ReminderKind, decide
+from eng_remember.domain.srs import new_allowance
 from eng_remember.errors import RecipientUnreachable
 from eng_remember.models.user import User
 from eng_remember.repositories.cards import CardRepository
@@ -31,7 +33,13 @@ from eng_remember.repositories.reviews import ReviewRepository
 from eng_remember.repositories.streaks import StreakRepository
 from eng_remember.repositories.users import UserRepository
 from eng_remember.services.digest import bucket_by_local_day, local_midnight
-from eng_remember.utils.time import ensure_utc, local_date, local_day_start, utcnow
+from eng_remember.utils.time import (
+    ensure_utc,
+    local_date,
+    local_day_start,
+    resolve_timezone,
+    utcnow,
+)
 
 __all__ = ["Notifier", "ReminderPlan", "ReminderRun", "ReminderService", "build_reminder_service"]
 
@@ -72,9 +80,14 @@ class Notifier(Protocol):
     caller's options explicit: an unreachable account is retired, a transport
     failure is retried later, and neither can be mistaken for the other. Rendering
     is the notifier's job, so this service never touches user-facing text.
+
+    ``send_alert`` is the operator channel: the loop uses it for a crashed tick,
+    and a notifier without an admin chat configured quietly ignores it.
     """
 
     async def send_reminder(self, plan: ReminderPlan) -> None: ...
+
+    async def send_alert(self, text: str) -> None: ...
 
 
 @dataclass(slots=True)
@@ -101,17 +114,28 @@ class ReminderService:
         streaks: StreakRepository,
         notifier: Notifier,
         settings: Settings,
+        commit: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self._users = users
         self._cards = cards
         self._reviews = reviews
         self._streaks = streaks
         self._notifier = notifier
+        self._commit = commit
         self._reminders: ReminderSettings = settings.reminders
         self._streak_settings = settings.streak
+        self._new_cards_per_day = settings.bot.new_cards_per_day
 
     async def run(self, *, now: datetime | None = None) -> ReminderRun:
-        """One pass over everyone who might be owed a reminder."""
+        """One pass over everyone who might be owed a reminder.
+
+        Every delivery is committed as soon as its watermark is written — per
+        learner, not once per batch, let alone once per tick. A crash or a stop
+        request halfway through a batch therefore keeps every earlier learner
+        marked: the next tick skips them instead of messaging them again, and
+        only the message that was actually in flight can repeat. The commits
+        also keep one transaction from staying open for the whole candidate list.
+        """
         run = ReminderRun()
         if not self._reminders.enabled:
             return run
@@ -138,7 +162,8 @@ class ReminderService:
             run.candidates += len(batch)
 
             for plan in await self._plan(batch, now=moment):
-                await self._deliver(plan, run)
+                await self._deliver(plan, run, now=moment)
+                await self._commit_delivery()
 
         if run.sent_count or run.failed or run.unreachable:
             log.info(
@@ -153,10 +178,21 @@ class ReminderService:
             log.debug("reminder_tick_idle", candidates=run.candidates)
         return run
 
+    async def _commit_delivery(self) -> None:
+        """Make this learner's watermark durable before the next send.
+
+        Per learner rather than per batch: shutdown cancels the loop task
+        immediately, so a batch-sized transaction would drop up to
+        ``batch_size - 1`` sends that already happened.
+        """
+        if self._commit is not None:
+            await self._commit()
+
     async def _plan(self, batch: list[User], *, now: datetime) -> list[ReminderPlan]:
         """Decide the whole batch, with the counting queries batched as well."""
         user_ids = [user.id for user in batch]
         counts = await self._cards.queue_counts(user_ids, now=now)
+        introduced = await self._introduced_today(batch, now=now)
         streak_states = await self._streaks.by_user_ids(user_ids)
         answered = await self._answered_today(batch, now=now)
 
@@ -167,6 +203,13 @@ class ReminderService:
             queue = counts.get(user.id)
             if queue is None:  # pragma: no cover - the query returns every id
                 continue
+
+            # The queue counts are raw; the promise must match what a session
+            # would actually serve, which is bounded by the daily budget.
+            allowance = new_allowance(
+                user.new_cards_per_day, self._new_cards_per_day, introduced.get(user.id, 0)
+            )
+            new_available = min(queue.new, allowance)
 
             # Settled in memory only. A tick must not write to the streak just to
             # look at it, and the answer and statistics paths persist the same
@@ -187,7 +230,7 @@ class ReminderService:
                 # is a guarantee rather than a fresh lookup.
                 has_cards=True,
                 due_now=queue.due,
-                new_available=queue.new,
+                new_available=new_available,
                 answered_today=answered.get(user.id, 0) > 0,
                 streak_alive=streak.state.is_alive,
                 streak_days=streak.state.current,
@@ -207,7 +250,7 @@ class ReminderService:
                     kind=kind,
                     local_day=today_by_user[user.id],
                     due_now=queue.due,
-                    new_available=queue.new,
+                    new_available=new_available,
                     streak_days=streak.state.current,
                     streak_warning=kind is ReminderKind.EVENING and at_risk,
                     digest=digest,
@@ -279,7 +322,19 @@ class ReminderService:
             answered.update(await self._reviews.counts_since(user_ids, since=boundary))
         return answered
 
-    async def _deliver(self, plan: ReminderPlan, run: ReminderRun) -> None:
+    async def _introduced_today(self, batch: list[User], *, now: datetime) -> dict[int, int]:
+        """Cards introduced per learner since their own midnight.
+
+        The reminder tick needs the day's introductions to apply the new-card
+        budget; the repository groups the batch by shared day boundary so this
+        stays one query per boundary rather than one per learner.
+        """
+        since_by_user = {user.id: local_day_start(user.timezone, now=now) for user in batch}
+        return await self._reviews.introduced_counts(
+            list(since_by_user), since_by_user=since_by_user
+        )
+
+    async def _deliver(self, plan: ReminderPlan, run: ReminderRun, *, now: datetime) -> None:
         try:
             await self._notifier.send_reminder(plan)
         except RecipientUnreachable as exc:
@@ -287,7 +342,7 @@ class ReminderService:
             # used — otherwise every tick would try the same dead chat forever.
             log.info("reminder_unreachable", user_id=plan.user.id, error=str(exc))
             await self._users.set_blocked(plan.user, blocked=True)
-            await self._users.record_reminder(plan.user, kind=plan.kind, on=plan.local_day)
+            await self._mark_slots_used(plan, now=now)
             run.unreachable.append(plan.user.id)
             return
         except Exception as exc:
@@ -296,14 +351,38 @@ class ReminderService:
             run.failed.append(plan.user.id)
             return
 
-        await self._users.record_reminder(plan.user, kind=plan.kind, on=plan.local_day)
+        await self._mark_slots_used(plan, now=now)
         run.sent.append(plan)
+
+    async def _mark_slots_used(self, plan: ReminderPlan, *, now: datetime) -> None:
+        """Record which slots this message settled.
+
+        The digest always covers the morning. When it arrives after the evening
+        hour it covers the evening too: it already carries the queue, and
+        leaving that slot open would send a second message minutes later,
+        repeating the queue right after the long summary.
+        """
+        await self._users.record_reminder(plan.user, kind=plan.kind, on=plan.local_day)
+        if plan.kind is ReminderKind.DIGEST and _evening_has_come(
+            plan.user, now=now, settings=self._reminders
+        ):
+            await self._users.record_reminder(
+                plan.user, kind=ReminderKind.EVENING, on=plan.local_day
+            )
 
 
 def _evening_at(user: User, settings: ReminderSettings) -> time | None:
     if not user.evening_reminder:
         return None
     return user.evening_reminder_time or settings.default_streak_time
+
+
+def _evening_has_come(user: User, *, now: datetime, settings: ReminderSettings) -> bool:
+    """Whether the learner's evening hour has already passed at ``now``."""
+    evening_at = _evening_at(user, settings)
+    if evening_at is None:
+        return False
+    return now.astimezone(resolve_timezone(user.timezone)).time() >= evening_at
 
 
 def build_reminder_service(
@@ -323,4 +402,5 @@ def build_reminder_service(
         streaks=StreakRepository(session),
         notifier=notifier,
         settings=settings,
+        commit=session.commit,
     )

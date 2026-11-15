@@ -8,7 +8,9 @@ import pytest
 from pydantic import ValidationError
 
 from eng_remember.services.llm.schema import (
+    PART_OF_SPEECH_LIMIT,
     ExamplesResponse,
+    ExpansionResponse,
     Intent,
     MnemonicResponse,
     ParsedCard,
@@ -26,6 +28,14 @@ def test_transcription_is_normalised_to_slashes() -> None:
 
 def test_part_of_speech_is_lowercased() -> None:
     assert ParsedCard(term="a", translation="б", part_of_speech="Noun").part_of_speech == "noun"
+
+
+def test_part_of_speech_limit_matches_column() -> None:
+    """The schema must never hand the 32-character column a longer value."""
+    card = ParsedCard(term="run", translation="бежать", part_of_speech="a" * 40)
+
+    assert PART_OF_SPEECH_LIMIT == 32
+    assert card.part_of_speech == "a" * 32
 
 
 @pytest.mark.parametrize(
@@ -81,6 +91,47 @@ def test_explicit_parse_language_beats_the_first_card() -> None:
 def test_an_empty_parse_response_is_english() -> None:
     assert ParseResponse().language == "eng"
     assert ParseResponse.model_validate({"cards": []}).language == "eng"
+
+
+def test_answer_is_capped() -> None:
+    response = ParseResponse.model_validate({"answer": "я" * 5000})
+
+    assert response.answer is not None
+    assert len(response.answer) == 2000
+
+
+def test_answer_keeps_line_breaks_under_the_cap() -> None:
+    """An explanation is prose: only its ceiling matters, not its shape."""
+    response = ParseResponse.model_validate({"answer": "Первая строка.\nВторая строка."})
+
+    assert response.answer == "Первая строка.\nВторая строка."
+
+
+def test_answer_drops_control_characters_but_keeps_newlines() -> None:
+    """A stored explanation must not smuggle terminal control codes to Telegram."""
+    response = ParseResponse.model_validate({"answer": "Первая\x00строка.\nВторая\x07строка.\x1b"})
+
+    assert response.answer == "Первая строка.\nВторая строка."
+
+
+def test_expansion_cards_are_capped_like_parse_cards() -> None:
+    """Both card lists share one ceiling, so neither can flood the database."""
+    response = ExpansionResponse.model_validate(
+        {"cards": [{"term": f"word{i}", "translation": f"слово{i}"} for i in range(200)]}
+    )
+
+    assert len(response.cards) == 50
+    assert response.cards[-1].term == "word49"
+
+
+def test_cards_list_is_capped() -> None:
+    response = ParseResponse.model_validate(
+        {"cards": [{"term": f"word{i}", "translation": f"слово{i}"} for i in range(200)]}
+    )
+
+    assert len(response.cards) == 50
+    assert response.cards[0].term == "word0"
+    assert response.cards[-1].term == "word49"
 
 
 def test_an_explicit_null_language_stays_english() -> None:
@@ -173,6 +224,17 @@ def test_a_models_own_name_for_the_mixed_request_means_both_halves() -> None:
 )
 def test_json_is_recovered_from_chatty_answers(raw: str, expected: str) -> None:
     assert extract_json_object(raw) == expected
+
+
+def test_json_is_recovered_from_a_balanced_object_after_prose_braces() -> None:
+    """Prose braces and two objects: take the first candidate that really parses.
+
+    The scanner must respect nesting, quoted strings and escapes — the ``}``
+    inside the string is not the end of the object.
+    """
+    raw = 'Use {braces} in prose: {"a": {"b": 2}, "c": "}"} then {"d": 3}'
+
+    assert extract_json_object(raw) == '{"a": {"b": 2}, "c": "}"}'
 
 
 @pytest.mark.parametrize("raw", ["", "просто текст", "{не json}"])

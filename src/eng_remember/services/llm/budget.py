@@ -3,8 +3,12 @@
 The per-learner gate protects one account from overspending. This module protects
 the operator from the whole bot: many accounts, a runaway feature, or an attack
 that creates new Telegram accounts. It does not decide whether a call is allowed
-— the quota gate raises the refusal — but it emits one warning at the configured
-percentage and one critical alert when the budget is spent.
+— the quota gate raises the refusal — but it emits one warning per episode above
+the configured percentage and one critical alert per episode of spending. Usage
+is a rolling window, so when it falls back below a threshold the episode ends and
+a later crossing alerts again. A critical covers the warning for its episode: a
+dip below the limit but above the warning percentage is still the same spending,
+so only a recovery below the warning threshold makes a warning possible again.
 """
 
 from __future__ import annotations
@@ -40,19 +44,31 @@ class GlobalBudgetMonitor:
         self._notifier = notifier
 
     def reset(self) -> None:
+        """Forget the alert flags, keeping the configured notifier."""
         self._warning_sent = False
         self._critical_sent = False
-        self._notifier = None
 
     async def check(self, used: int, settings: LlmSettings) -> None:
         limit = settings.max_tokens_per_day_global
         if limit <= 0:
             return
 
+        # Usage is a rolling window: falling back below a threshold ends the
+        # episode, so a later crossing alerts again.
+        if used * 100 < limit * settings.global_alert_percent:
+            self._warning_sent = False
+        if used < limit:
+            self._critical_sent = False
+
         if used >= limit:
             if self._critical_sent:
                 return
+            # One episode, one alert: the critical already reported this
+            # spending, so a later dip into the warning band must not add a
+            # warning. The flag is cleared only below the warning threshold,
+            # which is what makes a real recovery alert again.
             self._critical_sent = True
+            self._warning_sent = True
             await self._emit(BudgetAlert("critical", used, limit))
             return
 

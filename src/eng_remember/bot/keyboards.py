@@ -7,9 +7,11 @@ linger as a sticky button.
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Sequence
 
 from aiogram.types import (
+    InlineKeyboardButton,
     InlineKeyboardMarkup,
     KeyboardButton,
     ReplyKeyboardMarkup,
@@ -18,7 +20,10 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from eng_remember.bot import texts
 from eng_remember.bot.callbacks import (
+    CardEditCB,
+    CardEditStepCB,
     ClarifyCB,
+    DeckCB,
     FileImportCB,
     ImportCB,
     LeechCB,
@@ -28,9 +33,15 @@ from eng_remember.bot.callbacks import (
     ReviewCB,
 )
 from eng_remember.models.card import Card
+from eng_remember.models.deck import Deck
 
 __all__ = [
+    "card_edit",
+    "card_edit_step",
     "clarification",
+    "deck_delete_confirm",
+    "deck_manager",
+    "deck_rename_cancel",
     "empty_keyboard",
     "file_import_confirm",
     "import_confirm",
@@ -38,10 +49,16 @@ __all__ = [
     "level_menu",
     "main_menu",
     "paused_cards",
+    "practice_labels",
     "practice_offer",
     "practice_options",
     "review_prompt",
 ]
+
+# Telegram caps a button's text at 64 bytes, and a label is measured in bytes:
+# two Cyrillic characters take four. 60 leaves room for the numbering suffix.
+OPTION_BYTE_LIMIT = 60
+_ELLIPSIS = "…"
 
 
 def main_menu() -> ReplyKeyboardMarkup:
@@ -155,6 +172,61 @@ def leech_menu(card_id: int) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
+def deck_manager(decks: Sequence[Deck]) -> InlineKeyboardMarkup:
+    """One row per deck: rename on the left, delete on the right.
+
+    The same cap as the list itself: a button for a deck the message does not
+    show would be a row the learner cannot match to what it does.
+    """
+    builder = InlineKeyboardBuilder()
+    for deck in list(decks)[: texts.PREVIEW_DECKS]:
+        builder.row(
+            InlineKeyboardButton(
+                text=_truncate_utf8(f"✏️ {deck.name}", OPTION_BYTE_LIMIT),
+                callback_data=DeckCB(action="rn", deck_id=deck.id).pack(),
+            ),
+            InlineKeyboardButton(
+                text="🗑",
+                callback_data=DeckCB(action="dl", deck_id=deck.id).pack(),
+            ),
+        )
+    return builder.as_markup()
+
+
+def deck_delete_confirm(deck_id: int) -> InlineKeyboardMarkup:
+    """Deleting a deck takes its words with it: one deliberate tap, or none."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🗑 Удалить", callback_data=DeckCB(action="ok", deck_id=deck_id))
+    builder.button(text="❌ Отмена", callback_data=DeckCB(action="dc", deck_id=deck_id))
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def deck_rename_cancel(deck_id: int) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="❌ Отмена", callback_data=DeckCB(action="rc", deck_id=deck_id))
+    return builder.as_markup()
+
+
+def card_edit(card_id: int) -> InlineKeyboardMarkup:
+    """The single action a graded card offers: fix what the answer revealed."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✏️ Правка", callback_data=CardEditCB(card_id=card_id))
+    return builder.as_markup()
+
+
+def card_edit_step(card_id: int) -> InlineKeyboardMarkup:
+    """Skip, save now, or leave: a step must never be a dead end."""
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text="⏭ Пропустить", callback_data=CardEditStepCB(action="skip", card_id=card_id)
+    )
+    builder.button(text="✅ Готово", callback_data=CardEditStepCB(action="finish", card_id=card_id))
+    builder.button(text="✖️ Отмена", callback_data=CardEditStepCB(action="cancel", card_id=card_id))
+    builder.adjust(2, 1)
+    return builder.as_markup()
+
+
 def paused_cards(cards: Sequence[Card]) -> InlineKeyboardMarkup:
     """One button per paused word, labelled with the word itself."""
     builder = InlineKeyboardBuilder()
@@ -177,10 +249,45 @@ def practice_offer() -> InlineKeyboardMarkup:
 def practice_options(options: Sequence[str], *, token: int, question: int) -> InlineKeyboardMarkup:
     """One button per translation; the payload carries indices, not text."""
     builder = InlineKeyboardBuilder()
-    for index, option in enumerate(options):
+    for index, label in enumerate(practice_labels(options)):
         builder.button(
-            text=option[:40],
+            text=label,
             callback_data=PracticeCB(action="answer", token=token, question=question, option=index),
         )
     builder.adjust(1)
     return builder.as_markup()
+
+
+def practice_labels(options: Sequence[str]) -> list[str]:
+    """Button labels that fit Telegram's byte cap and stay distinguishable.
+
+    Two translations that share a long prefix are cut to the same text, which
+    would read as one answer offered twice. A colliding label gets its option
+    number attached, on top of the same cut, so the pair still fits.
+    """
+    labels = [_truncate_utf8(option, OPTION_BYTE_LIMIT) for option in options]
+    counts = Counter(labels)
+    if all(count == 1 for count in counts.values()):
+        return labels
+
+    numbered: list[str] = []
+    seen: Counter[str] = Counter()
+    for option, label in zip(options, labels, strict=True):
+        if counts[label] == 1:
+            numbered.append(label)
+            continue
+        seen[label] += 1
+        suffix = f" ({seen[label]})"
+        budget = OPTION_BYTE_LIMIT - len(suffix.encode("utf-8"))
+        numbered.append(_truncate_utf8(option, budget) + suffix)
+    return numbered
+
+
+def _truncate_utf8(text: str, limit: int) -> str:
+    """Cut ``text`` to at most ``limit`` UTF-8 bytes, never inside a character."""
+    encoded = text.encode("utf-8")
+    if len(encoded) <= limit:
+        return text
+    room = max(0, limit - len(_ELLIPSIS.encode("utf-8")))
+    cut = encoded[:room].decode("utf-8", errors="ignore").rstrip()
+    return cut + _ELLIPSIS

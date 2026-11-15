@@ -29,10 +29,16 @@ _ENTRY_SPLIT = re.compile(r"[\n;；]+")
 # "добавь слова: run - бежать" and "add new words: run - бежать" are labels and
 # always end with a colon; "добавь run - бежать" is a bare imperative.
 #
-# Deliberately missing from the bare list: "add" and "save". Both are ordinary
-# vocabulary — "save - спасать" must stay a card, not lose its first word.
-_NOISE_WITH_COLON = re.compile(
-    r"^\s*(?:добавь|добавить|запиши|запомни|заучи|add|save|new)\b[^:：\n]*[:：]\s*",
+# English "add", "save" and "new" are ordinary vocabulary, so a colon right
+# after a lone one of them is a separator: "save: спасать" must stay a card.
+# They only act as a label when more words follow before the colon
+# ("add new words: …").
+_NOISE_LABEL_COLON = re.compile(
+    r"^\s*(?:добавь|добавить|запиши|запомни|заучи)\b[^:：\n]*[:：]\s*",
+    re.IGNORECASE,
+)
+_NOISE_ENGLISH_COLON = re.compile(
+    r"^\s*(?:add|save|new)\b\s+\S[^:：\n]*[:：]\s*",
     re.IGNORECASE,
 )
 _NOISE_BARE = re.compile(
@@ -66,10 +72,11 @@ def parse_text(text: str) -> ParseResponse:
 
 
 def _strip_noise(chunk: str) -> str:
-    labelled = _NOISE_WITH_COLON.sub("", chunk)
-    if labelled != chunk:
-        return labelled
-    return _NOISE_BARE.sub("", chunk)
+    for pattern in (_NOISE_LABEL_COLON, _NOISE_ENGLISH_COLON, _NOISE_BARE):
+        stripped = pattern.sub("", chunk)
+        if stripped != chunk:
+            return stripped
+    return chunk
 
 
 def _parse_entry(entry: str) -> ParsedCard | None:

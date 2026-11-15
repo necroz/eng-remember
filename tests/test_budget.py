@@ -69,6 +69,108 @@ async def test_zero_global_budget_disables_the_monitor() -> None:
     assert alerts == []
 
 
+async def test_warning_repeats_after_usage_drops() -> None:
+    """One alert per episode of exceeding the threshold, not one per process."""
+    monitor = GlobalBudgetMonitor()
+    alerts: list[BudgetAlert] = []
+
+    async def notify(alert: BudgetAlert) -> None:
+        alerts.append(alert)
+
+    monitor.set_notifier(notify)
+    config = settings(limit=1000, percent=80)
+
+    await monitor.check(850, config)
+    assert [a.level for a in alerts] == ["warning"]
+
+    await monitor.check(500, config)
+    assert [a.level for a in alerts] == ["warning"]
+
+    await monitor.check(850, config)
+    assert [a.level for a in alerts] == ["warning", "warning"]
+
+
+async def test_critical_repeats_after_usage_drops() -> None:
+    monitor = GlobalBudgetMonitor()
+    alerts: list[BudgetAlert] = []
+
+    async def notify(alert: BudgetAlert) -> None:
+        alerts.append(alert)
+
+    monitor.set_notifier(notify)
+    config = settings(limit=1000, percent=80)
+
+    await monitor.check(1000, config)
+    assert [a.level for a in alerts] == ["critical"]
+
+    await monitor.check(1001, config)
+    assert [a.level for a in alerts] == ["critical"]
+
+    await monitor.check(600, config)
+    assert [a.level for a in alerts] == ["critical"]
+
+    await monitor.check(1000, config)
+    assert [a.level for a in alerts] == ["critical", "critical"]
+
+
+async def test_a_critical_alert_covers_the_warning_band_until_usage_drops() -> None:
+    """A dip from critical into warning is the same episode, not a new one."""
+    monitor = GlobalBudgetMonitor()
+    alerts: list[BudgetAlert] = []
+
+    async def notify(alert: BudgetAlert) -> None:
+        alerts.append(alert)
+
+    monitor.set_notifier(notify)
+    config = settings(limit=1000, percent=80)
+
+    await monitor.check(1000, config)
+    assert [a.level for a in alerts] == ["critical"]
+
+    # Falling below the limit ends the critical episode but stays above the
+    # warning threshold: the warning for this spending has already been told.
+    await monitor.check(900, config)
+    assert [a.level for a in alerts] == ["critical"]
+
+    # Only a real recovery below the threshold starts a new warning episode.
+    await monitor.check(700, config)
+    await monitor.check(850, config)
+    assert [a.level for a in alerts] == ["critical", "warning"]
+
+
+async def test_reset_forgets_the_warning_flag() -> None:
+    monitor = GlobalBudgetMonitor()
+    alerts: list[BudgetAlert] = []
+
+    async def notify(alert: BudgetAlert) -> None:
+        alerts.append(alert)
+
+    monitor.set_notifier(notify)
+    config = settings(limit=1000, percent=80)
+
+    await monitor.check(850, config)
+    monitor.reset()
+    await monitor.check(850, config)
+
+    assert [a.level for a in alerts] == ["warning", "warning"]
+
+
+async def test_reset_keeps_notifier() -> None:
+    """Resetting the alert state must not silence the admin channel."""
+    monitor = GlobalBudgetMonitor()
+    alerts: list[BudgetAlert] = []
+
+    async def notify(alert: BudgetAlert) -> None:
+        alerts.append(alert)
+
+    monitor.set_notifier(notify)
+    monitor.reset()
+
+    await monitor.check(1000, settings())
+
+    assert [(a.level, a.used) for a in alerts] == [("critical", 1000)]
+
+
 @pytest.mark.parametrize("percent", [1, 80, 100])
 def test_the_alert_threshold_is_configurable(percent: int) -> None:
     assert settings(percent=percent).global_alert_percent == percent

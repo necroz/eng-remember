@@ -78,19 +78,21 @@ def decide(
     today = local_date(context.timezone, now=now)
     local_clock = now.astimezone(resolve_timezone(context.timezone)).time()
 
-    if context.evening_at is not None and local_clock >= context.evening_at:
-        return ReminderKind.EVENING if _evening_owed(context, today=today) else None
-
-    # The digest settles the morning slot for the day, whatever else is marked.
-    if context.last_digest_on == today:
-        return None
-
-    # The digest replaces the morning reminder on its day; it is worth sending
-    # even when the queue is empty, because a quiet week is still a week.
+    # The digest closes the morning slot, so it is decided before the evening
+    # one: a bot whose first tick came after the evening hour would otherwise
+    # skip the week. A digest that lands after the evening hour settles that
+    # slot too — it already carries the queue, so no second message follows.
     if _digest_owed(context, today=today, local_clock=local_clock, settings=settings):
         return ReminderKind.DIGEST
 
-    if context.last_morning_on == today:
+    if context.evening_at is not None and local_clock >= context.evening_at:
+        return ReminderKind.EVENING if _evening_owed(context, today=today) else None
+
+    # A digest already sent today settles the morning slot, whatever is marked.
+    if context.last_digest_on == today:
+        return None
+
+    if _slot_closed(context.last_morning_on, today):
         return None
     if local_clock < context.morning_at:
         return None
@@ -98,6 +100,15 @@ def decide(
         # Nothing to do and nothing to lose: a ping here is pure noise.
         return None
     return ReminderKind.MORNING
+
+
+def _slot_closed(mark: date | None, today: date) -> bool:
+    """Whether a daily mark already fills its slot.
+
+    ``>=`` rather than ``==``: a timezone move west can leave a mark dated after
+    the new "today", and the reminder must not be sent twice.
+    """
+    return mark is not None and mark >= today
 
 
 def _digest_owed(
@@ -112,13 +123,13 @@ def _digest_owed(
         and context.digest_enabled
         and today.weekday() == settings.digest_weekday
         and context.last_digest_on != today
-        and context.last_morning_on != today
+        and not _slot_closed(context.last_morning_on, today)
         and local_clock >= context.morning_at
     )
 
 
 def _evening_owed(context: ReminderContext, *, today: date) -> bool:
-    if context.last_evening_on == today:
+    if _slot_closed(context.last_evening_on, today):
         return False
     if context.has_work:
         return True
