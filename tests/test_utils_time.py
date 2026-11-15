@@ -30,6 +30,13 @@ def test_humanize_interval_floors_months_and_years() -> None:
     assert humanize_interval(800 * 86400) == "2 г"
 
 
+def test_humanize_interval_never_reports_zero_months_or_years() -> None:
+    """The 30-day boundary is just under one 30.44-day month; floor must clamp."""
+    assert humanize_interval(30 * 86400) == "1 мес"
+    assert humanize_interval(364 * 86400) == "11 мес"
+    assert humanize_interval(366 * 86400) == "1 г"
+
+
 def test_local_day_start_is_the_first_valid_instant_of_the_day() -> None:
     """Santiago starts DST at 00:00: that midnight does not exist, 01:00 does.
 

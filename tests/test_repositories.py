@@ -13,6 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from eng_remember.domain.enums import CardDirection, CardState, ReviewRating
 from eng_remember.domain.languages import DEFAULT_LANGUAGE
+from eng_remember.domain.srs import CardSchedule
+from eng_remember.errors import ScheduleConflictError
 from eng_remember.models.card import Card
 from eng_remember.models.review import Review
 from eng_remember.models.user import User
@@ -550,6 +552,51 @@ class TestCards:
 
         assert removed == 1
         assert await cards.count_for_user(user.id) == 1
+
+
+class TestScheduleWrite:
+    """The conditional schedule write must say *why* it matched no row."""
+
+    async def test_a_lost_race_names_the_other_answer(
+        self, cards: CardRepository, session: AsyncSession, user: User, deck: int
+    ) -> None:
+        card = await add(cards, session, user, deck, "run")
+        stale = CardSchedule(
+            due_at=card.due_at,
+            state=CardState.REVIEW,
+            step=card.step,
+            stability=card.stability,
+            difficulty=card.difficulty,
+            last_review_at=card.last_review_at,
+            reps=5,
+            lapses=card.lapses,
+        )
+        card.reps = 6
+
+        with pytest.raises(ScheduleConflictError, match="already updated"):
+            await cards.update_schedule(card, stale)
+
+    async def test_a_deleted_card_is_not_reported_as_a_second_answer(
+        self, cards: CardRepository, session: AsyncSession, user: User, deck: int
+    ) -> None:
+        card = await add(cards, session, user, deck, "run")
+        moved = CardSchedule(
+            due_at=card.due_at,
+            state=CardState.REVIEW,
+            step=card.step,
+            stability=card.stability,
+            difficulty=card.difficulty,
+            last_review_at=card.last_review_at,
+            reps=1,
+            lapses=card.lapses,
+        )
+        await cards.delete(card)
+        await session.commit()
+
+        with pytest.raises(ScheduleConflictError, match="deleted") as excinfo:
+            await cards.update_schedule(card, moved)
+
+        assert excinfo.value.deleted is True
 
 
 class TestReviewLog:
