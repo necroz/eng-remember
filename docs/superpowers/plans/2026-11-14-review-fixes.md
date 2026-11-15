@@ -687,6 +687,42 @@
 
 ---
 
+### Task 42: Консолидация бюджета новых и семантика явного нуля (R20, follow-up T21)
+
+**Files:**
+- Modify: `src/eng_remember/services/review.py`, `src/eng_remember/services/reminders.py`, `src/eng_remember/services/cards.py`, `src/eng_remember/domain/reminders.py` (комментарий)
+- Test: `tests/test_services.py`, `tests/test_services_reminders.py`, `tests/test_bot_flow.py`
+
+**Решение (R20):**
+1. Единый хелпер правила «сколько новых доступно сегодня»: `new_allowance(per_day: int | None, fallback: int, introduced_today: int) -> int` (domain или services — выбрать по зависимостям; domain предпочтительнее, чистая функция). Семантика: `per_day is not None` → использовать его (ЯВНЫЙ 0 = 0 новых), иначе fallback; `allowance = max(0, effective - introduced_today)`.
+2. Заменить три копии формулы (`services/review.py` build_queue, `services/reminders.py` тик, `services/cards.py` stats) на хелпер.
+3. Поправить устаревший комментарий `domain/reminders.py` «The evening still fires later that day» — для дайджеста после evening_at вечер закрыт (T21 fold).
+4. Тесты: `/limit 0` → очередь не даёт новых, stats показывает 0, напоминание не обещает новых (due при этом работает); явный лимит пользователя отличается от глобального (различающий тест); регрессии существующих бюджетных тестов.
+
+- [ ] TDD: падающие тесты на /limit 0 во всех трёх поверхностях.
+- [ ] Реализация хелпера и замена копий.
+- [ ] `uv run ruff check src tests alembic && uv run ruff format --check src tests alembic && uv run mypy` + unit-набор зелёный.
+- [ ] Коммит `fix: явный ноль лимита новых и единое правило бюджета`.
+
+---
+
+### Task 43: Cron-деплой напоминаний (R24, follow-up T31)
+
+**Files:**
+- Modify: `src/eng_remember/remind.py`, `README.md`, `docs/deploy.md` (если упоминает)
+- Test: `tests/test_remind_entry.py` (новый или существующий entry-тест)
+
+**Проблема (обнаружена при фиксе T34, pre-existing):** README предписывает multi-replica деплой `REMINDERS__ENABLED=false` + `eng-remember-remind` из cron. Но `services/reminders.py run()` гейтится на `settings.reminders.enabled` (строка ~140) → cron-путь с false НЕ шлёт ничего. Документированный деплой не работает.
+
+**Решение (R24):** cron-entry — явная команда отправки; флаг `REMINDERS__ENABLED` управляет ВНУТРИПРОЦЕССНЫМ loop. В `remind.py main()` принудительно включить напоминания для своего вызова: `settings.reminders.model_copy(update={"enabled": True})` (или model_copy всего Settings — сверить с pydantic-settings), передать в build_reminder_service. Докстринг remind.py и README: уточнить семантику флага (loop off, cron шлёт). Тест: при enabled=False cron-путь отправляет due-напоминание (через harness/фейковый notifier); внутрипроцессный loop при enabled=False не стартует (существующее поведение).
+
+- [ ] TDD: падающий тест cron-отправки при enabled=False.
+- [ ] Реализация + доки.
+- [ ] Проверки: ruff/format/mypy + unit зелёный.
+- [ ] Коммит `fix: cron-путь напоминаний работает при выключенном loop`.
+
+---
+
 ## Финал
 
 - [ ] Полный прогон: `make check && make test-integration` — зелёный.
