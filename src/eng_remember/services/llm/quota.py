@@ -240,6 +240,8 @@ class QuotaLimitedClient:
     async def _enforce_global_budget(self) -> None:
         """Alert on and enforce the bot-wide budget, learner or no learner."""
         limit = self._settings.max_tokens_per_day_global
+        if limit <= 0:
+            return
         tokens = await self._global_tokens()
         await self._budget.check(tokens, self._settings)
         if tokens >= limit:

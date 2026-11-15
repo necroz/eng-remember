@@ -396,6 +396,13 @@ class Clarification(BaseModel):
         return [option for option in cleaned if option]
 
 
+def _complete_cards(cards: list[ParsedCard]) -> list[ParsedCard]:
+    """Drop first, then cap: a truncated answer's last card is still a whole
+    card, not an empty slot."""
+    complete = [card for card in cards if card.term and card.translation]
+    return complete[:CARDS_LIMIT]
+
+
 class ParseResponse(BaseModel):
     """Top-level object the model must return."""
 
@@ -514,10 +521,7 @@ class ParseResponse(BaseModel):
     @field_validator("cards")
     @classmethod
     def _drop_incomplete(cls, cards: list[ParsedCard]) -> list[ParsedCard]:
-        # Drop first, then cap: a truncated answer's last card is still a whole
-        # card, not an empty slot.
-        complete = [card for card in cards if card.term and card.translation]
-        return complete[:CARDS_LIMIT]
+        return _complete_cards(cards)
 
     def to_drafts(self) -> list[CardDraft]:
         return [card.to_draft() for card in self.cards]
@@ -539,7 +543,7 @@ class ExpansionResponse(BaseModel):
     @field_validator("cards")
     @classmethod
     def _drop_incomplete(cls, cards: list[ParsedCard]) -> list[ParsedCard]:
-        return [card for card in cards if card.term and card.translation][:CARDS_LIMIT]
+        return _complete_cards(cards)
 
     def to_drafts(self) -> list[CardDraft]:
         return [card.to_draft() for card in self.cards]

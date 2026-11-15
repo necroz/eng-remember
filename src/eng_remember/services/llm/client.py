@@ -18,11 +18,12 @@ Two design points worth keeping:
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import re
 import time
 from collections.abc import Awaitable, Callable
-from typing import Any, Protocol, TypeVar, runtime_checkable
+from typing import Any, Protocol, TypeVar, cast, runtime_checkable
 
 from openai import (
     APIConnectionError,
@@ -105,11 +106,12 @@ _JSON_SCHEMA_REJECTION = re.compile(r"json[_\s-]?schema|invalid schema|structure
 def _rejection_text(exc: BadRequestError) -> str:
     """Everything the provider said about a rejection, lowercased.
 
-    The human message is not the only place a parameter can be named: OpenAI
-    and compatible providers often put a machine-readable ``param`` or ``code``
-    in the structured body while the message stays generic.
+    The structured body wins: it names the offending parameter and nothing else.
+    The raw ``str(exc)`` is a last resort because some providers echo the whole
+    request in it, and a request that merely *mentions* ``response_format`` in
+    some unrelated field must not teach the transport a lesson.
     """
-    parts = [str(exc)]
+    parts: list[str] = []
     body = exc.body
     if isinstance(body, dict):
         error = body.get("error")
@@ -122,7 +124,45 @@ def _rejection_text(exc: BadRequestError) -> str:
         parts.extend(
             value for key in ("message", "param", "code") if isinstance(value := body.get(key), str)
         )
+    if not parts:
+        parts.append(str(exc))
     return " ".join(parts).lower()
+
+
+def _strict_json_schema(schema: type[BaseModel]) -> dict[str, Any]:
+    """Pydantic's schema, adjusted to the shape OpenAI's strict mode accepts.
+
+    Strict mode wants every object to forbid extra keys and to list every
+    property as required; optionality is expressed in the type (a null union),
+    not by omitting the key. Pydantic already emits ``anyOf`` for ``X | None``,
+    so the conversion is structural rather than semantic.
+    """
+    document = copy.deepcopy(schema.model_json_schema())
+
+    def tighten(node: Any) -> Any:
+        if isinstance(node, list):
+            return [tighten(item) for item in node]
+        if not isinstance(node, dict):
+            return node
+        if node.get("type") == "object" or "properties" in node:
+            properties = node.get("properties")
+            if isinstance(properties, dict):
+                node["properties"] = {key: tighten(value) for key, value in properties.items()}
+                node["required"] = list(properties)
+            node["additionalProperties"] = False
+        for key in ("items", "additionalProperties"):
+            if isinstance(node.get(key), dict):
+                node[key] = tighten(node[key])
+        for key in ("anyOf", "oneOf", "allOf", "prefixItems"):
+            if isinstance(node.get(key), list):
+                node[key] = [tighten(item) for item in node[key]]
+        return node
+
+    tightened = tighten(document)
+    definitions = tightened.get("$defs")
+    if isinstance(definitions, dict):
+        tightened["$defs"] = {name: tighten(value) for name, value in definitions.items()}
+    return cast(dict[str, Any], tightened)
 
 
 def _echo_for_repair(content: str) -> str:
@@ -209,7 +249,7 @@ class LlmTransport:
                 "type": "json_schema",
                 "json_schema": {
                     "name": schema.__name__,
-                    "schema": schema.model_json_schema(),
+                    "schema": _strict_json_schema(schema),
                     "strict": True,
                 },
             }
@@ -343,6 +383,9 @@ class OpenAiCompatibleClient:
         last_error = "no attempt was made"
         attempt = 0
         started = time.perf_counter()
+        # The paid answer is reported after the deadline block: a slow sink must
+        # not turn a successful model call into a "deadline exceeded" failure.
+        success: tuple[ModelT, str, Any, float] | None = None
 
         try:
             async with asyncio.timeout(self._settings.timeout_seconds):
@@ -441,24 +484,15 @@ class OpenAiCompatibleClient:
                         ]
                         continue
 
-                    await self._report(
-                        purpose=purpose,
-                        user_id=user_id,
-                        attempt=attempt,
-                        started=attempt_started,
-                        success=True,
-                        request_text=user,
-                        response_text=content,
-                        prompt_tokens=getattr(usage, "prompt_tokens", None),
-                        completion_tokens=getattr(usage, "completion_tokens", None),
-                        total_tokens=getattr(usage, "total_tokens", None),
-                    )
-                    return result
+                    success = (result, content, usage, attempt_started)
+                    break
         except TimeoutError as exc:
             last_error = (
                 f"LLM call deadline of {self._settings.timeout_seconds}s exceeded "
                 f"after {max(attempt, 1)} attempt(s)"
             )
+            # ``started`` is the beginning of the whole call, so the latency in
+            # this row is the full wall time, not the last attempt's slice.
             await self._report(
                 purpose=purpose,
                 user_id=user_id,
@@ -468,6 +502,22 @@ class OpenAiCompatibleClient:
                 error=last_error,
             )
             raise LlmResponseError(last_error) from exc
+
+        if success is not None:
+            result, content, usage, attempt_started = success
+            await self._report(
+                purpose=purpose,
+                user_id=user_id,
+                attempt=attempt,
+                started=attempt_started,
+                success=True,
+                request_text=user,
+                response_text=content,
+                prompt_tokens=getattr(usage, "prompt_tokens", None),
+                completion_tokens=getattr(usage, "completion_tokens", None),
+                total_tokens=getattr(usage, "total_tokens", None),
+            )
+            return result
 
         raise LlmResponseError(
             f"model did not return valid JSON after {attempts} attempts: {last_error}"
