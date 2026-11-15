@@ -41,7 +41,7 @@ from eng_remember.domain.cloze import cloze
 from eng_remember.domain.enums import ReviewRating
 from eng_remember.domain.examples import pick_example
 from eng_remember.domain.leech import next_level, should_offer
-from eng_remember.errors import LlmError, LlmNotConfiguredError
+from eng_remember.errors import LlmError, LlmNotConfiguredError, ScheduleConflictError
 from eng_remember.models.card import Card
 from eng_remember.models.user import User
 from eng_remember.services.container import Services
@@ -428,13 +428,22 @@ def build_router() -> Router:
         before = await state.get_data()
         hint_used = bool(before.get(HINT_USED_KEY))
         example = before.get(EXAMPLE_KEY)
-        outcome = await services.grading_service.grade(
-            user,
-            card,
-            typed=typed,
-            duration_seconds=duration_seconds,
-            hint_used=hint_used,
-        )
+        try:
+            outcome = await services.grading_service.grade(
+                user,
+                card,
+                typed=typed,
+                duration_seconds=duration_seconds,
+                hint_used=hint_used,
+            )
+        except ScheduleConflictError:
+            # Another session answered this card first: the schedule write was
+            # refused and no review was logged. That is a stale card, not a
+            # broken bot — say so and move to the next one.
+            log.warning("answer_conflict", user_id=user.id, card_id=card.id)
+            await bot.send_message(chat_id, texts.card_unavailable())
+            await _advance(bot, chat_id, user, services, state)
+            return
 
         # While the model was checking, the learner may have paused the review,
         # restarted it or confirmed an import. The answer itself was given and is

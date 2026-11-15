@@ -20,8 +20,10 @@ __all__ = ["Verdict", "matches", "normalize", "rating_for", "translation_variant
 # "вездесущий". Hyphens are included so "по-русски" and "по русски" meet each
 # other instead of going to the model over a dash. The non-ASCII marks matter
 # for Chinese, Japanese and Arabic answers, where the sentence does not end in
-# an ASCII full stop.
+# an ASCII full stop. Apostrophes are deleted rather than spaced: "dont" and
+# "don't" are one answer, while a space would turn either into two words.
 _PUNCTUATION = str.maketrans(dict.fromkeys('.,!?;:()"«»„“”[]{}…—–-|/،؛؟。、「」『』', " "))
+_APOSTROPHES = str.maketrans(dict.fromkeys("'’", ""))
 
 _VARIANT_SEPARATORS = re.compile(r"[,;/|\n]+")
 
@@ -78,7 +80,7 @@ def normalize(text: str, language: str = NATIVE_LANGUAGE) -> str:
         normalized = normalized.replace("ё", "е")
     elif code == "arb":
         normalized = _ARABIC_MARKS.sub("", normalized).translate(_ARABIC_LETTERS)
-    return " ".join(normalized.translate(_PUNCTUATION).split())
+    return " ".join(normalized.translate(_APOSTROPHES).translate(_PUNCTUATION).split())
 
 
 def translation_variants(text: str) -> list[str]:

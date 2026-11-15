@@ -71,9 +71,33 @@ class DuplicateCardError(DomainError):
         self.term = term
 
 
+class EmptyDraftError(DomainError):
+    """A draft has no term or no translation, so there is nothing to save.
+
+    Distinct from :class:`DuplicateCardError`: the learner did not already have
+    this word, the word was not there at all.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("a card needs both a term and a translation")
+
+
 class CardNotFoundError(DomainError):
     """A card referenced by id does not exist or is not owned by the user."""
 
     def __init__(self, card_id: int) -> None:
         super().__init__(f"card not found: {card_id}")
+        self.card_id = card_id
+
+
+class ScheduleConflictError(DomainError):
+    """A card's schedule changed after the caller read it.
+
+    Two answers logged from the same read state would otherwise overwrite each
+    other: the second one is refused and the learner is shown the card as stale
+    instead of a corrupted schedule.
+    """
+
+    def __init__(self, card_id: int) -> None:
+        super().__init__(f"card schedule already updated: {card_id}")
         self.card_id = card_id

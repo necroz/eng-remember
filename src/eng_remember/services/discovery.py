@@ -23,7 +23,7 @@ import structlog
 
 from eng_remember.config import DiscoverySettings
 from eng_remember.domain.languages import DEFAULT_LANGUAGE, resolve_target_language
-from eng_remember.domain.term_match import contains_term
+from eng_remember.domain.term_match import contains_term, fold_term
 from eng_remember.models.user import User
 from eng_remember.repositories.cards import CardDraft, CardRepository
 from eng_remember.services.llm.explorer import WordExplorer
@@ -109,8 +109,8 @@ class DiscoveryService:
         seed_terms = [seed.strip() for seed in seeds if seed.strip()]
         excluded = (
             existing
-            | {seed.lower() for seed in seed_terms}
-            | {term.strip().lower() for term in exclude if term.strip()}
+            | {fold_term(seed) for seed in seed_terms}
+            | {fold_term(term) for term in exclude if term.strip()}
         )
 
         ask_for = min(
@@ -138,7 +138,7 @@ class DiscoveryService:
         seen: set[str] = set()
 
         for draft in response.to_drafts():
-            key = draft.term.lower()
+            key = fold_term(draft.term)
             if key in excluded:
                 result.dropped_known += 1
                 continue

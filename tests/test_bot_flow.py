@@ -19,11 +19,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from eng_remember.bot import texts
 from eng_remember.bot.callbacks import ReviewCB
 from eng_remember.domain.enums import CardDirection, ReviewRating
+from eng_remember.errors import ScheduleConflictError
 from eng_remember.models.card import Card
 from eng_remember.models.deck import Deck
 from eng_remember.models.review import Review
 from eng_remember.models.user import User
-from eng_remember.repositories.cards import CardDraft
+from eng_remember.repositories.cards import CardDraft, CardRepository
 from eng_remember.services.container import Services
 from eng_remember.services.llm.schema import AnswerCheckResponse
 from eng_remember.services.review import ReviewService
@@ -361,6 +362,31 @@ class TestReview:
 
         await send(dispatcher, bot, "/review", update_id=23)
         assert "gamma" in recording.last_text()
+
+    async def test_a_conflicting_answer_shows_the_stale_path_not_an_error(
+        self,
+        dispatcher: Dispatcher,
+        bot: Bot,
+        recording: RecordingSession,
+        card_id: int,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A card answered elsewhere is stale, not a broken bot.
+
+        The schedule write refuses an outdated ``reps``; the learner must see the
+        page saying the card moved on, not the global "что-то сломалось".
+        """
+
+        async def conflict(_self: CardRepository, _card: Card, _schedule: object) -> None:
+            raise ScheduleConflictError(card_id)
+
+        monkeypatch.setattr(CardRepository, "update_schedule", conflict)
+
+        await send(dispatcher, bot, "/review", update_id=20)
+        await send(dispatcher, bot, "вездесущий", update_id=21, date=utcnow())
+
+        assert texts.card_unavailable() in recording.sent_texts()
+        assert texts.global_error() not in recording.sent_texts()
 
     async def test_a_fast_correct_answer_is_graded_easy(
         self,

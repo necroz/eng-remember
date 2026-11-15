@@ -9,6 +9,7 @@ from datetime import datetime
 from eng_remember.domain.enums import CardState, ReviewRating
 from eng_remember.domain.gamification import StreakTransition
 from eng_remember.domain.srs import SrsScheduler
+from eng_remember.domain.term_match import fold_term
 from eng_remember.models.card import Card
 from eng_remember.models.review import Review
 from eng_remember.models.user import User
@@ -33,7 +34,7 @@ def _one_per_term(cards: list[Card]) -> list[Card]:
     seen: set[tuple[str, str]] = set()
     kept: list[Card] = []
     for card in cards:
-        key = (card.language, card.term.casefold())
+        key = (card.language, fold_term(card.term))
         if key in seen:
             continue
         seen.add(key)
@@ -107,12 +108,17 @@ class ReviewService:
         deck_id: int | None = None,
         limit: int | None = None,
         now: datetime | None = None,
+        count_totals: bool = True,
     ) -> ReviewQueue:
         """Reviews that are due, then as many new cards as the daily budget allows.
 
         Cards already in rotation always come first — they are the ones the
         schedule says are about to be forgotten. New material is capped by the
         per-day budget, measured against the user's own midnight.
+
+        ``count_totals=False`` skips the two aggregate COUNTs behind
+        ``due_total``/``new_total``: the one-card path never reads them, and the
+        query per card is pure overhead there.
         """
         moment = ensure_utc(now) or utcnow()
         session_limit = limit or self._session_max
@@ -132,20 +138,29 @@ class ReviewService:
         if remaining > 0 and allowance > 0:
             wanted = min(remaining, allowance)
             # The margin covers the remaining in-Python filter: both directions
-            # of a word sit in the list and only one may be introduced.
+            # of a word sit in the list and only one may be introduced. It is
+            # deliberately not capped by the session size — the cap would shrink
+            # the window to the number of cards wanted and throw away the margin
+            # exactly when the whole session is new material.
             candidates = await self._cards.list_new(
                 user.id,
                 now=moment,
-                limit=min(self._session_max, max(2, wanted * 2)),
+                limit=max(2, wanted * 2),
                 deck_id=deck_id,
                 bury_reviewed_since=local_day_start(user.timezone, now=moment),
             )
             new_cards = _one_per_term(candidates)[:wanted]
 
+        due_total = 0
+        new_total = 0
+        if count_totals:
+            due_total = await self._cards.count_due(user.id, now=moment, deck_id=deck_id)
+            new_total = await self._cards.count_new(user.id, now=moment, deck_id=deck_id)
+
         return ReviewQueue(
             cards=[*due_cards, *new_cards],
-            due_total=await self._cards.count_due(user.id, now=moment, deck_id=deck_id),
-            new_total=await self._cards.count_new(user.id, now=moment, deck_id=deck_id),
+            due_total=due_total,
+            new_total=new_total,
             new_allowance=allowance,
         )
 
@@ -156,7 +171,8 @@ class ReviewService:
         deck_id: int | None = None,
         now: datetime | None = None,
     ) -> Card | None:
-        queue = await self.build_queue(user, deck_id=deck_id, limit=1, now=now)
+        """The next card alone, without the counts behind the queue."""
+        queue = await self.build_queue(user, deck_id=deck_id, limit=1, now=now, count_totals=False)
         return queue.cards[0] if queue.cards else None
 
     async def answer(
@@ -173,17 +189,21 @@ class ReviewService:
         previous = card.schedule
         updated = self._scheduler.review(previous, rating, now=moment)
 
+        last_review = previous.last_review_at
+        scheduled_seconds = (previous.due_at - last_review).total_seconds() if last_review else 0.0
+        elapsed_seconds = (moment - last_review).total_seconds() if last_review else 0.0
+
+        # The schedule write is the one that can lose a race, so it comes before
+        # any other mutation: a conflicting answer must leave the card untouched
+        # rather than bump its failure counter without a review.
+        await self._cards.update_schedule(card, updated)
+
         if rating is ReviewRating.AGAIN:
             # Every failed answer counts, in any state: FSRS lapses only grow in
             # review, and the words stuck in learning are exactly the ones the
             # leech flow exists for.
             card.again_count = (card.again_count or 0) + 1
 
-        last_review = previous.last_review_at
-        scheduled_seconds = (previous.due_at - last_review).total_seconds() if last_review else 0.0
-        elapsed_seconds = (moment - last_review).total_seconds() if last_review else 0.0
-
-        await self._cards.update_schedule(card, updated)
         await self._reviews.add(
             Review(
                 card_id=card.id,

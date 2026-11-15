@@ -216,6 +216,18 @@ class TestPraiseService:
 
         assert pick.text in BANKS[PraiseCategory.GOOD]
 
+    async def test_a_list_in_the_history_column_is_ignored(
+        self, services: Services, session: AsyncSession, user: User
+    ) -> None:
+        """Reset-to-default wrote a list into a mapping column; a pick must survive it."""
+        user.praise_history = ["good"]  # type: ignore[assignment]
+        await session.commit()
+
+        pick = services.praise_service.pick(user, rating=ReviewRating.GOOD)
+
+        assert pick.text in BANKS[PraiseCategory.GOOD]
+        assert user.praise_history == {"good": [int(pick.key.split(":")[1])]}
+
     async def test_the_service_is_deterministic_with_a_seeded_rng(self) -> None:
         import random
 

@@ -14,7 +14,7 @@ import unicodedata
 from eng_remember.domain.answers import normalize
 from eng_remember.domain.languages import DEFAULT_LANGUAGE, resolve_language
 
-__all__ = ["contains_term", "term_spans"]
+__all__ = ["contains_term", "fold_term", "term_spans"]
 
 _SUBSTRING_LANGUAGES = frozenset({"cmn", "jpn", "tha"})
 _STEM_LANGUAGES = frozenset(
@@ -22,9 +22,24 @@ _STEM_LANGUAGES = frozenset(
 )
 
 # Same rule as discovery and the old cloze implementation: how many leading
-# characters have to agree before two words count as forms of each other.
+# characters have to agree before two words count as forms of each other. A
+# shorter word is never a stem: "go" must not swallow "good". Three is the floor
+# because "run" still has to match "runs" — the cloze hint depends on it.
 _STEM = 4
-_MIN_STEM_LENGTH = 2
+_MIN_STEM_LENGTH = 3
+
+
+def fold_term(term: str) -> str:
+    """The de-duplication key of a term: NFC, case-folded, trimmed.
+
+    Every Python-side duplicate check uses this key, so ``Straße`` and
+    ``STRASSE`` are one word rather than two. SQL still compares with
+    ``lower()``: PostgreSQL folds ``ß`` to ``ß`` where ``casefold`` gives ``ss``,
+    so the two paths can disagree on that one letter — the functional index
+    task closes that gap, and until then the casefolded key is the stricter of
+    the two.
+    """
+    return unicodedata.normalize("NFC", term).strip().casefold()
 
 
 def term_spans(text: str, term: str, language: str = DEFAULT_LANGUAGE) -> list[tuple[int, int]]:

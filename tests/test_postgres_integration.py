@@ -11,12 +11,13 @@ skipped.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import AsyncIterator
 from datetime import timedelta
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
@@ -24,10 +25,11 @@ import eng_remember.models  # noqa: F401  — registers tables on Base.metadata
 from eng_remember.config import Settings
 from eng_remember.db import Base, create_engine, create_session_factory
 from eng_remember.domain.enums import CardDirection, CardState, ReviewRating
+from eng_remember.errors import ScheduleConflictError
 from eng_remember.models.card import Card
 from eng_remember.models.review import Review
 from eng_remember.models.user import User
-from eng_remember.repositories.cards import CardDraft
+from eng_remember.repositories.cards import CardDraft, CardRepository
 from eng_remember.repositories.users import TelegramProfile
 from eng_remember.services.container import Services, build_services
 from eng_remember.utils.time import utcnow
@@ -148,6 +150,57 @@ async def test_the_review_flow_survives_a_real_scheduler(
 
     assert await pg_services.review_service.get_next(pg_user) is None
     assert await pg_services.reviews.count_since(pg_user.id, since=utcnow().replace(hour=0)) == 3
+
+
+async def test_concurrent_answers_log_one_review(
+    pg_session_factory: async_sessionmaker[AsyncSession],
+    pg_services: Services,
+    pg_session: AsyncSession,
+    pg_user: User,
+) -> None:
+    """Two sessions answer the same card from one read state; only one may land.
+
+    The loser must learn it lost rather than overwrite the winner's schedule,
+    and the journal must keep exactly one answer.
+    """
+    card = await pg_services.card_service.add_draft(
+        pg_user, CardDraft(term="race", translation="гонка")
+    )
+    await pg_session.commit()
+    card_id = card.id
+    user_id = pg_user.id
+    settings = Settings(_env_file=None, database_url=DATABASE_URL)
+
+    async def open_row(session: AsyncSession) -> tuple[User, Card]:
+        user = await session.get(User, user_id)
+        assert user is not None
+        stale = await CardRepository(session).get(card_id, user_id=user_id)
+        assert stale is not None
+        return user, stale
+
+    async with pg_session_factory() as first, pg_session_factory() as second:
+        first_services = build_services(first, settings)
+        second_services = build_services(second, settings)
+        first_user, first_card = await open_row(first)
+        second_user, second_card = await open_row(second)
+        second_read = second_card.schedule
+
+        await first_services.review_service.answer(first_user, first_card, ReviewRating.GOOD)
+        second_write = asyncio.create_task(
+            second_services.review_service.answer(second_user, second_card, ReviewRating.GOOD)
+        )
+        await first.commit()
+
+        with pytest.raises(ScheduleConflictError):
+            await second_write
+        # The rejected UPDATE must not repaint the losing session's object: the
+        # card there still shows exactly what it read, not the value it tried to
+        # write and not the winner's schedule.
+        assert second_card.schedule == second_read
+        await second.rollback()
+
+    async with pg_session_factory() as check:
+        assert await check.scalar(select(func.count(Review.id))) == 1
 
 
 async def test_json_tags_round_trip(
