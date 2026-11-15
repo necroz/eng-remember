@@ -73,8 +73,10 @@ class Card(Base, TimestampMixin):
         ),
         # One index per queue shape instead of single-column duplicates: every
         # card query is scoped to a learner (and optionally a deck) and sorted
-        # or filtered by ``due_at``, so these prefixes cover the old
-        # ``ix_cards_user_id``, ``ix_cards_deck_id`` and ``ix_cards_due_at``.
+        # or filtered by ``due_at``, so these composites cover the old
+        # ``ix_cards_user_id`` and ``ix_cards_deck_id``. The old
+        # ``ix_cards_due_at`` is gone as well: no query filters or sorts by
+        # ``due_at`` without a ``user_id``.
         Index("ix_cards_user_id_due_at", "user_id", "due_at"),
         Index("ix_cards_deck_id_due_at", "deck_id", "due_at"),
     )

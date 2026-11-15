@@ -10,6 +10,16 @@ drops indexes that only duplicate wider ones.
   card" grouping: the query reads all three columns from the index.
 * Redundant single-column indexes are gone (see the comments at each drop).
 
+If production already holds two rows that differ only in case (possible only
+by bypassing the service layer), ``CREATE UNIQUE INDEX`` fails with a duplicate
+key error; the transaction rolls back and no data is touched. Check beforehand
+and merge the rows by hand::
+
+    SELECT user_id, deck_id, lower(term), language, direction, count(*)
+    FROM cards
+    GROUP BY 1, 2, 3, 4, 5
+    HAVING count(*) > 1;
+
 All tables involved are small, so a single transactional migration is cheaper
 than a concurrent build and avoids leaving an invalid index behind.
 
@@ -56,9 +66,11 @@ def upgrade() -> None:
         ["user_id", "card_id", "reviewed_at"],
     )
 
-    # ``ix_cards_user_id``, ``ix_cards_deck_id`` and ``ix_cards_due_at`` are the
-    # leading columns of ``ix_cards_user_id_due_at`` / ``ix_cards_deck_id_due_at``
-    # and every card query filters by owner (optionally deck) before due_at.
+    # ``ix_cards_user_id`` and ``ix_cards_deck_id`` are the leading columns of
+    # ``ix_cards_user_id_due_at`` / ``ix_cards_deck_id_due_at``. ``ix_cards_due_at``
+    # goes too, but not as a prefix: no query filters or sorts by ``due_at``
+    # without a ``user_id``, and inside that scope the composite indexes end in
+    # ``due_at``.
     op.drop_index("ix_cards_user_id", table_name="cards")
     op.drop_index("ix_cards_deck_id", table_name="cards")
     op.drop_index("ix_cards_due_at", table_name="cards")
