@@ -149,5 +149,5 @@ def humanize_interval(delta_seconds: float) -> str:
         return f"{int(days)} дн"
     months = days / 30.44
     if months < 12:
-        return f"{months:.1f} мес".replace(".0 ", " ")
-    return f"{days / 365.25:.1f} г"
+        return f"{int(months)} мес"
+    return f"{int(days / 365.25)} г"

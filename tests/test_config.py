@@ -90,6 +90,12 @@ def test_database_url_rejects_unknown_scheme(url: str) -> None:
         Settings(_env_file=None, database_url=url)
 
 
+def test_the_sync_postgresql_url_names_the_async_driver() -> None:
+    """The most common mistake gets an actionable message, not just "got ..."."""
+    with pytest.raises(ValidationError, match="asyncpg"):
+        Settings(_env_file=None, database_url="postgresql://user:pass@host/db")
+
+
 def test_log_level_normalized_and_validated() -> None:
     """Operators type lower case; a typo must not silently fall back to INFO."""
     assert Settings(_env_file=None, log_level="debug").log_level == "DEBUG"

@@ -47,6 +47,8 @@ class ReviewQueue:
     """Cards to show now, plus the numbers behind that choice."""
 
     cards: list[Card]
+    # Zero when the caller passed ``count_totals=False`` (the one-card path):
+    # the numbers are an aggregate for the UI, not a statement about the list.
     due_total: int
     new_total: int
     new_allowance: int

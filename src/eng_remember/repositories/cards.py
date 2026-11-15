@@ -469,6 +469,12 @@ class CardRepository:
         )
         result = await self._session.execute(stmt.execution_options(synchronize_session=False))
         if cast("CursorResult[Any]", result).rowcount == 0:
+            # The conditional UPDATE matched nothing: the card was answered from
+            # another flow, or it was deleted. Distinguish the two for the log;
+            # the caller answers both with the stale-card page.
+            still_there = await self._session.scalar(select(Card.id).where(Card.id == card.id))
+            if still_there is None:
+                raise ScheduleConflictError(card.id, deleted=True)
             raise ScheduleConflictError(card.id)
         for name in _SCHEDULE_FIELDS:
             set_committed_value(card, name, getattr(schedule, name))

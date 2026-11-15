@@ -15,10 +15,20 @@ from sqlalchemy.pool import QueuePool, StaticPool
 
 from eng_remember.config import Settings
 from eng_remember.db import create_engine
+from eng_remember.db.engine import normalized_database_url
 
 
 def make_settings(**overrides: object) -> Settings:
     return Settings(_env_file=None, **overrides)  # type: ignore[arg-type]
+
+
+def test_sqlite_url_normalisation_is_shared_with_alembic() -> None:
+    """The app and the migration env switch the driver in one place."""
+    assert normalized_database_url("sqlite:///data.db") == "sqlite+aiosqlite:///data.db"
+    assert normalized_database_url("sqlite+aiosqlite:///data.db") == "sqlite+aiosqlite:///data.db"
+    assert (
+        normalized_database_url("postgresql+asyncpg://u:p@h/db") == "postgresql+asyncpg://u:p@h/db"
+    )
 
 
 async def test_file_sqlite_uses_wal(tmp_path: Path) -> None:

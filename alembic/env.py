@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 import eng_remember.models  # noqa: F401  — registers every table on Base.metadata
 from eng_remember.config import get_settings
 from eng_remember.db.base import Base, UtcDateTime
+from eng_remember.db.engine import normalized_database_url
 
 log = logging.getLogger("alembic.env")
 
@@ -52,7 +53,7 @@ _COMPARE_OPTS = {
 
 
 def _database_url() -> str:
-    return get_settings().database_url
+    return normalized_database_url(get_settings().database_url)
 
 
 def render_item(type_: str, obj: Any, autogen_context: Any) -> str | Literal[False]:

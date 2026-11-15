@@ -95,9 +95,13 @@ class ScheduleConflictError(DomainError):
 
     Two answers logged from the same read state would otherwise overwrite each
     other: the second one is refused and the learner is shown the card as stale
-    instead of a corrupted schedule.
+    instead of a corrupted schedule. ``deleted`` separates "the row is gone"
+    from "someone else answered it" for the log; the user-facing answer is the
+    same stale-card page.
     """
 
-    def __init__(self, card_id: int) -> None:
-        super().__init__(f"card schedule already updated: {card_id}")
+    def __init__(self, card_id: int, *, deleted: bool = False) -> None:
+        reason = "card was deleted" if deleted else "card schedule already updated"
+        super().__init__(f"{reason}: {card_id}")
         self.card_id = card_id
+        self.deleted = deleted

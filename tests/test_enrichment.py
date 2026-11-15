@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Any
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -14,7 +15,7 @@ from eng_remember.models.card import Card
 from eng_remember.models.user import User
 from eng_remember.repositories.cards import CardDraft, CardRepository
 from eng_remember.services.container import Services
-from eng_remember.services.enrichment import EnrichmentService
+from eng_remember.services.enrichment import BackfillQueue, EnrichmentService
 from eng_remember.services.enrichment_worker import _enrich_card
 from eng_remember.services.llm.enricher import CardEnricher
 from tests.factories import ScriptedClient
@@ -211,6 +212,79 @@ async def test_worker_preserves_user_example_added_during_generation(
     assert reloaded is not None
     assert reloaded.example == "My own sentence."
     assert reloaded.examples == ["My own sentence.", "Generated one.", "Generated two."]
+
+
+async def test_worker_does_not_cut_a_user_example_when_the_card_fills_up(
+    llm: ScriptedClient,
+    services: Services,
+    user: User,
+    settings: Settings,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the learner fills the card during the call, nothing is merged.
+
+    Merging into a full list would slice off the sentence they just added.
+    """
+    card = await services.card_service.add_draft(user, CardDraft(term="run", translation="бежать"))
+    await services.commit()
+
+    async def user_fills_the_card() -> None:
+        async with session_factory() as user_session:
+            repository = CardRepository(user_session)
+            fresh = await repository.get(card.id, user_id=user.id)
+            assert fresh is not None
+            await repository.update_examples(fresh, ["Mine one.", "Mine two.", "Mine three."])
+            await user_session.commit()
+
+    async def examples_while_editing(
+        self: CardEnricher,
+        *,
+        term: str,
+        translation: str,
+        count: int,
+        existing: Sequence[str],
+        user_id: int | None = None,
+        language: str = DEFAULT_LANGUAGE,
+    ) -> list[str]:
+        del self, term, translation, count, existing, user_id, language
+        await user_fills_the_card()
+        return ["Generated one."]
+
+    monkeypatch.setattr(CardEnricher, "examples", examples_while_editing)
+    assert llm.available
+
+    assert await _enrich_card(session_factory, settings, user.id, card.id) is False
+
+    async with session_factory() as check:
+        reloaded = await check.get(Card, card.id)
+    assert reloaded is not None
+    assert reloaded.examples == ["Mine one.", "Mine two.", "Mine three."]
+
+
+async def test_the_worker_passes_the_shared_queue_to_its_services(
+    services: Services,
+    user: User,
+    settings: Settings,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The worker's per-card services see the process-wide queue, not a dead one."""
+    queue = BackfillQueue()
+    captured: dict[str, object] = {}
+
+    class _Stop(Exception):
+        pass
+
+    def build_with_spy(session: Any, config: Any, **kwargs: Any) -> Any:
+        del session, config
+        captured.update(kwargs)
+        raise _Stop
+
+    monkeypatch.setattr("eng_remember.services.enrichment_worker.build_services", build_with_spy)
+
+    assert await _enrich_card(session_factory, settings, user.id, 1, queue=queue) is False
+    assert captured["backfill"] is queue
 
 
 async def test_two_service_instances_have_independent_queues(

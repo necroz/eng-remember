@@ -134,12 +134,3 @@ def _evening_owed(context: ReminderContext, *, today: date) -> bool:
     if context.has_work:
         return True
     return context.streak_alive and not context.answered_today
-
-
-def covers_morning(kind: ReminderKind) -> bool:
-    """Whether sending this reminder also settles the morning slot.
-
-    The evening and the digest already carry what the morning would say, so a
-    learner who gets one must not also get the morning reminder that day.
-    """
-    return kind in (ReminderKind.EVENING, ReminderKind.DIGEST)

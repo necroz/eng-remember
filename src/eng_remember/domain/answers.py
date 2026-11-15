@@ -22,6 +22,9 @@ __all__ = ["Verdict", "matches", "normalize", "rating_for", "translation_variant
 # for Chinese, Japanese and Arabic answers, where the sentence does not end in
 # an ASCII full stop. Apostrophes are deleted rather than spaced: "dont" and
 # "don't" are one answer, while a space would turn either into two words.
+# The deletion does create rare collisions ("were" and "we’re", "its" and
+# "it’s"); exact matching settles most of them, and the model checker sees the
+# learner's typed form for the rest.
 _PUNCTUATION = str.maketrans(dict.fromkeys('.,!?;:()"«»„“”[]{}…—–-|/،؛؟。、「」『』', " "))
 _APOSTROPHES = str.maketrans(dict.fromkeys("'’", ""))
 

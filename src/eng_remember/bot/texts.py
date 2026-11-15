@@ -422,8 +422,13 @@ def card_edit_notes(card: Card) -> str:
     return "Заметок пока нет. Пришлите их — или пропустите шаг."
 
 
-def card_edit_saved(card: Card) -> str:
-    return f"✅ Карточка обновлена.\n\n{card_back(card)}"
+def card_edit_saved(card: Card, *, truncated: bool = False) -> str:
+    note = (
+        "\n\n✂️ Текст был длиннее лимита и обрезан — правка сохранена не целиком."
+        if truncated
+        else ""
+    )
+    return f"✅ Карточка обновлена.\n\n{card_back(card)}{note}"
 
 
 def card_edit_cancelled() -> str:

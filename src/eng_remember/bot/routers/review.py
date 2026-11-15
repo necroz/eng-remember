@@ -624,21 +624,25 @@ def build_router() -> Router:
         data = await state.get_data()
         card_id = data.get(CARD_ID_KEY)
         card = None
+        truncated = False
         if isinstance(card_id, int):
-            card = await services.card_service.update_content(
+            edit = await services.card_service.update_content(
                 user,
                 card_id,
                 translation=_edited(data, EDITED_TRANSLATION_KEY),
                 example=_edited(data, EDITED_EXAMPLE_KEY),
                 notes=_edited(data, EDITED_NOTES_KEY),
             )
+            card, truncated = edit.card, edit.truncated
         if card is None:
             await _leave_editing(state)
             await bot.send_message(chat_id, texts.card_unavailable())
             return
         await services.commit()
         await _leave_editing(state)
-        await bot.send_message(chat_id, rendering.fit_text(texts.card_edit_saved(card)))
+        await bot.send_message(
+            chat_id, rendering.fit_text(texts.card_edit_saved(card, truncated=truncated))
+        )
 
     async def _leave_editing(state: FSMContext) -> None:
         """Drop the edit keys and return to whatever flow owned the chat."""
