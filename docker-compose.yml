@@ -32,9 +32,11 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-eng}
       POSTGRES_DB: ${POSTGRES_DB:-eng_remember}
     # 55432 on the host: a Postgres on the default port is common enough that
-    # colliding with it would be the first thing a new checkout hits.
+    # colliding with it would be the first thing a new checkout hits. Bound to
+    # loopback on purpose: the host tools need it, the internet does not, and a
+    # database reachable from outside is one credential guess away from a leak.
     ports:
-      - "${POSTGRES_PORT:-55432}:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-55432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       # Creates the extra database the integration tests use.
@@ -82,5 +84,33 @@ services:
     restart: unless-stopped
     profiles: ["full"]
 
+  # Nightly pg_dump into its own volume. Off by default: a development machine
+  # does not need a scheduler, a server does. It talks to db over the compose
+  # network, so it needs no access to pgdata.
+  backup:
+    image: postgres:17-alpine
+    logging: *logging
+    restart: unless-stopped
+    profiles: ["backup"]
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGHOST: db
+      PGPORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-eng}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-eng}
+      POSTGRES_DB: ${POSTGRES_DB:-eng_remember}
+      BACKUP_KEEP_DAYS: ${BACKUP_KEEP_DAYS:-7}
+    volumes:
+      - backups:/backups
+      - ./docker/backup.sh:/usr/local/bin/backup.sh:ro
+      - ./docker/backup.crontab:/etc/backup.crontab:ro
+    # `daemon` installs the crontab and runs crond; `run --rm backup dump`
+    # replaces the command and takes one dump right away.
+    entrypoint: ["/usr/local/bin/backup.sh"]
+    command: ["daemon"]
+
 volumes:
   pgdata:
+  backups:

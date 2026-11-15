@@ -1,0 +1,7 @@
+# Crontab for the backup service (BusyBox crond, times are UTC).
+#
+# 03:17 rather than on the hour: after midnight, so the dump is named for the
+# new day, and away from the crowd of jobs everyone schedules at :00. The daemon
+# writes the container's POSTGRES_* settings to /etc/backup.env, which the job
+# sources; output goes to PID 1's stdout, i.e. the container log.
+17 3 * * * . /etc/backup.env; /usr/local/bin/backup.sh dump >>/proc/1/fd/1 2>&1
