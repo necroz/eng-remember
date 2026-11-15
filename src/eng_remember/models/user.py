@@ -55,10 +55,16 @@ class User(Base, TimestampMixin):
     last_evening_reminder_on: Mapped[date | None] = mapped_column(Date)
     last_digest_on: Mapped[date | None] = mapped_column(Date)
 
+    # Collections are never read from a ``User``: decks are fetched through
+    # ``DeckRepository`` and the streak through ``StreakRepository``. The eager
+    # ``selectin`` loads made every user query carry two extra SELECTs, so these
+    # relationships refuse implicit loads and leave deletion to the database
+    # cascades (``ondelete="CASCADE"``).
     decks: Mapped[list[Deck]] = relationship(
         back_populates="user",
         cascade="all, delete-orphan",
-        lazy="selectin",
+        passive_deletes=True,
+        lazy="raise",
     )
     cards: Mapped[list[Card]] = relationship(
         back_populates="user",
@@ -68,8 +74,9 @@ class User(Base, TimestampMixin):
     streak: Mapped[Streak | None] = relationship(
         back_populates="user",
         cascade="all, delete-orphan",
+        passive_deletes=True,
         uselist=False,
-        lazy="selectin",
+        lazy="raise",
     )
 
     def __repr__(self) -> str:

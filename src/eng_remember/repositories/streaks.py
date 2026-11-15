@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eng_remember.domain.gamification import StreakState
@@ -22,12 +24,34 @@ class StreakRepository:
     async def get_or_create(self, user_id: int, *, initial: StreakState) -> Streak:
         existing = await self.get(user_id)
         if existing is not None:
+            # Streak reads far outnumber writes; only a missing row costs one.
             return existing
 
-        streak = Streak(user_id=user_id)
-        streak.apply(initial)
-        self._session.add(streak)
-        await self._session.flush()
+        # ``user_id`` is unique, so the insert either creates the starting row or
+        # loses to a concurrent first answer. A single statement keeps that race
+        # from ever surfacing as an IntegrityError.
+        dialect_insert = (
+            sqlite_insert
+            if self._session.get_bind().dialect.name == "sqlite"
+            else postgresql_insert
+        )
+        statement = (
+            dialect_insert(Streak)
+            .values(
+                user_id=user_id,
+                current=initial.current,
+                longest=initial.longest,
+                freezes=initial.freezes,
+                missed_days=initial.missed_days,
+                accounted_on=initial.accounted_on,
+            )
+            .on_conflict_do_nothing(index_elements=["user_id"])
+        )
+        await self._session.execute(statement)
+
+        streak = await self.get(user_id)
+        if streak is None:  # pragma: no cover — the row was just inserted or read back
+            raise RuntimeError(f"streak for user {user_id} vanished after upsert")
         return streak
 
     async def by_user_ids(self, user_ids: Sequence[int]) -> dict[int, StreakState]:

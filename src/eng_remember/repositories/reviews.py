@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from datetime import date, datetime
+from datetime import datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -123,18 +123,6 @@ class ReviewRepository:
             for user_id, count in (await self._session.execute(stmt)).all():
                 introduced[int(user_id)] = int(count)
         return introduced
-
-    async def daily_counts(self, user_id: int, *, since: datetime) -> list[tuple[date, int]]:
-        """Answers per day, for the statistics screen."""
-        day = func.date(Review.reviewed_at)
-        stmt = (
-            select(day, func.count(Review.id))
-            .where(Review.user_id == user_id, Review.reviewed_at >= since)
-            .group_by(day)
-            .order_by(day)
-        )
-        rows = (await self._session.execute(stmt)).all()
-        return [(row[0], int(row[1])) for row in rows]
 
     async def history_since(self, user_id: int, *, since: datetime) -> list[Review]:
         """Every answer after a moment, oldest first.

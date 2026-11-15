@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eng_remember.models.deck import Deck
@@ -39,9 +41,26 @@ class DeckRepository:
             by_name.is_default = True
             return by_name
 
-        deck = Deck(user_id=user_id, name=name, is_default=True)
-        self._session.add(deck)
-        await self._session.flush()
+        # Two first updates of the same account can both reach this point. Let
+        # the unique ``(user_id, name)`` index arbitrate instead of raising; the
+        # loser reads the winner's deck back and only has to make it default.
+        dialect_insert = (
+            sqlite_insert
+            if self._session.get_bind().dialect.name == "sqlite"
+            else postgresql_insert
+        )
+        statement = (
+            dialect_insert(Deck)
+            .values(user_id=user_id, name=name, is_default=True)
+            .on_conflict_do_nothing(index_elements=["user_id", "name"])
+        )
+        await self._session.execute(statement)
+
+        deck = await self.get_by_name(user_id, name)
+        if deck is None:  # pragma: no cover — the row was just inserted or read back
+            raise RuntimeError(f"default deck {name!r} vanished after upsert")
+        if not deck.is_default:
+            deck.is_default = True
         return deck
 
     async def create(
@@ -74,5 +93,5 @@ class DeckRepository:
         return list((await self._session.scalars(stmt)).all())
 
     async def count_for_user(self, user_id: int) -> int:
-        stmt = select(Deck.id).where(Deck.user_id == user_id)
-        return len((await self._session.scalars(stmt)).all())
+        stmt = select(func.count(Deck.id)).where(Deck.user_id == user_id)
+        return int(await self._session.scalar(stmt) or 0)

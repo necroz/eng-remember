@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
+from typing import Any, cast
 
-from sqlalchemy import exists, or_, select
+from sqlalchemy import CursorResult, exists, or_, select
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from eng_remember.domain.reminders import ReminderKind
@@ -11,6 +14,11 @@ from eng_remember.models.card import Card
 from eng_remember.models.user import User
 
 __all__ = ["TelegramProfile", "UserRepository"]
+
+# A returning learner produces many updates in a row; writing ``last_seen_at``
+# on every one of them is pure write amplification for a value that only answers
+# "when did we last hear from them".
+TOUCH_INTERVAL = timedelta(minutes=5)
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,23 +53,52 @@ class UserRepository:
 
         Returns a ``(user, created)`` pair so callers can send a first-time
         greeting without a second query.
+
+        Creation is an ``INSERT ... ON CONFLICT DO NOTHING`` followed by a read.
+        Two updates from a brand-new account can arrive at the same time, and a
+        plain check-then-insert pair turns that into an ``IntegrityError`` for
+        the loser. The unique index on ``telegram_id`` now decides who created
+        the row; the loser simply reads it back. Both PostgreSQL and SQLite
+        support the clause.
         """
         existing = await self.get_by_telegram_id(profile.telegram_id)
         if existing is not None:
+            # The common path is a returning learner: one SELECT and no write.
+            # Upserting unconditionally would take a write lock on every update,
+            # which on SQLite serialises unrelated handlers behind one another.
             self._refresh_profile(existing, profile)
             return existing, False
 
-        user = User(
-            telegram_id=profile.telegram_id,
-            username=profile.username,
-            first_name=profile.first_name,
-            language_code=profile.language_code,
-            timezone=default_timezone,
-            new_cards_per_day=new_cards_per_day,
+        dialect_insert = (
+            sqlite_insert
+            if self._session.get_bind().dialect.name == "sqlite"
+            else postgresql_insert
         )
-        self._session.add(user)
-        await self._session.flush()
-        return user, True
+        statement = (
+            dialect_insert(User)
+            .values(
+                telegram_id=profile.telegram_id,
+                username=profile.username,
+                first_name=profile.first_name,
+                language_code=profile.language_code,
+                timezone=default_timezone,
+                new_cards_per_day=new_cards_per_day,
+            )
+            .on_conflict_do_nothing(index_elements=["telegram_id"])
+        )
+        result = await self._session.execute(statement)
+        # ``AsyncSession.execute`` is typed as returning a plain ``Result``, but
+        # an INSERT always produces a cursor result with a row count.
+        created = cast(CursorResult[Any], result).rowcount > 0
+
+        user = await self.get_by_telegram_id(profile.telegram_id)
+        if user is None:  # pragma: no cover — the row was just inserted or read back
+            raise RuntimeError(f"user {profile.telegram_id} vanished after upsert")
+        if not created:
+            # Another update created the row first; the INSERT was a no-op, so
+            # the stored display fields are the old ones.
+            self._refresh_profile(user, profile)
+        return user, created
 
     async def list_reminder_candidates(
         self,
@@ -125,6 +162,15 @@ class UserRepository:
         await self._session.flush()
 
     async def touch(self, user: User, *, when: datetime) -> None:
+        """Record that the learner is still around, at most every five minutes.
+
+        A burst of messages would otherwise rewrite the same column for every
+        keystroke. The stored value is a "last seen" mark, not an audit log, so
+        rounding it to five minutes loses nothing.
+        """
+        last = user.last_seen_at
+        if last is not None and when - last < TOUCH_INTERVAL:
+            return
         user.last_seen_at = when
 
     async def set_blocked(self, user: User, *, blocked: bool) -> None:

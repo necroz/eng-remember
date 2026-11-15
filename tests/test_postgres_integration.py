@@ -311,6 +311,37 @@ async def test_deleting_a_user_removes_its_data(
         assert remaining == 0, f"{table} still has rows"
 
 
+async def test_concurrent_get_or_create_reports_one_user(
+    pg_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Two updates from an unknown account must not race into an IntegrityError.
+
+    Telegram can deliver the first two messages of a new learner almost together;
+    a check-then-insert turns that pair into a unique-constraint violation. The
+    upsert must leave exactly one row, and exactly one caller may call itself the
+    creator.
+    """
+    from eng_remember.repositories.users import UserRepository
+
+    profile = TelegramProfile(telegram_id=100600, first_name="Racer")
+
+    async def contact() -> tuple[User, bool]:
+        async with pg_session_factory() as session:
+            user, created = await UserRepository(session).get_or_create(profile)
+            await session.commit()
+            return user, created
+
+    results = await asyncio.gather(contact(), contact())
+
+    assert results[0][0].id == results[1][0].id
+    assert {created for _, created in results} == {True, False}
+    async with pg_session_factory() as check:
+        rows = await check.scalar(
+            select(func.count(User.id)).where(User.telegram_id == profile.telegram_id)
+        )
+    assert rows == 1
+
+
 async def test_the_daily_new_card_budget_uses_real_timestamps(
     pg_services: Services, pg_session: AsyncSession, pg_user: User
 ) -> None:
