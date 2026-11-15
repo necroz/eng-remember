@@ -794,6 +794,31 @@ class TestOtherCommands:
             user = (await check.scalars(select(User))).one()
             assert user.new_cards_per_day == 20
 
+    async def test_an_explicit_zero_limit_is_kept_and_stats_show_no_new_words(
+        self,
+        dispatcher: Dispatcher,
+        bot: Bot,
+        recording: RecordingSession,
+        session_factory: async_sessionmaker[AsyncSession],
+        card_id: int,
+    ) -> None:
+        """``/limit 0`` is a legal choice and means exactly zero new words.
+
+        The due card behind ``card_id`` keeps the collection non-empty: only the
+        new-card figure may read zero.
+        """
+        await send(dispatcher, bot, "/limit 0")
+
+        async with session_factory() as check:
+            user = (await check.scalars(select(User))).one()
+            assert user.new_cards_per_day == 0
+        assert "не больше 0" in recording.last_text()
+
+        recording.clear()
+        await send(dispatcher, bot, "/stats")
+
+        assert "Новых в очереди: <b>0</b>" in recording.last_text()
+
     async def test_the_daily_limit_can_be_changed(
         self,
         dispatcher: Dispatcher,

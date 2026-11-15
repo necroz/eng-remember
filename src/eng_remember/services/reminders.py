@@ -24,6 +24,7 @@ from eng_remember.domain.digest import HEATMAP_DAYS, daily_series
 from eng_remember.domain.enums import CardDirection, ReviewRating
 from eng_remember.domain.gamification import StreakState, roll_forward
 from eng_remember.domain.reminders import ReminderContext, ReminderKind, decide
+from eng_remember.domain.srs import new_allowance
 from eng_remember.errors import RecipientUnreachable
 from eng_remember.models.user import User
 from eng_remember.repositories.cards import CardRepository
@@ -178,8 +179,9 @@ class ReminderService:
 
             # The queue counts are raw; the promise must match what a session
             # would actually serve, which is bounded by the daily budget.
-            per_day = user.new_cards_per_day or self._new_cards_per_day
-            allowance = max(0, per_day - introduced.get(user.id, 0))
+            allowance = new_allowance(
+                user.new_cards_per_day, self._new_cards_per_day, introduced.get(user.id, 0)
+            )
             new_available = min(queue.new, allowance)
 
             # Settled in memory only. A tick must not write to the streak just to

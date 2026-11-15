@@ -8,7 +8,7 @@ from datetime import datetime
 
 from eng_remember.domain.enums import CardState, ReviewRating
 from eng_remember.domain.gamification import StreakTransition
-from eng_remember.domain.srs import SrsScheduler
+from eng_remember.domain.srs import SrsScheduler, new_allowance
 from eng_remember.domain.term_match import fold_term
 from eng_remember.models.card import Card
 from eng_remember.models.review import Review
@@ -122,7 +122,6 @@ class ReviewService:
         """
         moment = ensure_utc(now) or utcnow()
         session_limit = limit or self._session_max
-        per_day = user.new_cards_per_day or self._new_cards_per_day
 
         due_cards = await self._cards.list_due(
             user.id, now=moment, limit=session_limit, deck_id=deck_id
@@ -132,7 +131,7 @@ class ReviewService:
         introduced_today = await self._reviews.count_cards_introduced_since(
             user.id, since=local_day_start(user.timezone, now=moment)
         )
-        allowance = max(0, per_day - introduced_today)
+        allowance = new_allowance(user.new_cards_per_day, self._new_cards_per_day, introduced_today)
 
         new_cards: list[Card] = []
         if remaining > 0 and allowance > 0:

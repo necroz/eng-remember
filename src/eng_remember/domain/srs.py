@@ -17,7 +17,20 @@ from eng_remember.config import SrsSettings
 from eng_remember.domain.enums import CardState, ReviewRating
 from eng_remember.utils.time import ensure_utc, utcnow
 
-__all__ = ["CardSchedule", "SrsScheduler"]
+__all__ = ["CardSchedule", "SrsScheduler", "new_allowance"]
+
+
+def new_allowance(per_day: int | None, fallback: int, introduced_today: int) -> int:
+    """How many new cards today's budget still allows.
+
+    ``per_day`` is the learner's own setting. Only ``None`` means "never chose
+    one" and falls back to the configured default; an explicit ``0`` is a choice
+    of no new words and must not be read as absence. The queue, the statistics
+    and the reminder promise all answer to this one rule.
+    """
+    effective = fallback if per_day is None else per_day
+    return max(0, effective - introduced_today)
+
 
 _RATING_TO_FSRS: dict[ReviewRating, Rating] = {
     ReviewRating.AGAIN: Rating.Again,

@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from eng_remember.domain.enums import CardDirection
-from eng_remember.domain.srs import CardSchedule, SrsScheduler
+from eng_remember.domain.srs import CardSchedule, SrsScheduler, new_allowance
 from eng_remember.domain.term_match import fold_term
 from eng_remember.errors import DuplicateCardError, EmptyDraftError
 from eng_remember.models.card import Card
@@ -241,13 +241,13 @@ class CardService:
         moment = ensure_utc(now) or utcnow()
         day_start = local_day_start(user.timezone, now=moment)
         new_today = await self._reviews.count_cards_introduced_since(user.id, since=day_start)
-        per_day = user.new_cards_per_day or self._new_cards_per_day
+        allowance = new_allowance(user.new_cards_per_day, self._new_cards_per_day, new_today)
         return UserStats(
             total_cards=await self._cards.count_for_user(user.id),
             due_now=await self._cards.count_due(user.id, now=moment),
             new_cards=min(
                 await self._cards.count_new(user.id, now=moment),
-                max(0, per_day - new_today),
+                allowance,
             ),
             reviews_today=await self._reviews.count_since(user.id, since=day_start),
             new_today=new_today,

@@ -230,6 +230,29 @@ class TestCardService:
         assert stats.new_today == 1
         assert stats.new_cards == 0
 
+    async def test_an_explicit_zero_limit_shows_no_new_cards_in_stats(
+        self, services: Services, session: AsyncSession, user: User
+    ) -> None:
+        """``/limit 0`` must not fall back to the configured default.
+
+        A learner who chose zero still has untouched cards; statistics that
+        advertise them promise work the queue will refuse.
+        """
+        user.new_cards_per_day = 0
+        deck = await services.card_service.default_deck(user)
+        for index in range(3):
+            await services.cards.add(
+                user_id=user.id,
+                deck_id=deck.id,
+                draft=CardDraft(term=f"new{index}", translation="новое"),
+                schedule=schedule(0),
+            )
+        await session.commit()
+
+        stats = await services.card_service.stats(user)
+
+        assert stats.new_cards == 0
+
     async def test_stats_reflect_the_queue(
         self, services: Services, session: AsyncSession, user: User
     ) -> None:
@@ -468,6 +491,22 @@ class TestReviewService:
 
         assert second.cards == []
         assert second.new_allowance == 0
+
+    async def test_an_explicit_zero_budget_serves_due_but_no_new_cards(
+        self, services: Services, session: AsyncSession, user: User, deck_id: int
+    ) -> None:
+        """``/limit 0`` stops new material, not repetition.
+
+        The zero must survive as a real value: the configured default of twenty
+        is only for a learner who never chose anything.
+        """
+        user.new_cards_per_day = 0
+        await self.queue_cards(services, session, user, deck_id, due=1, new=3)
+
+        queue = await services.review_service.build_queue(user)
+
+        assert [card.term for card in queue.cards] == ["due0"]
+        assert queue.new_allowance == 0
 
     async def test_a_due_card_leaves_the_queue_after_being_answered(
         self, services: Services, session: AsyncSession, user: User, deck_id: int
