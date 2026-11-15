@@ -116,7 +116,15 @@ def build_router() -> Router:
     @router.callback_query(DeckCB.filter(F.action == "dc"))
     async def keep_the_deck(query: CallbackQuery, bot: Bot) -> None:
         await query.answer()
-        await rendering.edit_or_send(query, texts.deck_delete_cancelled(), bot=bot)
+        # Explicitly empty, not omitted: aiogram drops a falsy reply_markup from
+        # the request, so Telegram would keep «Удалить»/«Отмена» under the
+        # cancellation and one more tap would delete the deck.
+        await rendering.edit_or_send(
+            query,
+            texts.deck_delete_cancelled(),
+            bot=bot,
+            reply_markup=keyboards.empty_keyboard(),
+        )
 
     @router.callback_query(DeckCB.filter(F.action == "rn"))
     async def ask_for_a_new_name(

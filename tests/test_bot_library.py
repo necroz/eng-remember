@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from aiogram import Bot, Dispatcher
 from aiogram.methods import AnswerCallbackQuery
+from aiogram.types import InlineKeyboardMarkup
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -111,6 +112,47 @@ async def test_delete_deck_removes_its_cards(
 
     # The confirmation message turns into the refreshed list.
     assert "Книги" not in recording.last_text()
+
+
+async def test_cancelled_deletion_takes_the_confirm_buttons_away(
+    dispatcher: Dispatcher,
+    bot: Bot,
+    recording: RecordingSession,
+    services: Services,
+    user: User,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Saying «no» must not leave a live «Удалить» under the message.
+
+    aiogram drops a falsy ``reply_markup`` from an edit request, so an edit
+    without one does not clear the keyboard — Telegram keeps it. That would
+    leave the confirmation one tap away after the learner cancelled, and the
+    confirm handler does not ask again: the deck and its cards would be gone.
+    The cancellation therefore has to carry an explicit empty markup.
+    """
+    deck = await make_deck(services, user, "Книги")
+    card = await services.card_service.add_draft(
+        user, CardDraft(term="tome", translation="фолиант"), deck=deck
+    )
+    await services.commit()
+
+    await tap(dispatcher, bot, DeckCB(action="dl", deck_id=deck.id).pack(), update_id=10)
+    confirm = DeckCB(action="ok", deck_id=deck.id).pack()
+    assert confirm in recording.last_button_data()
+
+    await tap(dispatcher, bot, DeckCB(action="dc", deck_id=deck.id).pack(), update_id=11)
+
+    markup = recording.outbound[-1].reply_markup
+    assert isinstance(markup, InlineKeyboardMarkup), recording.requests
+    assert markup.inline_keyboard == []
+    assert confirm not in recording.last_button_data()
+
+    # A second tap on the cancel button is still only a cancellation.
+    await tap(dispatcher, bot, DeckCB(action="dc", deck_id=deck.id).pack(), update_id=12)
+
+    async with session_factory() as check:
+        assert await check.get(Deck, deck.id) is not None
+        assert await check.get(Card, card.id) is not None
 
 
 async def test_rename_deck_validates_uniqueness(
