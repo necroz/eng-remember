@@ -18,7 +18,7 @@ from eng_remember.models.review import Review
 from eng_remember.utils.time import utcnow
 from tests.conftest import RecordingSession, make_due
 from tests.factories import TEST_USER_ID, telegram_user
-from tests.test_bot_flow import send
+from tests.helpers import send
 
 
 def make_photo_update(*, update_id: int = 40) -> Update:

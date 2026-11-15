@@ -16,7 +16,7 @@ from eng_remember.models.card import Card
 from eng_remember.services.llm.schema import MnemonicResponse
 from tests.conftest import RecordingSession, make_due
 from tests.factories import ScriptedClient
-from tests.test_bot_flow import send, tap
+from tests.helpers import send, tap
 
 
 async def fail_card(

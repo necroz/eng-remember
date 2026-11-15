@@ -7,7 +7,7 @@ middleware opens a session of its own while the test holds another one.
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Iterator
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -33,10 +33,36 @@ from eng_remember.models.user import User
 from eng_remember.repositories.cards import CardDraft
 from eng_remember.repositories.users import TelegramProfile, UserRepository
 from eng_remember.services.container import Services, build_services
+from eng_remember.services.llm.quota import global_usage_cache
 from eng_remember.utils.time import utcnow
 from tests.factories import TEST_USER_ID, ScriptedClient, response_for
+from tests.helpers import neutralize_settings_env
 
 TEST_TOKEN = "42:TEST-TOKEN"
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_settings_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Cut the tests off from the developer's shell and ``.env``.
+
+    ``Settings`` reads the environment, so a key exported to try the bot locally
+    would otherwise reach every test. The fixture sets ``_env_file=None`` for
+    the settings it builds; this removes the other half.
+    """
+    neutralize_settings_env(monkeypatch)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_global_usage_cache() -> Iterator[None]:
+    """The bot-wide token total is process-wide; no test may inherit a total.
+
+    Cleared after the test as well as before: a test that leaves a large total
+    behind would otherwise fail the next module's budget test, and only when
+    the suite happens to run in that order.
+    """
+    global_usage_cache.clear()
+    yield
+    global_usage_cache.clear()
 
 
 async def make_due(session_factory: async_sessionmaker[AsyncSession], *terms: str) -> None:

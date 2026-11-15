@@ -13,7 +13,8 @@ from eng_remember.models.deck import Deck
 from eng_remember.services.llm.schema import ExpansionResponse, ParseResponse
 from tests.conftest import RecordingSession
 from tests.factories import ScriptedClient, card_payload, expansion_payload, parse_payload
-from tests.test_bot_flow import button_with, send, tap
+from tests.helpers import send, tap
+from tests.test_bot_flow import button_with
 
 PARAGRAPH = (
     "The committee spent three weeks negotiating the terms of the settlement. "

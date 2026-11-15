@@ -11,7 +11,7 @@ from aiogram import Bot, Dispatcher
 
 from eng_remember.bot import texts
 from tests.conftest import RecordingSession
-from tests.test_bot_flow import send
+from tests.helpers import send
 
 HELP_COMMANDS = (
     "/start",

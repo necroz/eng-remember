@@ -2,10 +2,20 @@
 
 from __future__ import annotations
 
-import pytest
-from pydantic import ValidationError
+import os
 
-from eng_remember.config import BotSettings, LlmSettings, ReviewSettings
+import pytest
+from pydantic import SecretStr, ValidationError
+
+from eng_remember.config import (
+    BotSettings,
+    LlmSettings,
+    ReviewSettings,
+    Settings,
+    require_bot_token,
+)
+from eng_remember.errors import ConfigurationError
+from tests.helpers import neutralize_settings_env
 
 
 def test_twenty_updates_may_be_in_flight_per_process() -> None:
@@ -80,3 +90,55 @@ def test_parse_mode_markdown_rejected() -> None:
 
 def test_parse_mode_html_is_the_only_accepted_value() -> None:
     assert BotSettings().parse_mode == "HTML"
+
+
+class TestBotToken:
+    """The one setting without a default: both entry points refuse to start without it."""
+
+    def test_a_missing_token_explains_where_to_get_one(self) -> None:
+        settings = Settings(_env_file=None)
+
+        with pytest.raises(ConfigurationError) as excinfo:
+            require_bot_token(settings)
+
+        message = str(excinfo.value)
+        assert "BOT_TOKEN" in message
+        assert "@BotFather" in message
+
+    @pytest.mark.parametrize("token", ["", "   ", "\n\t "])
+    def test_an_empty_or_blank_token_is_rejected(self, token: str) -> None:
+        settings = Settings(_env_file=None, bot_token=SecretStr(token))
+
+        with pytest.raises(ConfigurationError, match="BOT_TOKEN"):
+            require_bot_token(settings)
+
+    def test_a_configured_token_is_returned_trimmed(self) -> None:
+        """Whitespace around the value is a copy-paste artefact, not part of the token."""
+        settings = Settings(_env_file=None, bot_token=SecretStr(" 42:TEST-TOKEN\n"))
+
+        assert require_bot_token(settings) == "42:TEST-TOKEN"
+
+
+class TestEnvironmentIsolation:
+    """Exported variables must not change what the suite measures."""
+
+    def test_the_settings_fixture_ignores_an_exported_api_key(
+        self, settings: Settings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The fixture removed it before this test's settings were built."""
+        assert settings.llm.api_key is None
+
+    def test_neutralisation_removes_settings_variables_and_keeps_the_rest(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("LLM__API_KEY", "sk-test")
+        monkeypatch.setenv("BOT_TOKEN", "42:TEST-TOKEN")
+        monkeypatch.setenv("REMINDERS__BATCH_SIZE", "5")
+        monkeypatch.setenv("UNRELATED_SETTING", "keep")
+
+        neutralize_settings_env(monkeypatch)
+
+        assert "LLM__API_KEY" not in os.environ
+        assert "BOT_TOKEN" not in os.environ
+        assert "REMINDERS__BATCH_SIZE" not in os.environ
+        assert os.environ["UNRELATED_SETTING"] == "keep"

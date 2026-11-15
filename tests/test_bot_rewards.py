@@ -22,7 +22,7 @@ from eng_remember.models.streak import Streak
 from eng_remember.models.user import User
 from eng_remember.utils.time import utcnow
 from tests.conftest import RecordingSession, make_due
-from tests.test_bot_flow import send, tap
+from tests.helpers import send, tap
 
 
 def literal_chunks(template: str) -> list[str]:

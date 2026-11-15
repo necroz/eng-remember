@@ -19,7 +19,7 @@ from eng_remember.services.csv_io import MAX_FILE_BYTES
 from eng_remember.utils.time import utcnow
 from tests.conftest import RecordingSession, make_due
 from tests.factories import ScriptedClient, make_document_update
-from tests.test_bot_flow import send, tap
+from tests.helpers import send, tap
 
 CSV_TEXT = "run;бежать;;;;;sport|basic;Бег\nswim;плавать;;\n"
 
