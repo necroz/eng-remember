@@ -15,6 +15,7 @@ import asyncio
 import os
 from collections.abc import AsyncIterator
 from datetime import timedelta
+from typing import Any
 
 import pytest
 from sqlalchemy import func, select, text
@@ -22,7 +23,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 import eng_remember.models  # noqa: F401  — registers tables on Base.metadata
-from eng_remember.config import Settings
+from eng_remember.config import ReminderSettings, Settings
 from eng_remember.db import Base, create_engine, create_session_factory
 from eng_remember.domain.enums import CardDirection, CardState, ReviewRating
 from eng_remember.errors import ScheduleConflictError
@@ -633,3 +634,97 @@ async def test_the_llm_quota_window_uses_real_timestamps(
         await call(2)
     # A limit of three passes, so the two-day-old rows did not leak in.
     await call(3)
+
+
+async def test_delete_older_than_prunes_only_old_on_postgres(
+    pg_session: AsyncSession,
+) -> None:
+    """The retention DELETE compares ``timestamptz`` against an aware cutoff."""
+    from datetime import timedelta
+
+    from eng_remember.models.llm_call import LlmCall
+    from eng_remember.repositories.llm_calls import LlmCallRepository
+
+    now = utcnow()
+    pg_session.add_all(
+        [
+            LlmCall(
+                purpose="parse_message",
+                provider_model="m",
+                created_at=now - timedelta(days=91),
+            ),
+            LlmCall(
+                purpose="parse_message",
+                provider_model="m",
+                created_at=now - timedelta(days=89),
+            ),
+        ]
+    )
+    await pg_session.commit()
+
+    removed = await LlmCallRepository(pg_session).delete_older_than(now - timedelta(days=90))
+    await pg_session.commit()
+
+    assert removed == 1
+    remaining = (await pg_session.scalars(select(func.count(LlmCall.id)))).one()
+    assert remaining == 1
+
+
+async def test_crash_mid_tick_keeps_committed_watermarks_on_postgres(
+    pg_session: AsyncSession,
+    pg_session_factory: async_sessionmaker[AsyncSession],
+    pg_services: Services,
+    pg_user: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A crash while fetching page two leaves page one's watermark committed.
+
+    The unit suite proves this against SQLite; here the same batches cross real
+    ``timestamptz`` columns and a second connection must see the first commit.
+    """
+    from datetime import time
+
+    from eng_remember.repositories.users import UserRepository
+    from eng_remember.services.reminders import build_reminder_service
+    from tests.test_reminder_loop import RecordingNotifier
+
+    settings = Settings(
+        _env_file=None,
+        database_url=DATABASE_URL,
+        reminders=ReminderSettings(digest_enabled=False),
+    )
+    settings.reminders.batch_size = 1
+    second, _ = await UserRepository(pg_session).get_or_create(
+        TelegramProfile(telegram_id=100501, first_name="Second")
+    )
+    for learner in (pg_user, second):
+        learner.reminder_time = time(0, 0)
+        await pg_services.card_service.add_draft(
+            learner, CardDraft(term=f"due-{learner.id}", translation="повтор")
+        )
+    await pg_session.commit()
+
+    notifier = RecordingNotifier()
+    service = build_reminder_service(pg_session, settings, notifier)
+    now = utcnow().replace(hour=9, minute=0, second=0, microsecond=0)
+
+    original = UserRepository.list_reminder_candidates
+    calls = 0
+
+    async def flaky(self: UserRepository, **kwargs: Any) -> list[User]:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("database went away")
+        return await original(self, **kwargs)
+
+    monkeypatch.setattr(UserRepository, "list_reminder_candidates", flaky)
+
+    with pytest.raises(RuntimeError):
+        await service.run(now=now)
+
+    async with pg_session_factory() as fresh:
+        rows = (await fresh.scalars(select(User).order_by(User.id))).all()
+    assert [row.id for row in rows] == [pg_user.id, second.id]
+    assert rows[0].last_reminder_on is not None
+    assert rows[1].last_reminder_on is None

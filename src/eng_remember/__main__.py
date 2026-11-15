@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import sys
+from datetime import date, datetime, timedelta
 
 import structlog
 from aiogram import Bot
@@ -19,11 +20,13 @@ from eng_remember.config import Settings, get_settings, require_bot_token
 from eng_remember.db.engine import SessionFactory, create_engine, create_session_factory
 from eng_remember.errors import ConfigurationError
 from eng_remember.logging_setup import configure_logging
+from eng_remember.repositories.llm_calls import LlmCallRepository
 from eng_remember.services.enrichment import BackfillQueue
 from eng_remember.services.enrichment_worker import enrichment_worker
 from eng_remember.services.llm.budget import BudgetAlert, global_budget
 from eng_remember.services.llm.client import LlmTransport
 from eng_remember.services.reminders import Notifier, build_reminder_service
+from eng_remember.utils.time import ensure_utc, local_date, utcnow
 
 log = structlog.get_logger(__name__)
 
@@ -172,8 +175,25 @@ async def reminder_loop(
     """
     delivery = notifier if notifier is not None else BotNotifier(bot)
     interval = settings.reminders.tick_seconds
+    pruned_on: date | None = None
 
     while not stopping.is_set():
+        # Retention is a daily housekeeping job, not a per-tick one: the audit
+        # table changes slowly and a delete on every ten-minute tick would be
+        # pure overhead. The UTC date is the boundary because the table stores
+        # UTC and nothing here depends on a learner's clock.
+        today = local_date("UTC")
+        if settings.llm_call_retention_days > 0 and pruned_on != today:
+            try:
+                await prune_llm_calls(session_factory, settings)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # A failed cleanup must not stop reminders; the next tick retries.
+                log.warning("llm_calls_prune_failed", error=str(exc))
+            else:
+                pruned_on = today
+
         try:
             async with session_factory() as session:
                 service = build_reminder_service(session, settings, delivery)
@@ -187,6 +207,30 @@ async def reminder_loop(
 
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(stopping.wait(), timeout=interval)
+
+
+async def prune_llm_calls(
+    session_factory: SessionFactory,
+    settings: Settings,
+    *,
+    now: datetime | None = None,
+) -> int | None:
+    """Delete LLM audit rows past the retention window.
+
+    Returns the number removed, or ``None`` when retention is disabled. It runs
+    in its own session and commits immediately, so the delete never holds the
+    reminder tick's transaction open.
+    """
+    days = settings.llm_call_retention_days
+    if days <= 0:
+        return None
+    moment = ensure_utc(now) or utcnow()
+    cutoff = moment - timedelta(days=days)
+    async with session_factory() as session:
+        removed = await LlmCallRepository(session).delete_older_than(cutoff)
+        await session.commit()
+    log.info("llm_calls_pruned", removed=removed, retention_days=days)
+    return removed
 
 
 def run() -> None:

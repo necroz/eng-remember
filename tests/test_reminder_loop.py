@@ -77,6 +77,11 @@ async def make_learner(services: Services, telegram_id: int) -> User:
     return learner
 
 
+def _disable_retention(settings: Settings) -> None:
+    """These tests are about ticks; the daily audit prune is tested on its own."""
+    settings.llm_call_retention_days = 0
+
+
 def stopping_factory(
     factory: async_sessionmaker[AsyncSession],
     stopping: asyncio.Event,
@@ -103,10 +108,10 @@ def stopping_factory(
 
 
 async def wait_for_sends(notifier: RecordingNotifier, count: int) -> None:
-    for _ in range(500):
+    for _ in range(1000):
         if len(notifier.sent) >= count:
             return
-        await asyncio.sleep(0)
+        await asyncio.sleep(0.005)
     raise AssertionError(f"notifier saw {len(notifier.sent)} sends, expected {count}")
 
 
@@ -127,6 +132,7 @@ async def test_crash_mid_tick_keeps_sent_watermarks(
     first = await make_learner(services, 500001)
     second = await make_learner(services, 500002)
     settings.reminders.batch_size = 1
+    _disable_retention(settings)
     # The loop sleeps between ticks; a zero interval keeps the test in seconds.
     settings.reminders.tick_seconds = 0
     notifier = RecordingNotifier()
@@ -168,6 +174,7 @@ async def test_reminder_loop_survives_tick_exception(
 ) -> None:
     """A failing tick is logged and the loop comes back for the next one."""
     learner = await make_learner(services, 500011)
+    _disable_retention(settings)
     settings.reminders.tick_seconds = 0
     notifier = RecordingNotifier()
     stopping = asyncio.Event()
@@ -204,6 +211,7 @@ async def test_cancellation_stops_the_loop_promptly(
 ) -> None:
     """``task.cancel()`` must not be swallowed by the tick's error handling."""
     learner = await make_learner(services, 500021)
+    _disable_retention(settings)
     notifier = RecordingNotifier()
     stopping = asyncio.Event()
 
@@ -229,6 +237,64 @@ async def test_cancellation_stops_the_loop_promptly(
 
     assert task.cancelled()
     assert notifier.sent_ids == [learner.id]
+
+
+async def test_retention_disabled_with_zero(
+    session_factory: async_sessionmaker[AsyncSession],
+    settings: Settings,
+    bot: Bot,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``LLM_CALL_RETENTION_DAYS=0`` switches pruning off completely."""
+    settings.llm_call_retention_days = 0
+    settings.reminders.tick_seconds = 0
+    stopping = asyncio.Event()
+    pruned: list[object] = []
+
+    async def fake_prune(*args: object, **kwargs: object) -> int:
+        pruned.append(args)
+        return 1
+
+    monkeypatch.setattr(entrypoint, "prune_llm_calls", fake_prune)
+
+    await reminder_loop(
+        bot=bot,
+        session_factory=stopping_factory(session_factory, stopping, stop_at=2),
+        settings=settings,
+        stopping=stopping,
+        notifier=RecordingNotifier(),
+    )
+
+    assert pruned == []
+
+
+async def test_retention_runs_once_per_utc_day(
+    session_factory: async_sessionmaker[AsyncSession],
+    settings: Settings,
+    bot: Bot,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two ticks in the same UTC day prune once, not on every tick."""
+    settings.llm_call_retention_days = 90
+    settings.reminders.tick_seconds = 0
+    stopping = asyncio.Event()
+    pruned: list[object] = []
+
+    async def fake_prune(*args: object, **kwargs: object) -> int:
+        pruned.append(args)
+        return 1
+
+    monkeypatch.setattr(entrypoint, "prune_llm_calls", fake_prune)
+
+    await reminder_loop(
+        bot=bot,
+        session_factory=stopping_factory(session_factory, stopping, stop_at=2),
+        settings=settings,
+        stopping=stopping,
+        notifier=RecordingNotifier(),
+    )
+
+    assert len(pruned) == 1
 
 
 def test_the_bot_gets_a_grace_period_longer_than_the_llm_timeout() -> None:
