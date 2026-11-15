@@ -25,7 +25,8 @@ class Streak(Base, TimestampMixin):
     __table_args__ = (UniqueConstraint("user_id", name="uq_streaks_user_id"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    # ``uq_streaks_user_id`` already indexes the only lookup key.
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
 
     current: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     longest: Mapped[int] = mapped_column(Integer, default=0, server_default="0")

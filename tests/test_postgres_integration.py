@@ -129,6 +129,31 @@ async def test_the_unique_constraint_includes_the_language(
     await pg_session.rollback()
 
 
+async def test_case_insensitive_duplicate_rejected_by_db(
+    pg_services: Services, pg_session: AsyncSession, pg_user: User
+) -> None:
+    """``run`` и ``Run`` — одно слово даже для базы, а не только для сервиса.
+
+    The service already folds the case, so the card is inserted through the
+    repository, which does no duplicate lookup: only the unique index stands
+    between a race of two imports and two spellings of one word.
+    """
+    card = await pg_services.card_service.add_draft(
+        pg_user, CardDraft(term="run", translation="бегать")
+    )
+    await pg_session.commit()
+
+    with pytest.raises(IntegrityError):
+        await pg_services.cards.add(
+            user_id=pg_user.id,
+            deck_id=card.deck_id,
+            draft=CardDraft(term="Run", translation="бегать"),
+            schedule=schedule(0),
+            direction=CardDirection.FORWARD,
+        )
+    await pg_session.rollback()
+
+
 async def test_the_review_flow_survives_a_real_scheduler(
     pg_services: Services, pg_session: AsyncSession, pg_user: User
 ) -> None:
@@ -501,6 +526,20 @@ async def test_llm_calls_has_the_user_created_index(pg_session: AsyncSession) ->
     )
 
     assert "ix_llm_calls_user_id_created_at" in {row[0] for row in rows}
+
+
+async def test_reviews_covering_index_exists(pg_session: AsyncSession) -> None:
+    """Первые ответы группируются по карточке, ни разу не заглядывая в таблицу."""
+    rows = await pg_session.execute(
+        text(
+            "SELECT indexdef FROM pg_indexes "
+            "WHERE tablename = 'reviews' AND indexname = 'ix_reviews_user_id_card_id_reviewed_at'"
+        )
+    )
+
+    definition = rows.scalar_one_or_none()
+    assert definition is not None
+    assert definition.endswith("(user_id, card_id, reviewed_at)")
 
 
 async def test_the_llm_quota_window_uses_real_timestamps(
