@@ -51,6 +51,11 @@ class BotSettings(BaseModel):
         ge=1,
         description="Maximum updates processed concurrently per bot process",
     )
+    user_concurrency_limit: int = Field(
+        default=3,
+        ge=1,
+        description="Maximum updates from one learner processed at once",
+    )
     messages_per_minute: int = Field(
         default=30,
         ge=1,

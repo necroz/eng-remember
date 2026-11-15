@@ -8,6 +8,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import CallbackQuery
 
 from eng_remember.bot import texts
+from eng_remember.bot.middlewares.concurrency import UserConcurrencyMiddleware
 from eng_remember.bot.middlewares.db import DbSessionMiddleware
 from eng_remember.bot.middlewares.dedup import DuplicateMessageMiddleware
 from eng_remember.bot.middlewares.rate_limit import RateLimitMiddleware
@@ -43,7 +44,10 @@ def build_dispatcher(
 
     Middlewares are registered on both ``message`` and ``callback_query``, in
     that order: the rate limit and duplicate guard run before a session is
-    opened, then the session, then the user lookup.
+    opened, then the per-learner concurrency cap, then the session, then the
+    user lookup. The cap sits after the guards so a rejected flood never takes
+    one of the learner's slots, and before the session so an update waiting for
+    a slot holds no database connection.
 
     The bot serves private chats only. The chat-type filter is registered on the
     dispatcher's observers, which is checked before any middleware runs, so a
@@ -63,6 +67,9 @@ def build_dispatcher(
     duplicate_middleware = DuplicateMessageMiddleware(
         ttl_seconds=settings.bot.duplicate_message_ttl_seconds,
     )
+    concurrency_middleware = UserConcurrencyMiddleware(
+        limit=settings.bot.user_concurrency_limit,
+    )
     session_middleware = DbSessionMiddleware(
         session_factory,
         settings,
@@ -73,6 +80,7 @@ def build_dispatcher(
     for observer in (dispatcher.message, dispatcher.callback_query):
         observer.middleware(rate_limit_middleware)
         observer.middleware(duplicate_middleware)
+        observer.middleware(concurrency_middleware)
         observer.middleware(session_middleware)
         observer.middleware(user_middleware)
 
