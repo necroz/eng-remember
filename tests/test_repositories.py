@@ -8,6 +8,7 @@ from datetime import timedelta
 
 import pytest
 from sqlalchemy import String, Text, event
+from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from eng_remember.domain.enums import CardDirection, CardState, ReviewRating
@@ -211,6 +212,41 @@ class TestDecks:
 
         counts = [sql for sql in statements if "count(" in sql.lower()]
         assert counts, statements
+
+
+class TestUserModel:
+    async def test_loading_a_user_does_not_select_decks_or_streak(
+        self, session: AsyncSession, engine: AsyncEngine
+    ) -> None:
+        """The collections are never read; eager loads were pure overhead."""
+        repository = UserRepository(session)
+        created, _ = await repository.get_or_create(TelegramProfile(telegram_id=9090))
+        await session.commit()
+        user_id = created.id
+        session.expire_all()
+
+        with record_statements(engine) as statements:
+            loaded = await session.get(User, user_id)
+
+        assert loaded is not None
+        assert len(statements) == 1, statements
+        assert "decks" not in statements[0].lower()
+        assert "streaks" not in statements[0].lower()
+
+    async def test_the_collections_refuse_implicit_loads(self, session: AsyncSession) -> None:
+        repository = UserRepository(session)
+        created, _ = await repository.get_or_create(TelegramProfile(telegram_id=9091))
+        await session.commit()
+        user_id = created.id
+        session.expire_all()
+
+        loaded = await session.get(User, user_id)
+        assert loaded is not None
+
+        with pytest.raises(InvalidRequestError):
+            _ = loaded.decks
+        with pytest.raises(InvalidRequestError):
+            _ = loaded.streak
 
 
 def test_normalized_draft_keeps_and_resolves_its_language() -> None:
