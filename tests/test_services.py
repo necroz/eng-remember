@@ -381,6 +381,40 @@ class TestReviewService:
             with pytest.raises(ScheduleConflictError):
                 await services.review_service.answer(user, stale, ReviewRating.GOOD)
 
+    async def test_a_conflicting_answer_leaves_the_in_memory_card_untouched(
+        self,
+        services: Services,
+        session: AsyncSession,
+        session_factory: async_sessionmaker[AsyncSession],
+        user: User,
+        deck_id: int,
+    ) -> None:
+        """A rejected write must not paint its schedule onto the loser's object.
+
+        The card is in this session's identity map when another session moves
+        the row. An ORM-enabled UPDATE with the default ``synchronize_session``
+        copies the values onto that object even when ``rowcount`` is zero, so a
+        card that lost the race would show reps and a due date the row never had.
+        """
+        await self.queue_cards(services, session, user, deck_id, new=1)
+        card = (await services.review_service.build_queue(user)).cards[0]
+        before = card.schedule
+        assert before.reps == 0
+
+        async with session_factory() as winner_session:
+            winner = await CardRepository(winner_session).get(card.id, user_id=user.id)
+            assert winner is not None
+            await CardRepository(winner_session).update_schedule(
+                winner, schedule(1, state=CardState.REVIEW, reps=5)
+            )
+            await winner_session.commit()
+
+        with pytest.raises(ScheduleConflictError):
+            await services.review_service.answer(user, card, ReviewRating.GOOD)
+
+        assert card.reps == before.reps
+        assert card.schedule == before
+
     async def test_new_cards_are_capped_by_the_daily_budget(
         self, services: Services, session: AsyncSession, user: User, deck_id: int
     ) -> None:

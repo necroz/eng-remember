@@ -182,6 +182,7 @@ async def test_concurrent_answers_log_one_review(
         second_services = build_services(second, settings)
         first_user, first_card = await open_row(first)
         second_user, second_card = await open_row(second)
+        second_read = second_card.schedule
 
         await first_services.review_service.answer(first_user, first_card, ReviewRating.GOOD)
         second_write = asyncio.create_task(
@@ -191,6 +192,10 @@ async def test_concurrent_answers_log_one_review(
 
         with pytest.raises(ScheduleConflictError):
             await second_write
+        # The rejected UPDATE must not repaint the losing session's object: the
+        # card there still shows exactly what it read, not the value it tried to
+        # write and not the winner's schedule.
+        assert second_card.schedule == second_read
         await second.rollback()
 
     async with pg_session_factory() as check:

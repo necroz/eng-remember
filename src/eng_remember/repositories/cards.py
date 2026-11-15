@@ -427,7 +427,9 @@ class CardRepository:
         The ORM object is updated only after the write succeeds, and through
         committed values: reassigning plain attributes would queue a second
         unconditional UPDATE for the next flush, which is exactly the write this
-        check exists to prevent.
+        check exists to prevent. For the same reason synchronization is disabled
+        on the statement itself — the automatic strategies copy the new values
+        onto an in-memory card even when the conditional UPDATE matched no row.
         """
         expected_reps = card.reps
         stmt = (
@@ -444,7 +446,7 @@ class CardRepository:
                 lapses=schedule.lapses,
             )
         )
-        result = await self._session.execute(stmt)
+        result = await self._session.execute(stmt.execution_options(synchronize_session=False))
         if cast("CursorResult[Any]", result).rowcount == 0:
             raise ScheduleConflictError(card.id)
         for name in _SCHEDULE_FIELDS:
