@@ -31,6 +31,7 @@ docker compose logs -f bot
 | `db` | Postgres 17, данные в томе `pgdata` |
 | `migrate` | одноразовый: `alembic upgrade head`, затем выходит |
 | `bot` | long polling + рассылка напоминаний |
+| `backup` | по профилю `backup`: ежедневный `pg_dump` в том `backups` |
 
 `migrate` — отдельный сервис намеренно. Образ бота схему не меняет (см. Dockerfile):
 старт приложения не должен молча переписывать базу. Но и оставить миграции
@@ -252,6 +253,111 @@ docker compose run --rm migrate
 
 ## Бэкап и восстановление
 
+### Автоматический бэкап
+
+Сервис `backup` снимает дамп раз в сутки и хранит последние семь:
+
+```bash
+docker compose --profile backup up -d
+docker compose logs -f backup
+```
+
+Профиль отдельный намеренно: на машине разработчика планировщик не нужен, на
+сервере — нужен, и включается одной командой рядом с `--profile full`:
+
+```bash
+docker compose --profile full --profile backup up -d --build
+```
+
+Что происходит:
+
+- В 03:17 UTC BusyBox `crond` внутри контейнера запускает `docker/backup.sh dump`.
+- `pg_dump -Fc` пишет `/backups/eng-remember-ГГГГ-ММ-ДД.dump` — сжатый custom
+  format, из которого восстанавливает `pg_restore`. Дамп идёт по сети к `db`, том
+  `pgdata` сервису не нужен.
+- Файлы старше последних `BACKUP_KEEP_DAYS` (по умолчанию 7) удаляются. Меняется
+  в `.env`: `BACKUP_KEEP_DAYS=14`.
+- Дамп за сегодняшний день один: повторный запуск перезаписывает файл, а не
+  плодит копии.
+- Дампы лежат в томе `backups`, который переживает `docker compose down`.
+
+Снять дамп руками, не дожидаясь ночи (сервис может быть не запущен):
+
+```bash
+docker compose --profile backup run --rm backup dump
+docker compose --profile backup run --rm --entrypoint ls backup -lh /backups
+```
+
+**Том на том же диске — это не бэкап.** Копия переживает `docker compose down`,
+но не потерю сервера, поэтому дампы нужно забирать с машины:
+
+```bash
+docker run --rm -v eng-remember_backups:/backups -v "$PWD":/out \
+  postgres:17-alpine \
+  cp /backups/eng-remember-$(date +%F).dump /out/
+```
+
+(`eng-remember_` — префикс проекта из `name:` в `docker-compose.yml`.)
+
+### Восстановление
+
+Остановите бота, чтобы он не писал в базу во время загрузки:
+
+```bash
+docker compose stop bot
+docker compose --profile backup run --rm -e PGPASSWORD=eng \
+  --entrypoint pg_restore backup \
+  --host db --username eng --dbname eng_remember \
+  --clean --if-exists --no-owner /backups/eng-remember-2026-11-15.dump
+docker compose --profile full up -d
+```
+
+`--clean --if-exists` делает восстановление повторяемым: существующие таблицы
+удаляются перед загрузкой. `--no-owner` избавляет от зависимости от имён ролей в
+дампе. Пароль, пользователя и базу подставьте свои, если меняли `POSTGRES_*`.
+
+Если нужен SQL-текст дампа, а не custom format (посмотреть содержимое,
+применить выборочно):
+
+```bash
+docker compose --profile backup run --rm --entrypoint pg_restore backup \
+  --clean --if-exists --no-owner -f - /backups/eng-remember-2026-11-15.dump \
+  | docker compose exec -T db psql -U eng -d eng_remember
+```
+
+### Учебный прогон
+
+Проверять восстановление впервые в день аварии — плохая идея. Прогоните его на
+пустой базе заранее: это ничего не перезаписывает и отвечает на вопрос, цел ли
+дамп.
+
+```bash
+# 1. Свежий дамп.
+docker compose --profile backup run --rm backup dump
+
+# 2. Пустая база под прогон.
+docker compose exec db createdb -U eng eng_remember_rehearsal
+
+# 3. Восстановление в неё.
+docker compose --profile backup run --rm -e PGPASSWORD=eng \
+  --entrypoint pg_restore backup \
+  --host db --username eng --dbname eng_remember_rehearsal \
+  --no-owner /backups/eng-remember-2026-11-15.dump
+
+# 4. Данные на месте: число строк сравнимо с рабочей базой.
+docker compose exec db psql -U eng -d eng_remember_rehearsal \
+  -c "SELECT count(*) FROM cards; SELECT count(*) FROM reviews;"
+
+# 5. Убрать за собой.
+docker compose exec db dropdb -U eng eng_remember_rehearsal
+```
+
+Дату в имени файла подставьте свою — список дампов печатает команда `ls` выше.
+
+### Ручной дамп
+
+Без сервиса `backup` то же самое делается вручную:
+
 ```bash
 # дамп
 docker compose exec -T db pg_dump -U eng -d eng_remember -Fc > eng-remember-$(date +%F).dump
@@ -260,13 +366,12 @@ docker compose exec -T db pg_dump -U eng -d eng_remember -Fc > eng-remember-$(da
 docker compose exec -T db pg_restore -U eng -d eng_remember --clean --if-exists < eng-remember-2026-10-13.dump
 ```
 
-`--clean --if-exists` делает восстановление повторяемым: существующие таблицы
-удаляются перед загрузкой, так что команду можно запускать дважды. Имя
-пользователя и базы подставьте свои, если меняли `POSTGRES_USER` / `POSTGRES_DB`.
+Имя пользователя и базы подставьте свои, если меняли `POSTGRES_USER` / `POSTGRES_DB`.
 
 Том `pgdata` — единственное место, где лежат данные: карточки, история повторений,
 серии и аудит вызовов модели. Всё остальное в контейнерах воспроизводится из
-образа.
+образа. Поэтому и бэкапится только он — дампом, а не копией файлов тома: копия
+работающего Postgres несогласована.
 
 ## Диагностика
 
@@ -305,5 +410,9 @@ docker compose run --rm bot eng-remember-remind
 
 ```bash
 docker compose --profile full down       # остановить, данные остаются
-docker compose --profile full down -v    # вместе с томом pgdata — удалит всё
+docker compose --profile full down -v    # вместе с томами pgdata и backups — удалит всё
 ```
+
+`-v` удаляет и том `backups`: если бэкапы нужны, сначала заберите их с машины или
+запускайте остановку без флага. Сервис `backup` останавливается отдельно —
+`docker compose --profile backup stop`.

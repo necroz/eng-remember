@@ -84,5 +84,33 @@ services:
     restart: unless-stopped
     profiles: ["full"]
 
+  # Nightly pg_dump into its own volume. Off by default: a development machine
+  # does not need a scheduler, a server does. It talks to db over the compose
+  # network, so it needs no access to pgdata.
+  backup:
+    image: postgres:17-alpine
+    logging: *logging
+    restart: unless-stopped
+    profiles: ["backup"]
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGHOST: db
+      PGPORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-eng}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-eng}
+      POSTGRES_DB: ${POSTGRES_DB:-eng_remember}
+      BACKUP_KEEP_DAYS: ${BACKUP_KEEP_DAYS:-7}
+    volumes:
+      - backups:/backups
+      - ./docker/backup.sh:/usr/local/bin/backup.sh:ro
+      - ./docker/backup.crontab:/etc/backup.crontab:ro
+    # `daemon` installs the crontab and runs crond; `run --rm backup dump`
+    # replaces the command and takes one dump right away.
+    entrypoint: ["/usr/local/bin/backup.sh"]
+    command: ["daemon"]
+
 volumes:
   pgdata:
+  backups:
