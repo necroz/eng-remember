@@ -9,8 +9,32 @@ from fsrs import Rating, State
 
 from eng_remember.config import SrsSettings
 from eng_remember.domain.enums import CardState, ReviewRating
-from eng_remember.domain.srs import CardSchedule, SrsScheduler
+from eng_remember.domain.srs import CardSchedule, SrsScheduler, new_allowance
 from eng_remember.utils.time import utcnow
+
+
+@pytest.mark.parametrize(
+    ("per_day", "fallback", "introduced_today", "expected"),
+    [
+        (None, 20, 0, 20),
+        (None, 20, 7, 13),
+        (0, 20, 0, 0),
+        (3, 20, 0, 3),
+        (5, 20, 8, 0),
+    ],
+)
+def test_new_allowance_treats_a_choice_as_a_choice(
+    per_day: int | None,
+    fallback: int,
+    introduced_today: int,
+    expected: int,
+) -> None:
+    """An explicit limit wins over the configured default, zero included.
+
+    ``None`` is the only value that means "no choice made"; reading ``0`` the
+    same way is what made ``/limit 0`` serve the global twenty new words.
+    """
+    assert new_allowance(per_day, fallback, introduced_today) == expected
 
 
 @pytest.fixture

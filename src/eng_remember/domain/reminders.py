@@ -80,7 +80,8 @@ def decide(
 
     # The digest closes the morning slot, so it is decided before the evening
     # one: a bot whose first tick came after the evening hour would otherwise
-    # skip the week. The evening still fires later that day.
+    # skip the week. A digest that lands after the evening hour settles that
+    # slot too — it already carries the queue, so no second message follows.
     if _digest_owed(context, today=today, local_clock=local_clock, settings=settings):
         return ReminderKind.DIGEST
 

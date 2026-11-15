@@ -385,6 +385,32 @@ class TestNewCardBudget:
 
         assert morning.sent_count == 0
 
+    async def test_an_explicit_zero_limit_promises_no_new_words(
+        self,
+        reminders: ReminderService,
+        services: Services,
+        session: AsyncSession,
+        user: User,
+        notifier: RecordingNotifier,
+    ) -> None:
+        """A due review is worth a reminder; the untouched backlog is not.
+
+        ``/limit 0`` is a choice, so the configured default of twenty must not
+        sneak back in and turn five untouched words into a promise.
+        """
+        user.new_cards_per_day = 0
+        await session.commit()
+        await give_new_cards(services, user, count=5)
+        await give_work(services, user, due=1)
+
+        run = await reminders.run(now=moment(9, 0))
+
+        assert run.sent_count == 1
+        plan = notifier.sent[-1]
+        assert plan.kind is ReminderKind.MORNING
+        assert plan.due_now == 1
+        assert plan.new_available == 0
+
     async def test_a_due_card_is_promised_without_the_exhausted_budget(
         self,
         reminders: ReminderService,
