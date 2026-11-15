@@ -219,6 +219,47 @@ class CardService:
         await self._cards.delete(card)
         return card
 
+    async def update_content(
+        self,
+        user: User,
+        card_id: int,
+        *,
+        translation: str | None = None,
+        example: str | None = None,
+        notes: str | None = None,
+    ) -> Card | None:
+        """Change the text of a card, leaving its schedule untouched.
+
+        Only the fields the learner actually changed are passed: ``None`` means
+        "not edited", never "clear". The term and the language are immutable —
+        the queue, the duplicate index and the reverse twin are keyed on them —
+        so the draft is rebuilt from the stored card and the edits on top.
+
+        Returns ``None`` when the card does not exist or belongs to someone
+        else; the caller answers with the stale-card page.
+        """
+        card = await self._cards.get(card_id, user_id=user.id)
+        if card is None:
+            return None
+
+        draft = CardDraft(
+            term=card.term,
+            translation=card.translation if translation is None else translation,
+            transcription=card.transcription,
+            part_of_speech=card.part_of_speech,
+            example=card.example if example is None else example,
+            examples=tuple(card.examples or ()),
+            notes=card.notes if notes is None else notes,
+            tags=tuple(card.tags or ()),
+            cefr=card.cefr,
+            frequency=card.frequency,
+            language=card.language,
+        )
+        if not draft.normalized().translation:
+            raise EmptyDraftError()
+        await self._cards.update_content(card, draft)
+        return card
+
     async def suspend(self, user: User, card_id: int, *, suspended: bool = True) -> Card | None:
         """Pause or resume the whole word: the twin follows its sibling."""
         card = await self._cards.get(card_id, user_id=user.id)

@@ -474,15 +474,23 @@ class CardRepository:
             set_committed_value(card, name, getattr(schedule, name))
 
     async def update_content(self, card: Card, draft: CardDraft) -> None:
-        card.translation = draft.translation
-        card.transcription = draft.transcription
-        card.part_of_speech = draft.part_of_speech
-        card.example = draft.example
-        card.examples = list(draft.examples)
-        card.notes = draft.notes
-        card.tags = list(draft.tags)
-        card.cefr = draft.cefr
-        card.frequency = draft.frequency
+        """Replace the editable text of a card; the schedule stays as it is.
+
+        Normalised here, like :meth:`add`: an edit is the other way a value can
+        reach the row, and it must not be the way an untrimmed or over-long one
+        does. The term and the language are not assigned: the queue, the
+        duplicate index and the reverse twin are keyed on them.
+        """
+        cleaned = draft.normalized()
+        card.translation = cleaned.translation
+        card.transcription = cleaned.transcription
+        card.part_of_speech = cleaned.part_of_speech
+        card.example = cleaned.example
+        card.examples = list(cleaned.examples)
+        card.notes = cleaned.notes
+        card.tags = list(cleaned.tags)
+        card.cefr = cleaned.cefr
+        card.frequency = cleaned.frequency
         await self._session.flush()
 
     async def update_examples(self, card: Card, examples: list[str]) -> None:

@@ -18,23 +18,31 @@ from datetime import timedelta
 from typing import Any
 
 import pytest
+from aiogram import Bot
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 import eng_remember.models  # noqa: F401  — registers tables on Base.metadata
+from eng_remember.bot.callbacks import DeckCB
+from eng_remember.bot.dispatcher import build_dispatcher
 from eng_remember.config import ReminderSettings, Settings
 from eng_remember.db import Base, create_engine, create_session_factory
 from eng_remember.domain.enums import CardDirection, CardState, ReviewRating
 from eng_remember.errors import ScheduleConflictError
 from eng_remember.models.card import Card
+from eng_remember.models.deck import Deck
 from eng_remember.models.review import Review
 from eng_remember.models.user import User
 from eng_remember.repositories.cards import CardDraft, CardRepository
 from eng_remember.repositories.users import TelegramProfile
 from eng_remember.services.container import Services, build_services
 from eng_remember.utils.time import utcnow
+from tests.conftest import TEST_TOKEN, RecordingSession
 from tests.factories import schedule
+from tests.helpers import tap
 
 pytestmark = pytest.mark.integration
 
@@ -735,3 +743,39 @@ async def test_crash_mid_tick_keeps_committed_watermarks_on_postgres(
     assert [row.id for row in rows] == [pg_user.id, second.id]
     assert rows[0].last_reminder_on is not None
     assert rows[1].last_reminder_on is None
+
+
+async def test_deleting_a_deck_through_the_bot_removes_its_cards(
+    pg_session_factory: async_sessionmaker[AsyncSession],
+    pg_services: Services,
+    pg_session: AsyncSession,
+    pg_user: User,
+) -> None:
+    """The cascade is the database's job, and PostgreSQL is where it is enforced.
+
+    The cards are deleted together with the deck through the /decks buttons, so
+    the assertion covers the handler, the repository statement and the schema's
+    ``ON DELETE CASCADE`` at once.
+    """
+    deck = await pg_services.decks.create(pg_user.id, "Книги")
+    await pg_services.card_service.add_draft(
+        pg_user, CardDraft(term="tome", translation="фолиант"), deck=deck
+    )
+    await pg_session.commit()
+
+    settings = Settings(_env_file=None, database_url=DATABASE_URL)
+    recording = RecordingSession()
+    bot = Bot(
+        token=TEST_TOKEN,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+        session=recording,
+    )
+    dispatcher = build_dispatcher(settings, pg_session_factory)
+
+    await tap(dispatcher, bot, DeckCB(action="dl", deck_id=deck.id).pack())
+    assert "Удалить колоду" in recording.last_text()
+    await tap(dispatcher, bot, DeckCB(action="ok", deck_id=deck.id).pack(), update_id=11)
+
+    async with pg_session_factory() as check:
+        assert await check.get(Deck, deck.id) is None
+        assert await check.scalar(select(func.count(Card.id)).where(Card.deck_id == deck.id)) == 0

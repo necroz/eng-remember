@@ -26,6 +26,8 @@ from eng_remember.bot.middlewares.rate_limit import RateLimitMiddleware
 from eng_remember.bot.states import (
     TEXT_INPUT_STATES,
     AddWords,
+    CardEdit,
+    DeckRename,
     ImportFile,
     Practice,
     Review,
@@ -164,9 +166,25 @@ async def test_repeated_text_in_button_only_state_is_deduplicated(state_value: s
 
 def test_text_input_states_are_the_text_consuming_flows() -> None:
     """The allowlist names exactly the states whose flow reads a typed message."""
-    assert frozenset({Review.awaiting_answer.state, AddWords.clarifying.state}) == TEXT_INPUT_STATES
+    assert (
+        frozenset(
+            {
+                Review.awaiting_answer.state,
+                AddWords.clarifying.state,
+                DeckRename.awaiting_name.state,
+                CardEdit.translation.state,
+                CardEdit.example.state,
+                CardEdit.notes.state,
+            }
+        )
+        == TEXT_INPUT_STATES
+    )
     assert is_text_input_state(Review.awaiting_answer.state)
     assert is_text_input_state(AddWords.clarifying.state)
+    assert is_text_input_state(DeckRename.awaiting_name.state)
+    assert is_text_input_state(CardEdit.translation.state)
+    assert is_text_input_state(CardEdit.example.state)
+    assert is_text_input_state(CardEdit.notes.state)
     assert not is_text_input_state(AddWords.confirming.state)
     assert not is_text_input_state(ImportFile.confirming.state)
     assert not is_text_input_state(Practice.awaiting_answer.state)

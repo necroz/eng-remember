@@ -41,6 +41,9 @@ PREVIEW_ROWS = 10
 PREVIEW_DRAFTS = 30
 PREVIEW_DECKS = 50
 PREVIEW_PAUSED = 20
+# Deck names are typed in a chat window; the limit is short enough to read whole
+# in a button and in the list line, long enough for a topic name.
+DECK_NAME_LIMIT = 64
 
 
 def _joined_length(lines: Sequence[str]) -> int:
@@ -119,12 +122,27 @@ __all__ = [
     "budget_alert",
     "cannot_parse",
     "card_back",
+    "card_edit_cancelled",
+    "card_edit_example",
+    "card_edit_notes",
+    "card_edit_saved",
+    "card_edit_translation",
     "card_front",
     "card_unavailable",
     "clarification",
     "clarification_answered",
     "clarification_skipped",
+    "deck_default_undeletable",
+    "deck_delete_cancelled",
+    "deck_delete_confirm",
+    "deck_deleted",
     "deck_list",
+    "deck_name_invalid",
+    "deck_name_taken",
+    "deck_rename_cancelled",
+    "deck_rename_prompt",
+    "deck_renamed",
+    "deck_unavailable",
     "discovery_empty",
     "discovery_needs_context",
     "discovery_preview",
@@ -371,6 +389,45 @@ def answer_accepted(
         lines.append("")
         lines.append(note)
     return "\n".join(lines)
+
+
+def card_edit_translation(card: Card) -> str:
+    """The first question of an edit: the translation, the field worth fixing.
+
+    The term and the language are named as fixed here, where the learner can
+    still see what they are about to change.
+    """
+    return (
+        f"✏️ Правка <b>{escape(card.term)}</b>\n\n"
+        f"Перевод сейчас: <b>{escape(card.translation)}</b>\n\n"
+        "Пришлите новый перевод — или пропустите шаг.\n"
+        f"<i>Слово и язык ({language_badge(card.language)}) не меняются.</i>"
+    )
+
+
+def card_edit_example(card: Card) -> str:
+    if card.example:
+        return (
+            f"Пример сейчас:\n<i>{escape(card.example)}</i>\n\n"
+            "Пришлите новый пример — или пропустите шаг."
+        )
+    return "Примера пока нет. Пришлите его — или пропустите шаг."
+
+
+def card_edit_notes(card: Card) -> str:
+    if card.notes:
+        return (
+            f"Заметки: {escape(card.notes)}\n\nПришлите новый текст заметок — или пропустите шаг."
+        )
+    return "Заметок пока нет. Пришлите их — или пропустите шаг."
+
+
+def card_edit_saved(card: Card) -> str:
+    return f"✅ Карточка обновлена.\n\n{card_back(card)}"
+
+
+def card_edit_cancelled() -> str:
+    return "Правка отменена — карточка не изменена."
 
 
 def card_back(card: Card, *, example: str | None = None) -> str:
@@ -1143,11 +1200,56 @@ def deck_list(rows: list[tuple[str, int]], total: int) -> str:
     lines = _fit_entries(
         [f"📚 <b>Колоды</b> — всего слов: {total}", ""],
         entries,
-        [],
+        ["", "<i>✏️ — переименовать, 🗑 — удалить колоду.</i>"],
         total=deck_total,
         footer=_more_footer(deck_total),
     )
     return fit_text("\n".join(lines))
+
+
+def deck_delete_confirm(name: str, cards: int) -> str:
+    word = _plural(cards, "карточка", "карточки", "карточек")
+    return f"🗑 Удалить колоду «{escape(name)}»? В ней {cards} {word}. Это необратимо."
+
+
+def deck_deleted(name: str) -> str:
+    return f"Колода «{escape(name)}» удалена."
+
+
+def deck_delete_cancelled() -> str:
+    return "Удаление отменено — колода на месте."
+
+
+def deck_default_undeletable() -> str:
+    """The refusal: the default deck is where uncategorised words land."""
+    return "Основную колоду удалить нельзя — в неё попадают новые слова."
+
+
+def deck_rename_prompt(name: str) -> str:
+    return (
+        f"✏️ Новое имя для колоды «{escape(name)}»?\n\n"
+        f"Напишите его одним сообщением — до {DECK_NAME_LIMIT} символов."
+    )
+
+
+def deck_renamed(old_name: str, new_name: str) -> str:
+    return f"✅ Колода «{escape(old_name)}» теперь «{escape(new_name)}»."
+
+
+def deck_rename_cancelled() -> str:
+    return "Переименование отменено."
+
+
+def deck_name_invalid() -> str:
+    return f"Имя колоды не может быть пустым или длиннее {DECK_NAME_LIMIT} символов."
+
+
+def deck_name_taken(name: str) -> str:
+    return f"Колода «{escape(name)}» уже есть — напишите другое имя."
+
+
+def deck_unavailable() -> str:
+    return "Колода больше не доступна — откройте список заново."
 
 
 def stats(

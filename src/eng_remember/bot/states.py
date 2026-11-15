@@ -9,10 +9,16 @@ from aiogram.fsm.state import State, StatesGroup
 __all__ = [
     "ANSWERED_KEY",
     "ANSWERING_KEY",
+    "CARD_ID_KEY",
     "CONTEXT_KEY",
     "CORRECT_COUNT_KEY",
     "COUNT_KEY",
+    "DECK_ID_KEY",
     "DRAFT_KEY",
+    "EDITED_EXAMPLE_KEY",
+    "EDITED_NOTES_KEY",
+    "EDITED_TRANSLATION_KEY",
+    "EDIT_PREVIOUS_STATE_KEY",
     "ENGINE_KEY",
     "EXAMPLE_KEY",
     "FILE_DUPLICATES_KEY",
@@ -31,6 +37,7 @@ __all__ = [
     "QUESTIONS_KEY",
     "QUESTION_INDEX_KEY",
     "QUESTION_KEY",
+    "RENAME_PREVIOUS_STATE_KEY",
     "ROUND_KEY",
     "SESSION_KEY",
     "SESSION_LIMIT_KEY",
@@ -39,6 +46,8 @@ __all__ = [
     "TEXT_INPUT_STATES",
     "TOPIC_KEY",
     "AddWords",
+    "CardEdit",
+    "DeckRename",
     "ImportFile",
     "Practice",
     "Review",
@@ -107,6 +116,25 @@ FILE_DUPLICATES_KEY = "file_duplicates"
 FILE_UNTRANSLATED_KEY = "file_untranslated"
 FILE_FILLED_KEY = "file_filled"
 
+# The deck-rename dialogue: which deck the name being typed belongs to. Stored
+# rather than carried by the message, because the learner answers the prompt in
+# a message of their own and it must not be able to rename another deck.
+DECK_ID_KEY = "deck_id"
+# The flow the chat was in before the rename dialogue opened. Renaming starts
+# from the deck list, which can be reached with a review still waiting for an
+# answer, so leaving the dialogue must put that flow back.
+RENAME_PREVIOUS_STATE_KEY = "rename_previous_state"
+
+# The card-edit dialogue: which card is being edited, the values typed so far
+# (``None`` is "not edited", not "clear"), and the state to return to. Editing
+# starts from a result in the chat history, possibly in the middle of a review
+# run, so leaving it must put the review back exactly where it stood.
+CARD_ID_KEY = "edit_card"
+EDITED_TRANSLATION_KEY = "edit_translation"
+EDITED_EXAMPLE_KEY = "edit_example"
+EDITED_NOTES_KEY = "edit_notes"
+EDIT_PREVIOUS_STATE_KEY = "edit_previous_state"
+
 
 class AddWords(StatesGroup):
     """Waiting for the user to confirm a parsed batch of cards."""
@@ -135,21 +163,44 @@ class ImportFile(StatesGroup):
     confirming = State()
 
 
+class DeckRename(StatesGroup):
+    """Waiting for the new name of a deck the /decks list offered to rename."""
+
+    awaiting_name = State()
+
+
+class CardEdit(StatesGroup):
+    """The three questions of a content edit, in the order they are asked.
+
+    One state per field rather than an index: the handler that reads a typed
+    message knows what the text means from the state alone.
+    """
+
+    translation = State()
+    example = State()
+    notes = State()
+
+
 # States in which the next plain text is consumed by the flow itself: a review
-# answer, a clarification answer. Guards give these a pass, because repeating an
-# answer is legitimate. Button-only states (``AddWords.confirming``,
-# ``ImportFile.confirming``, ``Practice.awaiting_answer``) are deliberately
-# absent: nothing in them reads a typed message, so it falls through to the
-# capture router and can cost a model call — it must stay guarded.
+# answer, a clarification answer, a new deck name, an edited card field. Guards
+# give these a pass, because repeating an answer is legitimate. Button-only
+# states (``AddWords.confirming``, ``ImportFile.confirming``,
+# ``Practice.awaiting_answer``) are deliberately absent: nothing in them reads a
+# typed message, so it falls through to the capture router and can cost a model
+# call — it must stay guarded.
 #
-# New text-consuming flows (card editing, deck renaming, …) belong here; the
-# guards read this single set through :func:`is_text_input_state`.
+# A new text-consuming flow belongs here; the guards read this single set
+# through :func:`is_text_input_state`.
 TEXT_INPUT_STATES: frozenset[str] = frozenset(
     {
         # ``State.state`` is typed ``str | None`` (a state may lack a group),
         # but these states belong to groups, so the full name is always there.
         cast(str, AddWords.clarifying.state),
         cast(str, Review.awaiting_answer.state),
+        cast(str, DeckRename.awaiting_name.state),
+        cast(str, CardEdit.translation.state),
+        cast(str, CardEdit.example.state),
+        cast(str, CardEdit.notes.state),
     }
 )
 
