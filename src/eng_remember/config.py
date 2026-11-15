@@ -302,9 +302,15 @@ class Settings(BaseSettings):
                 "database_url is empty; use one of " + ", ".join(ALLOWED_DATABASE_SCHEMES)
             )
         if not url.startswith(ALLOWED_DATABASE_SCHEMES):
+            scheme = url.split(":", 1)[0]
+            hint = (
+                " (PostgreSQL needs the async driver: postgresql+asyncpg://)"
+                if scheme == "postgresql"
+                else ""
+            )
             raise ValueError(
                 f"database_url must start with one of {', '.join(ALLOWED_DATABASE_SCHEMES)}; "
-                f"got {url.split(':', 1)[0]}"
+                f"got {scheme}{hint}"
             )
         return url
 

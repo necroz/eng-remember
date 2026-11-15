@@ -7,7 +7,6 @@ linger as a sticky button.
 
 from __future__ import annotations
 
-from collections import Counter
 from collections.abc import Sequence
 
 from aiogram.types import (
@@ -180,16 +179,22 @@ def deck_manager(decks: Sequence[Deck]) -> InlineKeyboardMarkup:
     """
     builder = InlineKeyboardBuilder()
     for deck in list(decks)[: texts.PREVIEW_DECKS]:
-        builder.row(
+        buttons = [
             InlineKeyboardButton(
                 text=_truncate_utf8(f"✏️ {deck.name}", OPTION_BYTE_LIMIT),
                 callback_data=DeckCB(action="rn", deck_id=deck.id).pack(),
-            ),
-            InlineKeyboardButton(
-                text="🗑",
-                callback_data=DeckCB(action="dl", deck_id=deck.id).pack(),
-            ),
-        )
+            )
+        ]
+        if not deck.is_default:
+            # The default deck cannot be deleted; a button that can only refuse
+            # is a dead end, so it is not drawn at all.
+            buttons.append(
+                InlineKeyboardButton(
+                    text="🗑",
+                    callback_data=DeckCB(action="dl", deck_id=deck.id).pack(),
+                )
+            )
+        builder.row(*buttons)
     return builder.as_markup()
 
 
@@ -262,25 +267,24 @@ def practice_labels(options: Sequence[str]) -> list[str]:
     """Button labels that fit Telegram's byte cap and stay distinguishable.
 
     Two translations that share a long prefix are cut to the same text, which
-    would read as one answer offered twice. A colliding label gets its option
-    number attached, on top of the same cut, so the pair still fits.
+    would read as one answer offered twice. A repeated label (including one that
+    happens to equal an already-numbered label) gets a number attached, on top
+    of the same cut, so every final label is unique within the budget.
     """
     labels = [_truncate_utf8(option, OPTION_BYTE_LIMIT) for option in options]
-    counts = Counter(labels)
-    if all(count == 1 for count in counts.values()):
-        return labels
-
-    numbered: list[str] = []
-    seen: Counter[str] = Counter()
+    used: set[str] = set()
+    result: list[str] = []
     for option, label in zip(options, labels, strict=True):
-        if counts[label] == 1:
-            numbered.append(label)
-            continue
-        seen[label] += 1
-        suffix = f" ({seen[label]})"
-        budget = OPTION_BYTE_LIMIT - len(suffix.encode("utf-8"))
-        numbered.append(_truncate_utf8(option, budget) + suffix)
-    return numbered
+        candidate = label
+        counter = 1
+        while candidate in used:
+            counter += 1
+            suffix = f" ({counter})"
+            budget = OPTION_BYTE_LIMIT - len(suffix.encode("utf-8"))
+            candidate = _truncate_utf8(option, budget) + suffix
+        used.add(candidate)
+        result.append(candidate)
+    return result
 
 
 def _truncate_utf8(text: str, limit: int) -> str:
@@ -288,6 +292,10 @@ def _truncate_utf8(text: str, limit: int) -> str:
     encoded = text.encode("utf-8")
     if len(encoded) <= limit:
         return text
-    room = max(0, limit - len(_ELLIPSIS.encode("utf-8")))
+    ellipsis_bytes = len(_ELLIPSIS.encode("utf-8"))
+    if limit < ellipsis_bytes:
+        # No room for the ellipsis itself: cut to the raw budget, no marker.
+        return encoded[:limit].decode("utf-8", errors="ignore")
+    room = limit - ellipsis_bytes
     cut = encoded[:room].decode("utf-8", errors="ignore").rstrip()
     return cut + _ELLIPSIS

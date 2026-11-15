@@ -47,7 +47,9 @@ async def enrichment_worker(
             continue
         except asyncio.CancelledError:
             raise
-        await _enrich_card(session_factory, settings, user_id, card_id, transport=transport)
+        await _enrich_card(
+            session_factory, settings, user_id, card_id, transport=transport, queue=queue
+        )
 
 
 async def _enrich_card(
@@ -57,6 +59,7 @@ async def _enrich_card(
     card_id: int,
     *,
     transport: LlmTransport | None = None,
+    queue: BackfillQueue | None = None,
 ) -> bool:
     """Top up one card's examples in a session of its own.
 
@@ -66,7 +69,7 @@ async def _enrich_card(
     """
     try:
         async with session_scope(session_factory) as session:
-            services = build_services(session, settings, llm_transport=transport)
+            services = build_services(session, settings, llm_transport=transport, backfill=queue)
             card = await services.cards.get(card_id, user_id=user_id)
             if card is None or not services.enrichment.needs_examples(card):
                 return False

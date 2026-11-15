@@ -48,6 +48,14 @@ dump() {
     esac
 
     mkdir -p "$BACKUP_DIR"
+    # Cron and two manual `docker compose run` calls can overlap; both start as
+    # pid 1 inside their containers, so the pid suffix alone is not a lock.
+    # Take an exclusive flock for the whole dump: the second runner waits, then
+    # replaces the day's file with its own complete dump.
+    exec 9>"$BACKUP_DIR/.lock"
+    if command -v flock >/dev/null 2>&1; then
+        flock 9
+    fi
     # One dump per day: a second run the same day replaces it, and the final mv
     # is atomic, so a reader never sees a half-written file under the date name.
     # The in-progress name carries this process's pid: cron and a manual
@@ -92,8 +100,9 @@ daemon() {
     echo "backup: schedule (UTC):"
     grep -v '^#' "$CRONTAB_SOURCE" | grep -v '^$' || true
     # -f keeps crond in the foreground, so the container's restart policy and
-    # log collection still apply to it.
-    exec crond -f -l 2
+    # log collection still apply to it; -d 2 sends crond's own diagnostics to
+    # stderr (there is no syslog inside this container).
+    exec crond -f -d 2
 }
 
 case "${1:-daemon}" in

@@ -114,6 +114,11 @@ class EnrichmentService:
         if fresh is None:
             return []
         current = self._existing(fresh)
+        if len(current) >= self.target:
+            # The learner added examples during the model call and is already at
+            # the ceiling; merging would cut their newest sentence.
+            log.debug("enrichment_skipped_full_card", card_id=fresh.id)
+            return []
         merged = merge_examples(fresh.example, [*fresh.examples, *generated], limit=self.target)
         known = {item.casefold() for item in current}
         added = [item for item in merged if item.casefold() not in known]

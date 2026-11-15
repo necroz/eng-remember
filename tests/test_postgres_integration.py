@@ -751,11 +751,11 @@ async def test_deleting_a_deck_through_the_bot_removes_its_cards(
     pg_session: AsyncSession,
     pg_user: User,
 ) -> None:
-    """The cascade is the database's job, and PostgreSQL is where it is enforced.
+    """Deleting a deck through the bot takes its cards with it.
 
-    The cards are deleted together with the deck through the /decks buttons, so
-    the assertion covers the handler, the repository statement and the schema's
-    ``ON DELETE CASCADE`` at once.
+    The repository deletes the cards explicitly (SQLite does not enforce FK
+    cascades), so the assertion covers the handler and the repository statement;
+    PostgreSQL's ``ON DELETE CASCADE`` is the schema-level backstop.
     """
     deck = await pg_services.decks.create(pg_user.id, "Книги")
     await pg_services.card_service.add_draft(

@@ -8,7 +8,7 @@ from aiogram.types import InlineKeyboardMarkup
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from eng_remember.bot import texts
+from eng_remember.bot import keyboards, texts
 from eng_remember.bot.callbacks import DeckCB
 from eng_remember.models.card import Card
 from eng_remember.models.deck import Deck
@@ -24,6 +24,19 @@ def last_callback_answer(recording: RecordingSession) -> AnswerCallbackQuery:
     answers = [m for m in recording.requests if isinstance(m, AnswerCallbackQuery)]
     assert answers, recording.requests
     return answers[-1]
+
+
+def test_the_default_deck_has_no_delete_button() -> None:
+    """A button that can only refuse is not drawn at all."""
+    default = Deck(id=1, user_id=1, name="Основная", is_default=True)
+    extra = Deck(id=2, user_id=1, name="Ещё одна", is_default=False)
+
+    markup = keyboards.deck_manager([default, extra])
+
+    payloads = [button.callback_data for row in markup.inline_keyboard for button in row]
+    assert payloads.count(DeckCB(action="rn", deck_id=1).pack()) == 1
+    assert DeckCB(action="dl", deck_id=1).pack() not in payloads
+    assert DeckCB(action="dl", deck_id=2).pack() in payloads
 
 
 async def default_deck(services: Services, user: User) -> Deck:

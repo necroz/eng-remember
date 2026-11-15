@@ -265,6 +265,27 @@ async def test_update_content_normalises_what_it_stores(
     assert stored.notes == "заметка"
 
 
+async def test_a_too_long_paste_is_capped_and_reported(
+    services: Services,
+    user: User,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A manual paste over the limit is stored capped, and the edit says so."""
+    card = await services.card_service.add_draft(
+        user, CardDraft(term="ubiquitous", translation="вездесущий")
+    )
+    await services.commit()
+
+    edit = await services.card_service.update_content(user, card.id, notes="заметка " * 100)
+    await services.commit()
+
+    stored = await load_card(session_factory, card.id)
+    assert edit.truncated is True
+    assert edit.card is not None
+    assert stored.notes is not None
+    assert len(stored.notes) <= 300
+
+
 async def test_a_second_edit_tap_keeps_the_review_run(
     dispatcher: Dispatcher,
     bot: Bot,

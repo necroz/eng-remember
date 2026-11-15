@@ -213,7 +213,9 @@ async def test_the_in_process_loop_starts_only_when_reminders_are_enabled(
     The enabled case is the control: without it a broken harness could pass the
     disabled one too.
     """
-    settings.reminders.enabled = enabled
+    settings = settings.model_copy(
+        update={"reminders": settings.reminders.model_copy(update={"enabled": enabled})}
+    )
     engine = _DisposableEngine()
     dispatcher = _PollingDispatcher()
     started: list[str] = []
@@ -232,4 +234,4 @@ async def test_the_in_process_loop_starts_only_when_reminders_are_enabled(
 
     assert dispatcher.polled
     assert engine.disposed
-    assert (started != []) is enabled
+    assert bool(started) == enabled

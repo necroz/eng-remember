@@ -35,9 +35,9 @@ def fold_term(term: str) -> str:
     Every Python-side duplicate check uses this key, so ``Straße`` and
     ``STRASSE`` are one word rather than two. SQL still compares with
     ``lower()``: PostgreSQL folds ``ß`` to ``ß`` where ``casefold`` gives ``ss``,
-    so the two paths can disagree on that one letter — the functional index
-    task closes that gap, and until then the casefolded key is the stricter of
-    the two.
+    and SQLite's ``lower()`` only folds ASCII. The functional index therefore
+    makes the database key case-insensitive, not casefold-equivalent: that one
+    letter remains a documented limitation of the SQL path.
     """
     return unicodedata.normalize("NFC", term).strip().casefold()
 

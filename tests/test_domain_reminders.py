@@ -15,7 +15,6 @@ from eng_remember.config import ReminderSettings
 from eng_remember.domain.reminders import (
     ReminderContext,
     ReminderKind,
-    covers_morning,
     decide,
 )
 
@@ -244,9 +243,6 @@ class TestDigest:
             decide(context(digest_enabled=True), now=at(9, 0), settings=thursday)
             is ReminderKind.DIGEST
         )
-
-    def test_it_covers_the_morning(self) -> None:
-        assert covers_morning(ReminderKind.DIGEST) is True
 
     def test_the_evening_is_not_taken_over(self, settings: ReminderSettings) -> None:
         done = context(

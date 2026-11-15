@@ -18,13 +18,25 @@ from sqlalchemy.pool import StaticPool
 
 from eng_remember.config import Settings
 
-__all__ = ["create_engine", "create_session_factory", "session_scope"]
+__all__ = ["create_engine", "create_session_factory", "normalized_database_url", "session_scope"]
 
 SessionFactory = async_sessionmaker[AsyncSession]
 
 # Long enough to ride out the short write bursts of a bot, short enough that a
 # stuck writer turns into an error the handler can report instead of a hang.
 SQLITE_BUSY_TIMEOUT_MS = 5000
+
+
+def normalized_database_url(url: str) -> str:
+    """The URL the async engine can actually open.
+
+    ``sqlite://`` names the synchronous pysqlite driver; the application and
+    Alembic both run on async engines, and both receive the same setting, so the
+    conventional spelling is switched in exactly one place.
+    """
+    if url.startswith("sqlite://") and not url.startswith("sqlite+aiosqlite://"):
+        return url.replace("sqlite://", "sqlite+aiosqlite://", 1)
+    return url
 
 
 def _configure_sqlite_connection(dbapi_connection: Any, _connection_record: Any) -> None:
@@ -39,6 +51,10 @@ def _configure_sqlite_connection(dbapi_connection: Any, _connection_record: Any)
     """
     cursor = dbapi_connection.cursor()
     try:
+        # The busy timeout comes first: switching the journal mode may have to
+        # wait for another connection, and without the timeout that wait fails
+        # immediately with "database is locked" on a busy file.
+        cursor.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
         # The journal mode lives in the database header, so it survives across
         # connections. Reading it first avoids taking the exclusive lock needed
         # to switch it on every new connection, which would make concurrent
@@ -47,7 +63,6 @@ def _configure_sqlite_connection(dbapi_connection: Any, _connection_record: Any)
         mode = cursor.fetchone()
         if mode is None or str(mode[0]).lower() != "wal":
             cursor.execute("PRAGMA journal_mode=WAL")
-        cursor.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
     finally:
         cursor.close()
 
@@ -58,17 +73,11 @@ def create_engine(settings: Settings) -> AsyncEngine:
     PostgreSQL is the production target; SQLite is supported so the bot and the
     test suite can run without any infrastructure.
     """
-    url = make_url(settings.database_url)
+    url = make_url(normalized_database_url(settings.database_url))
     kwargs: dict[str, Any] = {"echo": settings.db_echo}
     file_sqlite = False
 
     if url.get_backend_name() == "sqlite":
-        if url.drivername == "sqlite":
-            # ``sqlite://`` names the same database but leaves SQLAlchemy with
-            # the synchronous pysqlite driver, which the async engine refuses.
-            # aiosqlite is the async spelling of the same backend, so accept the
-            # conventional form and switch the driver here.
-            url = url.set(drivername="sqlite+aiosqlite")
         kwargs["connect_args"] = {"check_same_thread": False}
         if ":memory:" in settings.database_url or not url.database:
             # A shared in-memory database only survives while one connection is
@@ -77,6 +86,9 @@ def create_engine(settings: Settings) -> AsyncEngine:
         else:
             file_sqlite = True
     else:
+        # Pool settings describe PostgreSQL: the production target is the only
+        # backend with a real connection pool. File SQLite keeps its own
+        # defaults (and WAL handles concurrent readers instead).
         kwargs["pool_size"] = settings.db_pool_size
         kwargs["max_overflow"] = settings.db_max_overflow
         kwargs["pool_pre_ping"] = True

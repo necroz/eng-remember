@@ -37,6 +37,12 @@ def test_apostrophes_do_not_decide_an_answer() -> None:
     assert normalize("don’t") == normalize("don't") == "dont"
 
 
+def test_apostrophe_folding_can_collide_real_words() -> None:
+    """A documented cost of deleting apostrophes rather than spacing them."""
+    assert normalize("we’re") == normalize("were")
+    assert normalize("it’s") == normalize("its")
+
+
 def test_normalize_does_not_convert_chinese_variants() -> None:
     assert normalize("书", "cmn") != normalize("書", "cmn")
 

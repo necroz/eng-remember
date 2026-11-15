@@ -159,11 +159,17 @@ async def test_json_schema_is_requested_with_the_strict_contract() -> None:
 
     response_format = fake.endpoint.calls[0]["response_format"]
     assert response_format["type"] == "json_schema"
-    assert response_format["json_schema"] == {
-        "name": "ParseResponse",
-        "schema": ParseResponse.model_json_schema(),
-        "strict": True,
-    }
+    assert response_format["json_schema"]["name"] == "ParseResponse"
+    assert response_format["json_schema"]["strict"] is True
+    schema = response_format["json_schema"]["schema"]
+    # Stripe-style strict contract: every property is required, extra keys are
+    # forbidden, and nested objects (including $defs) are tightened as well.
+    assert schema["additionalProperties"] is False
+    assert set(schema["required"]) == set(schema["properties"])
+    for definition in schema.get("$defs", {}).values():
+        if "properties" in definition:
+            assert definition["additionalProperties"] is False
+            assert set(definition["required"]) == set(definition["properties"])
     assert fake.endpoint.calls[0]["model"] == "test-model"
     assert fake.endpoint.calls[0]["temperature"] == 0.0
 
@@ -192,6 +198,64 @@ async def test_json_schema_rejection_degrades_once_to_json_object(message: str) 
     assert fake.endpoint.calls[0]["response_format"]["type"] == "json_schema"
     assert fake.endpoint.calls[1]["response_format"] == {"type": "json_object"}
     assert fake.endpoint.calls[2]["response_format"] == {"type": "json_object"}
+
+
+async def test_a_rejected_schema_then_a_rejected_json_object_fall_back_to_plain() -> None:
+    """The two-step degradation lands on a plain call within one request."""
+    client, fake = make_client(
+        [
+            api_error("bad_request", "Invalid schema for response_format 'ParseResponse'", 400),
+            api_error("bad_request", "response_format is not supported", 400),
+            completion('{"intent": "unknown"}'),
+        ]
+    )
+
+    await complete(client)
+
+    assert fake.endpoint.calls[0]["response_format"]["type"] == "json_schema"
+    assert fake.endpoint.calls[1]["response_format"] == {"type": "json_object"}
+    assert "response_format" not in fake.endpoint.calls[2]
+
+
+async def test_an_unrelated_rejection_text_does_not_teach_the_transport() -> None:
+    """The raw error string is not mixed into the lesson.
+
+    Some providers echo the whole request in ``str(exc)``; a request that
+    merely mentions the parameter must not disable it for the process.
+    """
+    error = openai.BadRequestError(
+        "invalid value: response_format was mentioned in a different field",
+        response=http_response(400),
+        body={"error": {"message": "invalid value", "param": "max_tokens"}},
+    )
+    client, fake = make_client([error])
+
+    with pytest.raises(LlmResponseError):
+        await complete(client)
+
+    assert len(fake.endpoint.calls) == 1
+
+
+async def test_a_slow_audit_does_not_throw_away_a_paid_answer() -> None:
+    """The success row is written after the deadline block.
+
+    A sink slower than the remaining budget must not turn a delivered answer
+    into a deadline error: the model call itself was inside the budget.
+    """
+
+    class SlowSink(Sink):
+        async def __call__(self, record: LlmCallRecord) -> None:
+            await asyncio.sleep(0.3)
+            await super().__call__(record)
+
+    sink = SlowSink()
+    client, _ = make_client([completion('{"intent": "unknown"}')], sink=sink, timeout_seconds=0.1)
+
+    result = await complete(client)
+
+    assert result.intent.value == "unknown"
+    assert len(sink.records) == 1
+    assert sink.records[0].success is True
 
 
 async def test_reasoning_is_not_sent_by_default() -> None:

@@ -7,6 +7,7 @@ handler scenarios. The point here is exactly the guard-on behaviour.
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Awaitable, Callable
 from types import SimpleNamespace
 from typing import Any
@@ -16,10 +17,12 @@ import pytest
 from aiogram import BaseMiddleware, Bot, Dispatcher, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import Message, TelegramObject
 from pydantic import SecretStr
 
+from eng_remember.bot import states as states_module
 from eng_remember.bot import texts
 from eng_remember.bot.middlewares.dedup import DuplicateMessageMiddleware
 from eng_remember.bot.middlewares.rate_limit import RateLimitMiddleware
@@ -189,6 +192,24 @@ def test_text_input_states_are_the_text_consuming_flows() -> None:
     assert not is_text_input_state(ImportFile.confirming.state)
     assert not is_text_input_state(Practice.awaiting_answer.state)
     assert not is_text_input_state(None)
+
+
+def test_every_discovered_state_is_classified() -> None:
+    """A new FSM state must be classified, not silently default to "button flow"."""
+    button_only = {
+        AddWords.confirming.state,
+        ImportFile.confirming.state,
+        Practice.awaiting_answer.state,
+    }
+    discovered = {
+        member.state
+        for _, cls in inspect.getmembers(states_module, inspect.isclass)
+        if issubclass(cls, StatesGroup) and cls is not StatesGroup
+        for member in vars(cls).values()
+        if isinstance(member, State)
+    }
+
+    assert discovered == TEXT_INPUT_STATES | button_only
 
 
 @pytest.mark.parametrize("button", texts.MAIN_MENU_BUTTONS)
