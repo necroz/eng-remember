@@ -153,9 +153,10 @@ async def edit_message_or_send(
     The front is remembered by id, not by an open callback, and it can be too
     old to edit by the time the answer is graded — then the result is simply
     sent as a new message instead of being lost. ``reply_markup`` is passed on
-    so the result can carry its own button; an edit without one drops whatever
-    the previous keyboard held, which is the point when the front's «Не знаю»
-    must not survive the reveal.
+    when the result owns buttons. Leaving it ``None`` does not take the old
+    keyboard away: aiogram omits falsy fields from the request, so Telegram
+    keeps whatever the message already carried. A caller that means «no
+    buttons» passes ``keyboards.empty_keyboard()``.
     """
     text = fit_text(text)
     if message_id is not None:
@@ -184,6 +185,11 @@ async def edit_or_send(
     Two situations are handled rather than raised: the message may be too old to
     edit (or belong to another account), and the new text may be identical to the
     current one — both are normal when a user taps the same button twice.
+
+    ``reply_markup=None`` leaves the existing keyboard alone: aiogram drops
+    falsy fields from the request, so Telegram keeps what the message already
+    carried. An action that must not stay one tap away passes
+    ``keyboards.empty_keyboard()`` explicitly.
     """
     text = fit_text(text)
     message = query.message

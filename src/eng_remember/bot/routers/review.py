@@ -453,7 +453,7 @@ def build_router() -> Router:
         await query.answer()
         await bot.send_message(
             callback_chat_id(query),
-            texts.card_edit_translation(card),
+            rendering.fit_text(texts.card_edit_translation(card)),
             reply_markup=keyboards.card_edit_step(card.id),
         )
 
@@ -599,7 +599,7 @@ def build_router() -> Router:
         await state.set_state(CardEdit.example)
         await bot.send_message(
             chat_id,
-            texts.card_edit_example(card),
+            rendering.fit_text(texts.card_edit_example(card)),
             reply_markup=keyboards.card_edit_step(card.id),
         )
 
@@ -614,7 +614,7 @@ def build_router() -> Router:
         await state.set_state(CardEdit.notes)
         await bot.send_message(
             chat_id,
-            texts.card_edit_notes(card),
+            rendering.fit_text(texts.card_edit_notes(card)),
             reply_markup=keyboards.card_edit_step(card.id),
         )
 
@@ -638,7 +638,7 @@ def build_router() -> Router:
             return
         await services.commit()
         await _leave_editing(state)
-        await bot.send_message(chat_id, texts.card_edit_saved(card))
+        await bot.send_message(chat_id, rendering.fit_text(texts.card_edit_saved(card)))
 
     async def _leave_editing(state: FSMContext) -> None:
         """Drop the edit keys and return to whatever flow owned the chat."""
@@ -674,7 +674,7 @@ def build_router() -> Router:
         )
         sent = await bot.send_message(
             chat_id,
-            texts.card_front(card),
+            rendering.fit_text(texts.card_front(card)),
             reply_markup=keyboards.review_prompt(card.id, hint=example is not None),
         )
         await state.update_data({FRONT_MESSAGE_KEY: sent.message_id})

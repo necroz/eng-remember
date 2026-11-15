@@ -15,6 +15,12 @@ from eng_remember.models.user import User
 from eng_remember.repositories.cards import CardDraft, CardRepository
 from eng_remember.repositories.decks import DeckRepository
 from eng_remember.repositories.reviews import ReviewRepository
+from eng_remember.services.llm.schema import (
+    EXAMPLE_LIMIT,
+    NOTES_LIMIT,
+    TRANSLATION_LIMIT,
+    flatten_line,
+)
 from eng_remember.utils.time import ensure_utc, local_day_start, next_local_day_start, utcnow
 
 __all__ = ["CardService", "ImportOutcome", "UserStats"]
@@ -235,6 +241,12 @@ class CardService:
         the queue, the duplicate index and the reverse twin are keyed on them —
         so the draft is rebuilt from the stored card and the edits on top.
 
+        The three editable fields are Text columns with no database ceiling, so
+        they pass through the same ``flatten_line`` and the same limits the model
+        answers obey: a manual paste must not store five thousand characters
+        that the next card and review would then try to send. Line breaks are
+        the learner's formatting in notes, not in the one-line fields.
+
         Returns ``None`` when the card does not exist or belongs to someone
         else; the caller answers with the stale-card page.
         """
@@ -244,12 +256,20 @@ class CardService:
 
         draft = CardDraft(
             term=card.term,
-            translation=card.translation if translation is None else translation,
+            translation=(
+                card.translation
+                if translation is None
+                else flatten_line(translation, limit=TRANSLATION_LIMIT)
+            ),
             transcription=card.transcription,
             part_of_speech=card.part_of_speech,
-            example=card.example if example is None else example,
+            example=card.example if example is None else flatten_line(example, limit=EXAMPLE_LIMIT),
             examples=tuple(card.examples or ()),
-            notes=card.notes if notes is None else notes,
+            notes=(
+                card.notes
+                if notes is None
+                else flatten_line(notes, limit=NOTES_LIMIT, keep_newlines=True)
+            ),
             tags=tuple(card.tags or ()),
             cefr=card.cefr,
             frequency=card.frequency,
