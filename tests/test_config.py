@@ -101,7 +101,7 @@ def test_log_level_normalized_and_validated() -> None:
     assert Settings(_env_file=None, log_level="debug").log_level == "DEBUG"
     assert Settings(_env_file=None, log_level=" Warning ").log_level == "WARNING"
 
-    with pytest.raises(ValidationError, match="log_level"):
+    with pytest.raises(ValidationError, match="WARNING"):
         Settings(_env_file=None, log_level="verbose")
 
 

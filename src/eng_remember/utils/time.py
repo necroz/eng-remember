@@ -149,5 +149,7 @@ def humanize_interval(delta_seconds: float) -> str:
         return f"{int(days)} дн"
     months = days / 30.44
     if months < 12:
-        return f"{int(months)} мес"
-    return f"{int(days / 365.25)} г"
+        # Floor, but never "0 мес": the 30-day boundary lands just under one
+        # 30.44-day month, and "0 months" reads as a broken interval.
+        return f"{max(1, int(months))} мес"
+    return f"{max(1, int(days / 365.25))} г"

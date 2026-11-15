@@ -122,6 +122,35 @@ def test_sniff_prefers_semicolon_when_counts_tie() -> None:
     assert parsed.rows[0].translation == "one,two"
 
 
+def test_sniff_falls_back_to_tab_last_when_counts_tie() -> None:
+    """Documented tie-break order: semicolon, comma, tab.
+
+    Both comma and tab split these rows into the same shape, so the earlier
+    delimiter in the order wins and the tab stays inside the translation.
+    """
+    parsed = parse_cards_csv("run,b\tc\nswim,п\tл\n")
+
+    assert [row.term for row in parsed.rows] == ["run", "swim"]
+    assert parsed.rows[0].translation == "b\tc"
+
+
+def test_ragged_rows_are_padded_or_truncated_per_record() -> None:
+    """A file with differing column counts still parses every row.
+
+    Short rows are padded with empty fields and extra cells are ignored; the
+    semicolon delimiter wins because the majority of records agree on it.
+    """
+    parsed = parse_cards_csv(
+        "run;бежать;бег\nswim;плавать\nhouse;дом;дом;сущ;пример;заметка;tag;колода;eng;лишнее\n"
+    )
+
+    assert [row.term for row in parsed.rows] == ["run", "swim", "house"]
+    assert parsed.rows[1].translation == "плавать"
+    assert parsed.rows[1].transcription is None
+    assert parsed.rows[2].part_of_speech == "сущ"
+    assert parsed.rows[2].language == "eng"
+
+
 def test_multiline_notes_roundtrip() -> None:
     """Notes holding newlines and commas survive export and the next import."""
     notes = "раз, два, три\nчетыре, пять, шесть\nсемь, восемь, девять\nдесять, одиннадцать"

@@ -404,6 +404,22 @@ class TestReviewService:
         assert card is not None
         assert counted == []
 
+    async def test_a_queue_without_totals_reports_zero_not_nothing_due(
+        self, services: Services, session: AsyncSession, user: User, deck_id: int
+    ) -> None:
+        """``count_totals=False`` leaves zero totals beside a non-empty queue.
+
+        The fields mean "not counted", not "nothing waits" — a caller that reads
+        them must not show an empty-collection screen for a queue with cards.
+        """
+        await self.queue_cards(services, session, user, deck_id, new=1)
+
+        queue = await services.review_service.build_queue(user, count_totals=False)
+
+        assert len(queue.cards) == 1
+        assert queue.due_total == 0
+        assert queue.new_total == 0
+
     async def test_an_answer_from_a_stale_read_is_refused(
         self,
         services: Services,
