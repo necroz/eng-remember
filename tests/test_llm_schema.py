@@ -237,6 +237,20 @@ def test_json_is_recovered_from_a_balanced_object_after_prose_braces() -> None:
     assert extract_json_object(raw) == '{"a": {"b": 2}, "c": "}"}'
 
 
+def test_json_is_recovered_across_escaped_quotes() -> None:
+    """An escaped quote inside a string must not close the enclosing quote."""
+    raw = r'Here: {"a": "he said \"hi\"", "b": 1} end'
+
+    assert extract_json_object(raw) == r'{"a": "he said \"hi\"", "b": 1}'
+
+
+def test_json_is_recovered_after_an_unclosed_prose_brace() -> None:
+    """An unbalanced prose brace before the object does not hide it."""
+    raw = 'prose { not closed {"a": 1}'
+
+    assert extract_json_object(raw) == '{"a": 1}'
+
+
 @pytest.mark.parametrize("raw", ["", "просто текст", "{не json}"])
 def test_unusable_answers_raise(raw: str) -> None:
     with pytest.raises(json.JSONDecodeError):

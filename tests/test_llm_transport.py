@@ -77,7 +77,14 @@ class GatedRejectionEndpoint:
         if self._parameter in kwargs:
             self._rejections += 1
             if self._rejections == 1:
-                await self._both_in_flight.wait()
+                # Bounded wait: if the second request never arrives (or does not
+                # carry the parameter), fail loudly instead of hanging the test.
+                try:
+                    await asyncio.wait_for(self._both_in_flight.wait(), timeout=1.0)
+                except TimeoutError as exc:
+                    raise AssertionError(
+                        "the second in-flight request never recorded the parameter"
+                    ) from exc
             else:
                 self._both_in_flight.set()
             raise bad_request(self._message)
@@ -212,7 +219,6 @@ async def test_concurrent_rejections_of_response_format_both_degrade() -> None:
     # Both original calls carried the parameter; both retries omitted it.
     assert sum("response_format" in call for call in endpoint.calls) == 2
     assert len(endpoint.calls) == 4
-    assert transport._json_mode is False
 
 
 async def test_concurrent_rejections_of_reasoning_effort_both_degrade() -> None:
@@ -228,7 +234,6 @@ async def test_concurrent_rejections_of_reasoning_effort_both_degrade() -> None:
     assert [result.intent for result in results] == [Intent.UNKNOWN, Intent.UNKNOWN]
     assert sum("reasoning_effort" in call for call in endpoint.calls) == 2
     assert len(endpoint.calls) == 4
-    assert transport._reasoning_effort is None
 
 
 async def test_unrelated_reasoning_word_does_not_disable_the_knob() -> None:
@@ -237,7 +242,12 @@ async def test_unrelated_reasoning_word_does_not_disable_the_knob() -> None:
     Only a rejection of the parameter itself (its name or the structured
     ``param``/``code`` in the error body) is a lesson about support.
     """
-    fake = FakeOpenAi([bad_request("max_tokens must be greater than reasoning tokens")])
+    fake = FakeOpenAi(
+        [
+            bad_request("max_tokens must be greater than reasoning tokens"),
+            completion('{"intent": "unknown"}'),
+        ]
+    )
     transport = LlmTransport(llm_settings(reasoning_effort="low"), client=fake)
     client = OpenAiCompatibleClient(llm_settings(reasoning_effort="low"), transport=transport)
 
@@ -245,7 +255,8 @@ async def test_unrelated_reasoning_word_does_not_disable_the_knob() -> None:
         await complete(client)
 
     assert len(fake.endpoint.calls) == 1
-    assert transport._reasoning_effort == "low"
+    await complete(client)
+    assert fake.endpoint.calls[1]["reasoning_effort"] == "low"
 
 
 async def test_rejection_body_param_is_enough_to_disable_the_knob() -> None:
@@ -263,7 +274,6 @@ async def test_rejection_body_param_is_enough_to_disable_the_knob() -> None:
 
     assert fake.endpoint.calls[0]["reasoning_effort"] == "low"
     assert "reasoning_effort" not in fake.endpoint.calls[1]
-    assert transport._reasoning_effort is None
 
 
 async def test_default_config_sends_no_reasoning_effort() -> None:

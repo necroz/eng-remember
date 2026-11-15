@@ -20,7 +20,7 @@ from eng_remember.errors import LlmGlobalBudgetExceededError, LlmQuotaExceededEr
 from eng_remember.models.user import User
 from eng_remember.repositories.llm_calls import LlmCallRecord, LlmCallRepository
 from eng_remember.repositories.users import TelegramProfile, UserRepository
-from eng_remember.services.llm.budget import GlobalBudgetMonitor
+from eng_remember.services.llm.budget import BudgetAlert, GlobalBudgetMonitor
 from eng_remember.services.llm.factory import build_llm_client
 from eng_remember.services.llm.quota import GlobalUsageCache, QuotaLimitedClient
 from eng_remember.services.llm.schema import ParseResponse
@@ -286,6 +286,38 @@ async def test_global_budget_enforced_without_user_id(
         await make_anonymous_call(client)
 
     assert inner.calls == 0
+
+
+async def test_anonymous_overrun_notifies_the_operator(
+    session: AsyncSession,
+    user: User,
+) -> None:
+    """The alert path also runs when the caller passes no learner."""
+    await record_usage(session, user.id, calls=1, tokens_per_call=1000)
+    alerts: list[BudgetAlert] = []
+
+    async def notifier(alert: BudgetAlert) -> None:
+        alerts.append(alert)
+
+    budget = GlobalBudgetMonitor()
+    budget.set_notifier(notifier)
+    client = QuotaLimitedClient(
+        RecordingModel(),
+        calls=LlmCallRepository(session),
+        settings=LlmSettings(
+            max_calls_per_day=60,
+            max_tokens_per_day=0,
+            max_tokens_per_day_global=1000,
+        ),
+        budget=budget,
+    )
+
+    with pytest.raises(LlmGlobalBudgetExceededError):
+        await make_anonymous_call(client)
+
+    assert [(alert.level, alert.used, alert.limit) for alert in alerts] == [
+        ("critical", 1000, 1000)
+    ]
 
 
 async def test_global_usage_is_read_once_per_ttl(
