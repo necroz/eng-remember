@@ -257,6 +257,11 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_json: bool = True
     log_llm_payloads: bool = False
+    llm_call_retention_days: int = Field(
+        default=90,
+        ge=0,
+        description="Prune LLM audit rows older than this many days; 0 keeps them forever",
+    )
 
     bot: BotSettings = BotSettings()
     llm: LlmSettings = LlmSettings()

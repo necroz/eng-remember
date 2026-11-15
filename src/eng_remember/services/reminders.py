@@ -12,6 +12,7 @@ from the in-process loop.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from typing import Protocol
@@ -79,9 +80,14 @@ class Notifier(Protocol):
     caller's options explicit: an unreachable account is retired, a transport
     failure is retried later, and neither can be mistaken for the other. Rendering
     is the notifier's job, so this service never touches user-facing text.
+
+    ``send_alert`` is the operator channel: the loop uses it for a crashed tick,
+    and a notifier without an admin chat configured quietly ignores it.
     """
 
     async def send_reminder(self, plan: ReminderPlan) -> None: ...
+
+    async def send_alert(self, text: str) -> None: ...
 
 
 @dataclass(slots=True)
@@ -108,18 +114,28 @@ class ReminderService:
         streaks: StreakRepository,
         notifier: Notifier,
         settings: Settings,
+        commit: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self._users = users
         self._cards = cards
         self._reviews = reviews
         self._streaks = streaks
         self._notifier = notifier
+        self._commit = commit
         self._reminders: ReminderSettings = settings.reminders
         self._streak_settings = settings.streak
         self._new_cards_per_day = settings.bot.new_cards_per_day
 
     async def run(self, *, now: datetime | None = None) -> ReminderRun:
-        """One pass over everyone who might be owed a reminder."""
+        """One pass over everyone who might be owed a reminder.
+
+        Every delivery is committed as soon as its watermark is written — per
+        learner, not once per batch, let alone once per tick. A crash or a stop
+        request halfway through a batch therefore keeps every earlier learner
+        marked: the next tick skips them instead of messaging them again, and
+        only the message that was actually in flight can repeat. The commits
+        also keep one transaction from staying open for the whole candidate list.
+        """
         run = ReminderRun()
         if not self._reminders.enabled:
             return run
@@ -147,6 +163,7 @@ class ReminderService:
 
             for plan in await self._plan(batch, now=moment):
                 await self._deliver(plan, run, now=moment)
+                await self._commit_delivery()
 
         if run.sent_count or run.failed or run.unreachable:
             log.info(
@@ -160,6 +177,16 @@ class ReminderService:
             # Every ten minutes "nothing to do" at INFO would drown the log.
             log.debug("reminder_tick_idle", candidates=run.candidates)
         return run
+
+    async def _commit_delivery(self) -> None:
+        """Make this learner's watermark durable before the next send.
+
+        Per learner rather than per batch: shutdown cancels the loop task
+        immediately, so a batch-sized transaction would drop up to
+        ``batch_size - 1`` sends that already happened.
+        """
+        if self._commit is not None:
+            await self._commit()
 
     async def _plan(self, batch: list[User], *, now: datetime) -> list[ReminderPlan]:
         """Decide the whole batch, with the counting queries batched as well."""
@@ -375,4 +402,5 @@ def build_reminder_service(
         streaks=StreakRepository(session),
         notifier=notifier,
         settings=settings,
+        commit=session.commit,
     )

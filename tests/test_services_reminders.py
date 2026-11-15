@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, time, timedelta
+import asyncio
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 
 import pytest
 from sqlalchemy import select, update
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from eng_remember.config import Settings
 from eng_remember.domain.enums import CardState, ReviewRating
@@ -50,6 +51,9 @@ class RecordingNotifier:
         if plan.user.id in self.broken:
             raise ConnectionError("network is down")
         self.sent.append(plan)
+
+    async def send_alert(self, text: str) -> None:
+        """The service does not alert; the loop does. Nothing to record here."""
 
 
 @pytest.fixture
@@ -612,6 +616,128 @@ class TestBatching:
         assert run.candidates == 5
         assert run.sent_count == 5
         assert len({plan.user.id for plan in notifier.sent}) == 5
+
+    @pytest.mark.parametrize(
+        ("failure", "expected_sent", "error"),
+        [
+            ("cancelled", 2, asyncio.CancelledError),
+            ("crash", 3, RuntimeError),
+        ],
+    )
+    async def test_a_stop_mid_batch_keeps_only_the_delivered_learners(
+        self,
+        services: Services,
+        session: AsyncSession,
+        session_factory: async_sessionmaker[AsyncSession],
+        settings: Settings,
+        notifier: RecordingNotifier,
+        monkeypatch: pytest.MonkeyPatch,
+        failure: str,
+        expected_sent: int,
+        error: type[BaseException],
+    ) -> None:
+        """Watermarks are durable per learner, not per batch.
+
+        ``task.cancel()`` during the third send, or a crash while recording it,
+        must leave the first two learners marked: they were really messaged, and
+        rolling them back would repeat up to ``batch_size - 1`` messages after a
+        restart. Only the delivery that was in flight may repeat — at most one.
+        """
+        settings.reminders.batch_size = 5
+        learners: list[User] = []
+        for index in range(4):
+            learner, _ = await services.users.get_or_create(
+                TelegramProfile(telegram_id=200400 + index)
+            )
+            await give_work(services, learner)
+            learners.append(learner)
+        await session.commit()
+        service = build_reminder_service(session, settings, notifier)
+
+        if failure == "cancelled":
+            original_send = notifier.send_reminder
+            sends = 0
+
+            async def cancel_on_third(plan: ReminderPlan) -> None:
+                nonlocal sends
+                sends += 1
+                if sends == 3:
+                    raise asyncio.CancelledError
+                await original_send(plan)
+
+            monkeypatch.setattr(notifier, "send_reminder", cancel_on_third)
+        else:
+            original_record = UserRepository.record_reminder
+            records = 0
+
+            async def crash_on_third(
+                self_: UserRepository,
+                user: User,
+                *,
+                kind: ReminderKind,
+                on: date,
+            ) -> None:
+                nonlocal records
+                records += 1
+                if records == 3:
+                    raise RuntimeError("database went away")
+                await original_record(self_, user, kind=kind, on=on)
+
+            monkeypatch.setattr(UserRepository, "record_reminder", crash_on_third)
+
+        with pytest.raises(error):
+            await service.run(now=moment(9, 0))
+
+        assert len(notifier.sent) == expected_sent
+        async with session_factory() as fresh:
+            rows = (await fresh.scalars(select(User).order_by(User.id))).all()
+        assert [row.id for row in rows] == [learner.id for learner in learners]
+        assert [row.last_reminder_on for row in rows] == [
+            TEST_DAY,
+            TEST_DAY,
+            None,
+            None,
+        ]
+
+    async def test_a_delivered_learner_is_committed_before_the_next_page(
+        self,
+        services: Services,
+        session: AsyncSession,
+        session_factory: async_sessionmaker[AsyncSession],
+        settings: Settings,
+        user: User,
+        notifier: RecordingNotifier,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A crash while fetching page two keeps page one's watermarks.
+
+        Those learners were really messaged; rolling them back would send the
+        same reminder again on the next tick.
+        """
+        settings.reminders.batch_size = 1
+        service = build_reminder_service(session, settings, notifier)
+        await give_work(services, user)
+        other, _ = await services.users.get_or_create(TelegramProfile(telegram_id=200300))
+        await give_work(services, other)
+
+        original = UserRepository.list_reminder_candidates
+        calls = 0
+
+        async def flaky(self: UserRepository, **kwargs: Any) -> list[User]:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise RuntimeError("database went away")
+            return await original(self, **kwargs)
+
+        monkeypatch.setattr(UserRepository, "list_reminder_candidates", flaky)
+
+        with pytest.raises(RuntimeError):
+            await service.run(now=moment(9, 0))
+
+        async with session_factory() as fresh:
+            rows = (await fresh.scalars(select(User).order_by(User.id))).all()
+            assert [row.last_reminder_on for row in rows] == [TEST_DAY, None]
 
     async def test_a_second_tick_re_examines_but_sends_nothing(
         self, reminders: ReminderService, services: Services, session: AsyncSession, user: User

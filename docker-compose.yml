@@ -82,6 +82,13 @@ services:
       migrate:
         condition: service_completed_successfully
     restart: unless-stopped
+    # Stop sends SIGTERM and Docker waits ten seconds by default, which is less
+    # than one model call can take (LLM timeout is 120 s). A bounded grace period
+    # gives the in-flight delivery — and the shutdown path that closes the
+    # session, HTTP client and pool — time to finish before SIGKILL. Watermarks
+    # commit per learner, so even a SIGKILL costs at most one repeated reminder,
+    # not the rest of the batch.
+    stop_grace_period: 130s
     profiles: ["full"]
 
   # Nightly pg_dump into its own volume. Off by default: a development machine
