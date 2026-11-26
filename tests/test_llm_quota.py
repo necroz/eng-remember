@@ -13,17 +13,24 @@ from typing import Any
 
 import pytest
 from pydantic import SecretStr
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from structlog.testing import capture_logs
 
 from eng_remember.config import LlmSettings, Settings
 from eng_remember.errors import LlmGlobalBudgetExceededError, LlmQuotaExceededError
+from eng_remember.models.llm_call import LlmCall
 from eng_remember.models.user import User
 from eng_remember.repositories.llm_calls import LlmCallRecord, LlmCallRepository
 from eng_remember.repositories.users import TelegramProfile, UserRepository
 from eng_remember.services.llm.budget import BudgetAlert, GlobalBudgetMonitor
+from eng_remember.services.llm.client import LlmTransport
 from eng_remember.services.llm.factory import build_llm_client
+from eng_remember.services.llm.parser import MessageParser
 from eng_remember.services.llm.quota import GlobalUsageCache, QuotaLimitedClient
 from eng_remember.services.llm.schema import ParseResponse
+from tests.factories import completion
+from tests.test_llm_client import FakeOpenAi, api_error, llm_settings
 
 
 class RecordingModel:
@@ -88,6 +95,65 @@ async def make_call(
         schema=ParseResponse,
         user_id=user_id,
     )
+
+
+@pytest.mark.parametrize("provider_error", [False, True])
+async def test_audit_and_application_errors_exclude_response_and_provider_payloads(
+    session: AsyncSession, settings: Settings, user: User, provider_error: bool
+) -> None:
+    sample = "synthetic-diagnostic-value"
+    response = (
+        api_error("auth", sample, 401)
+        if provider_error
+        else completion('{"cards": "' + sample + '"}')
+    )
+    llm = llm_settings(retries=0)
+    settings = settings.model_copy(update={"llm": llm, "log_llm_payloads": False})
+    transport = LlmTransport(llm, client=FakeOpenAi([response]))
+    parser = MessageParser(llm=build_llm_client(session, settings, transport=transport))
+
+    with capture_logs() as logs:
+        result = await parser.parse("run — бежать", user_id=user.id)
+
+    assert result.engine == "rules"
+    assert result.response.cards[0].term == "run"
+    record = await session.scalar(select(LlmCall))
+    assert record is not None and record.error is not None
+    assert record.request_text is None and record.response_text is None
+    assert sample not in record.error
+    assert record.provider_model == llm.model and record.attempt == 1
+    assert ("HTTP 401" if provider_error else "cards: list_type") in record.error
+    assert any(entry["event"] == "llm_parse_failed" for entry in logs)
+    assert sample not in str(logs)
+
+
+@pytest.mark.parametrize("primary_fails", [False, True])
+async def test_parser_and_audit_name_the_same_successful_model(
+    session: AsyncSession, settings: Settings, user: User, primary_fails: bool
+) -> None:
+    llm = llm_settings(
+        retries=0,
+        model="primary",
+        fallback_model="standby",
+        fallback_api_key=SecretStr("standby-test-key"),
+    )
+    settings = settings.model_copy(update={"llm": llm})
+    response = completion('{"intent":"add_cards","cards":[{"term":"run","translation":"бежать"}]}')
+    primary = FakeOpenAi([api_error("server", "unavailable", 503) if primary_fails else response])
+    standby = FakeOpenAi([response] if primary_fails else [])
+    client = build_llm_client(
+        session,
+        settings,
+        transport=LlmTransport(llm, client=primary),
+        fallback_transport=LlmTransport(llm.fallback_copy(), client=standby),
+    )
+
+    result = await MessageParser(llm=client).parse("run — бежать", user_id=user.id)
+
+    record = await session.scalar(select(LlmCall).where(LlmCall.success.is_(True)))
+    assert record is not None
+    assert result.engine == record.provider_model == ("standby" if primary_fails else "primary")
+    assert result.response.cards[0].term == "run"
 
 
 async def test_calls_below_the_limit_reach_the_model(

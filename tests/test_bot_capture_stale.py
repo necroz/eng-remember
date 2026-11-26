@@ -46,7 +46,7 @@ async def test_stale_cancel_does_not_kill_review(
     assert "ubiquitous" in recording.last_text()
     recording.clear()
 
-    await tap(dispatcher, bot, ImportCB(action="cancel").pack(), update_id=21)
+    await tap(dispatcher, bot, ImportCB(action="cancel", token="old").pack(), update_id=21)
 
     assert last_callback_answer(recording).show_alert
     # The review is alive: an answer typed now is graded against the shown card.
@@ -63,7 +63,7 @@ async def test_stale_confirm_ignored(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     """A «Сохранить» with no pending batch saves nothing and says why."""
-    await tap(dispatcher, bot, ImportCB(action="confirm").pack(), update_id=30)
+    await tap(dispatcher, bot, ImportCB(action="confirm", token="old").pack(), update_id=30)
 
     assert last_callback_answer(recording).show_alert
     async with session_factory() as check:
@@ -108,13 +108,50 @@ async def test_text_during_file_import_does_not_discard_it(
     patch_file(monkeypatch, CSV_TEXT.encode("utf-8"))
     await send_file(dispatcher, bot)
     assert "импорта" in recording.last_text()
+    confirm = next(data for data in recording.last_button_data() if data.startswith("fi:confirm:"))
     recording.clear()
 
     await send(dispatcher, bot, "hello — привет", update_id=6)
 
     assert "подтвердите или отмените импорт" in recording.last_text().lower()
     # The import still owns the flow: its own button saves the file's words.
-    await tap(dispatcher, bot, "fi:confirm", update_id=7)
+    await tap(dispatcher, bot, confirm, update_id=7)
     async with session_factory() as check:
         terms = set((await check.scalars(select(Card.term))).all())
     assert {"run", "swim"} <= terms
+
+
+@pytest.mark.parametrize("from_file", [False, True])
+async def test_replaced_preview_buttons_cannot_save_or_cancel_the_new_batch(
+    dispatcher: Dispatcher,
+    bot: Bot,
+    recording: RecordingSession,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+    from_file: bool,
+) -> None:
+    async def preview(term: str, translation: str, update_id: int) -> list[str]:
+        if from_file:
+            patch_file(monkeypatch, f"{term};{translation}\n".encode())
+            await send_file(dispatcher, bot, update_id=update_id)
+        else:
+            await send(dispatcher, bot, f"{term} — {translation}", update_id=update_id)
+        return recording.last_button_data()
+
+    old = await preview("apple", "яблоко", 101)
+    current = await preview("pear", "груша", 102)
+    assert old and current and set(old).isdisjoint(current)
+
+    for update_id, button in enumerate(old, start=103):
+        await tap(dispatcher, bot, button, update_id=update_id)
+        assert last_callback_answer(recording).show_alert
+    async with session_factory() as check:
+        assert await check.scalar(select(func.count(Card.id))) == 0
+
+    confirm = next(button for button in current if ":confirm:" in button)
+    await tap(dispatcher, bot, confirm, update_id=108)
+    await tap(dispatcher, bot, confirm, update_id=109)
+    assert last_callback_answer(recording).show_alert
+    async with session_factory() as check:
+        terms = (await check.scalars(select(Card.term))).all()
+    assert list(terms) == ["pear", "pear"]

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import csv
 import io
+from secrets import token_hex
 
 import structlog
 from aiogram import Bot, F, Router
@@ -24,6 +25,7 @@ from eng_remember.bot.states import (
     FILE_ROWS_KEY,
     FILE_SKIPPED_KEY,
     FILE_UNTRANSLATED_KEY,
+    IMPORT_PREVIEW_TOKEN_KEY,
     ImportFile,
 )
 from eng_remember.domain.enums import CardDirection
@@ -43,7 +45,7 @@ from eng_remember.services.csv_io import (
     MAX_FILE_BYTES,
     CsvParseResult,
     CsvRow,
-    cards_to_csv,
+    cards_to_csv_parts,
     parse_cards_csv,
 )
 from eng_remember.services.llm.schema import ParsedCard
@@ -74,16 +76,17 @@ def build_router() -> Router:
         total = len(cards)
         if total > EXPORT_LIMIT:
             cards = cards[:EXPORT_LIMIT]
-            # A word is a pair of cards, so half the card count is how many
-            # words the collection holds; the caption must not hide the tail.
-            total = (await services.cards.count_for_user(user.id)) // 2
+            total = await services.cards.count_for_user(user.id, direction=CardDirection.FORWARD)
         decks = await services.decks.list_for_user(user.id)
         names = {deck.id: deck.name for deck in decks}
-        content = cards_to_csv(cards, deck_names=names).encode("utf-8-sig")
-        await message.answer_document(
-            BufferedInputFile(content, filename=f"eng-remember-{utcnow():%Y-%m-%d}.csv"),
-            caption=texts.file_export_caption(len(cards), total),
-        )
+        parts = cards_to_csv_parts(cards, deck_names=names)
+        basename = f"eng-remember-{utcnow():%Y-%m-%d}"
+        for index, content in enumerate(parts, start=1):
+            suffix = f"-{index}-of-{len(parts)}" if len(parts) > 1 else ""
+            await message.answer_document(
+                BufferedInputFile(content, filename=f"{basename}{suffix}.csv"),
+                caption=texts.file_export_caption(len(cards), total, part=index, parts=len(parts)),
+            )
 
     @router.message(Command("import"))
     async def import_help(message: Message) -> None:
@@ -135,6 +138,7 @@ def build_router() -> Router:
         # flow: a refused or unreadable attachment must leave an active review
         # exactly where it was.
         await state.clear()
+        token = token_hex(8)
         await state.set_state(ImportFile.confirming)
         await state.update_data(
             {
@@ -143,6 +147,7 @@ def build_router() -> Router:
                 FILE_DUPLICATES_KEY: duplicates,
                 FILE_UNTRANSLATED_KEY: untranslated,
                 FILE_FILLED_KEY: filled,
+                IMPORT_PREVIEW_TOKEN_KEY: token,
             }
         )
         await message.answer(
@@ -153,20 +158,23 @@ def build_router() -> Router:
                 skipped=parsed.skipped,
                 filled=filled,
             ),
-            reply_markup=keyboards.file_import_confirm(),
+            reply_markup=keyboards.file_import_confirm(token=token),
         )
 
     @router.callback_query(FileImportCB.filter(F.action == "confirm"))
     async def confirm_import(
         query: CallbackQuery,
+        callback_data: FileImportCB,
         bot: Bot,
         user: User,
         services: Services,
         state: FSMContext,
     ) -> None:
-        if not await rendering.require_state(query, state, ImportFile.confirming):
+        data = await rendering.preview_data(
+            query, state, ImportFile.confirming, callback_data.token
+        )
+        if data is None:
             return
-        data = await state.get_data()
         rows = _rows_from_state(data.get(FILE_ROWS_KEY))
         if not rows:
             await query.answer(texts.stale_button(), show_alert=True)
@@ -186,12 +194,16 @@ def build_router() -> Router:
     @router.callback_query(FileImportCB.filter(F.action == "cancel"))
     async def cancel_import(
         query: CallbackQuery,
+        callback_data: FileImportCB,
         bot: Bot,
         state: FSMContext,
     ) -> None:
         # Only the live confirmation owns cancel: an old button from a spent
         # preview must not clear whatever flow is active now.
-        if not await rendering.require_state(query, state, ImportFile.confirming):
+        if (
+            await rendering.preview_data(query, state, ImportFile.confirming, callback_data.token)
+            is None
+        ):
             return
         await state.clear()
         await query.answer()

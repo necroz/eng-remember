@@ -68,6 +68,7 @@ class ImportCB(CallbackData, prefix="im"):
     """
 
     action: ImportAction
+    token: str
 
 
 class ClarifyCB(CallbackData, prefix="cl"):
@@ -118,6 +119,7 @@ class FileImportCB(CallbackData, prefix="fi"):
     """Confirmation of a CSV import waiting in FSM storage."""
 
     action: FileImportAction
+    token: str
 
 
 class LevelCB(CallbackData, prefix="lv"):

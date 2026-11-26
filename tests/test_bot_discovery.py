@@ -7,7 +7,7 @@ from aiogram import Bot, Dispatcher
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from eng_remember.bot.callbacks import ClarifyCB, ImportCB
+from eng_remember.bot.callbacks import ClarifyCB
 from eng_remember.models.card import Card
 from eng_remember.models.deck import Deck
 from eng_remember.services.llm.schema import ExpansionResponse, ParseResponse
@@ -233,8 +233,8 @@ class TestAWordAndWordsAroundIt:
         assert "criterion" in sent and "score" in sent
         assert "оценка по критериям" in sent
         # One batch, one save button — not two confirmations that can drift apart.
-        assert recording.last_button_data().count("im:confirm") == 1
-        assert "im:more" in recording.last_button_data()
+        assert sum(data.startswith("im:confirm:") for data in recording.last_button_data()) == 1
+        assert any(data.startswith("im:more:") for data in recording.last_button_data())
         # The learner's word seeds the search instead of coming back as a find.
         assert "arrangement" in llm.calls[-1]["user"]
 
@@ -899,6 +899,32 @@ class TestClarification:
 
 
 class TestMoreButtonWithoutSuggestions:
+    async def test_old_more_button_cannot_replace_a_new_preview(
+        self,
+        discovery_dispatcher: Dispatcher,
+        bot: Bot,
+        recording: RecordingSession,
+        llm: ScriptedClient,
+    ) -> None:
+        llm.push_parse(parse_payload(intent="expand", topic="медицина", count=2))
+        llm.push_expand(
+            expansion_payload(
+                [card_payload("fever", "жар"), card_payload("cough", "кашель")],
+                topic="медицина",
+            )
+        )
+        await send(discovery_dispatcher, bot, "ещё слова про медицину", update_id=101)
+        old_more = button_with(recording, "im:more")
+        llm.push_parse(parse_payload(cards=[card_payload("pear", "груша")]))
+        await send(discovery_dispatcher, bot, "pear — груша", update_id=102)
+        assert "pear" in recording.last_text()
+        calls = len(llm.calls)
+
+        await tap(discovery_dispatcher, bot, old_more, update_id=103)
+
+        assert len(llm.calls) == calls
+        assert "pear" in recording.last_text()
+
     async def test_cancelling_a_suggestion_batch_saves_nothing(
         self,
         discovery_dispatcher: Dispatcher,
@@ -916,7 +942,7 @@ class TestMoreButtonWithoutSuggestions:
         )
         await send(discovery_dispatcher, bot, "ещё слова про медицину")
 
-        await tap(discovery_dispatcher, bot, ImportCB(action="cancel").pack())
+        await tap(discovery_dispatcher, bot, button_with(recording, "im:cancel"))
 
         async with session_factory() as check:
             assert await check.scalar(select(func.count(Card.id))) == 0

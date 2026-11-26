@@ -6,8 +6,10 @@ from datetime import UTC, datetime
 
 from eng_remember.models.card import Card
 from eng_remember.services.csv_io import (
+    MAX_FILE_BYTES,
     MAX_ROWS,
     cards_to_csv,
+    cards_to_csv_parts,
     parse_cards_csv,
 )
 
@@ -69,6 +71,40 @@ def test_a_french_card_exports_its_language() -> None:
     text = cards_to_csv([make_card("bonjour", "здравствуйте", language="fra")])
 
     assert text.splitlines()[1].endswith(";fra")
+
+
+def test_export_parts_respect_import_row_limit() -> None:
+    cards = [
+        make_card(f"mot {index}", "слово", language="fra", tags=["base", "vocab"])
+        for index in range(MAX_ROWS + 1)
+    ]
+
+    assert len(cards_to_csv_parts(cards[:-1])) == 1
+    parts = cards_to_csv_parts(cards, deck_names={1: "Французский"})
+    parsed = [parse_cards_csv(part.decode("utf-8-sig")) for part in parts]
+
+    assert [len(part.rows) for part in parsed] == [MAX_ROWS, 1]
+    assert all(part.skipped == 0 for part in parsed)
+    rows = [row for part in parsed for row in part.rows]
+    assert [row.term for row in rows] == [card.term for card in cards]
+    assert all(
+        (row.translation, row.language, row.tags, row.deck)
+        == ("слово", "fra", ("base", "vocab"), "Французский")
+        for row in rows
+    )
+
+
+def test_export_parts_respect_encoded_file_size() -> None:
+    cards = [make_card(f"word {index}", "слово", notes="語" * 1000) for index in range(350)]
+
+    parts = cards_to_csv_parts(cards)
+
+    assert len(parts) == 2
+    assert all(len(part) <= MAX_FILE_BYTES for part in parts)
+    assert all(part.decode("utf-8-sig").splitlines()[0] == HEADER for part in parts)
+    rows = [row for part in parts for row in parse_cards_csv(part.decode("utf-8-sig")).rows]
+    assert [row.term for row in rows] == [card.term for card in cards]
+    assert all(row.notes == "語" * 1000 for row in rows)
 
 
 def test_an_old_eight_column_file_has_no_language() -> None:

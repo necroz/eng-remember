@@ -58,6 +58,7 @@ __all__ = [
     "LlmTransport",
     "OpenAiCompatibleClient",
     "OpenAiLike",
+    "complete_json_with_model",
 ]
 
 log = structlog.get_logger(__name__)
@@ -100,18 +101,42 @@ _RETRIABLE = (APIConnectionError, APITimeoutError, RateLimitError)
 # A monthly plan that is out of quota is not coming back inside the retry
 # budget: retrying the same key only adds latency and audit rows. The failover
 # route (or the caller's fallback to rules) should react after one attempt.
-_EXHAUSTED_QUOTA_CODES = {"insufficient_quota"}
+_EXHAUSTED_QUOTA_CODE = "insufficient_quota"
 
 
 def _is_exhausted_quota(exc: OpenAIError) -> bool:
     body = getattr(exc, "body", None)
     if isinstance(body, dict):
         error = body.get("error")
-        if isinstance(error, dict) and error.get("code") in _EXHAUSTED_QUOTA_CODES:
+        if isinstance(error, dict) and error.get("code") == _EXHAUSTED_QUOTA_CODE:
             return True
-        if body.get("code") in _EXHAUSTED_QUOTA_CODES:
+        if body.get("code") == _EXHAUSTED_QUOTA_CODE:
             return True
-    return "insufficient_quota" in str(exc)
+    return _EXHAUSTED_QUOTA_CODE in str(exc)
+
+
+def _provider_error(exc: OpenAIError, *, exhausted_quota: bool = False) -> str:
+    # Provider messages can echo the request, including authentication data.
+    category = type(exc).__name__
+    if exhausted_quota:
+        return f"{category}: {_EXHAUSTED_QUOTA_CODE}"
+    if isinstance(exc, APIStatusError):
+        return f"{category}: HTTP {exc.status_code}"
+    return category
+
+
+def _invalid_response_error(exc: json.JSONDecodeError | ValidationError) -> str:
+    if isinstance(exc, json.JSONDecodeError):
+        return f"JSONDecodeError: line {exc.lineno}, column {exc.colno}"
+    # ValidationError's string and message can contain the original input.
+    errors = exc.errors(include_input=False, include_context=False, include_url=False)
+    issues = []
+    for error in errors:
+        # Unknown field names are themselves part of the model's response.
+        location = error["loc"][:-1] if error["type"] == "extra_forbidden" else error["loc"]
+        path = ".".join(map(str, location)) or "<root>"
+        issues.append(f"{path}: {error['type']}")
+    return "ValidationError: " + "; ".join(issues)
 
 
 # Failures where a retry is guaranteed to fail the same way.
@@ -220,6 +245,39 @@ class JsonChatClient(Protocol):
         schema: type[ModelT],
         user_id: int | None = None,
     ) -> ModelT: ...
+
+
+@runtime_checkable
+class _ModelAwareClient(Protocol):
+    async def complete_json_with_model(
+        self,
+        *,
+        purpose: str,
+        system: str,
+        user: str,
+        schema: type[ModelT],
+        user_id: int | None = None,
+    ) -> tuple[ModelT, str]: ...
+
+
+async def complete_json_with_model[ModelT: BaseModel](
+    client: JsonChatClient,
+    *,
+    purpose: str,
+    system: str,
+    user: str,
+    schema: type[ModelT],
+    user_id: int | None = None,
+) -> tuple[ModelT, str]:
+    """Return the response together with the model that produced it."""
+    if isinstance(client, _ModelAwareClient):
+        return await client.complete_json_with_model(
+            purpose=purpose, system=system, user=user, schema=schema, user_id=user_id
+        )
+    result = await client.complete_json(
+        purpose=purpose, system=system, user=user, schema=schema, user_id=user_id
+    )
+    return result, client.model_name
 
 
 class LlmTransport:
@@ -425,29 +483,31 @@ class OpenAiCompatibleClient:
                     try:
                         response = await self._create(messages, schema=schema)
                     except _FATAL as exc:
+                        error = _provider_error(exc)
                         await self._report(
                             purpose=purpose,
                             user_id=user_id,
                             attempt=attempt,
                             started=attempt_started,
                             success=False,
-                            error=f"{type(exc).__name__}: {exc}",
+                            error=error,
                         )
-                        raise LlmNotConfiguredError(str(exc)) from exc
+                        raise LlmNotConfiguredError(error) from None
                     except (BadRequestError, APIStatusError, OpenAIError) as exc:
+                        exhausted_quota = _is_exhausted_quota(exc)
+                        last_error = _provider_error(exc, exhausted_quota=exhausted_quota)
                         await self._report(
                             purpose=purpose,
                             user_id=user_id,
                             attempt=attempt,
                             started=attempt_started,
                             success=False,
-                            error=f"{type(exc).__name__}: {exc}",
+                            error=last_error,
                         )
-                        last_error = f"{type(exc).__name__}: {exc}"
-                        if _is_exhausted_quota(exc):
+                        if exhausted_quota:
                             # Fail fast: the plan is spent, retrying the same key
                             # cannot help. The failover route gets its turn.
-                            raise LlmResponseError(last_error) from exc
+                            raise LlmResponseError(last_error) from None
                         if isinstance(exc, _RETRIABLE) and attempt < attempts:
                             continue
                         if (
@@ -456,7 +516,7 @@ class OpenAiCompatibleClient:
                             and attempt < attempts
                         ):
                             continue
-                        raise LlmResponseError(last_error) from exc
+                        raise LlmResponseError(last_error) from None
 
                     choice = response.choices[0] if response.choices else None
                     content = (choice.message.content if choice else None) or ""
@@ -492,7 +552,7 @@ class OpenAiCompatibleClient:
                         payload = json.loads(extract_json_object(content))
                         result = schema.model_validate(payload)
                     except (json.JSONDecodeError, ValidationError) as exc:
-                        last_error = f"{type(exc).__name__}: {exc}"
+                        last_error = _invalid_response_error(exc)
                         await self._report(
                             purpose=purpose,
                             user_id=user_id,
@@ -643,8 +703,23 @@ class FailoverClient:
         schema: type[ModelT],
         user_id: int | None = None,
     ) -> ModelT:
-        async def run(route: JsonChatClient) -> ModelT:
-            return await route.complete_json(
+        result, _ = await self.complete_json_with_model(
+            purpose=purpose, system=system, user=user, schema=schema, user_id=user_id
+        )
+        return result
+
+    async def complete_json_with_model(
+        self,
+        *,
+        purpose: str,
+        system: str,
+        user: str,
+        schema: type[ModelT],
+        user_id: int | None = None,
+    ) -> tuple[ModelT, str]:
+        async def run(route: JsonChatClient) -> tuple[ModelT, str]:
+            return await complete_json_with_model(
+                route,
                 purpose=purpose,
                 system=system,
                 user=user,

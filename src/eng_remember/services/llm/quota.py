@@ -39,7 +39,7 @@ from eng_remember.config import LlmSettings
 from eng_remember.errors import LlmGlobalBudgetExceededError, LlmQuotaExceededError
 from eng_remember.repositories.llm_calls import LlmCallRepository
 from eng_remember.services.llm.budget import GlobalBudgetMonitor, global_budget
-from eng_remember.services.llm.client import JsonChatClient
+from eng_remember.services.llm.client import JsonChatClient, complete_json_with_model
 from eng_remember.utils.time import utcnow
 from eng_remember.utils.user_locks import UserLockRegistry, user_locks
 
@@ -154,11 +154,24 @@ class QuotaLimitedClient:
         schema: type[ModelT],
         user_id: int | None = None,
     ) -> ModelT:
-        # Without a learner there is nothing to serialize or to count per
-        # account; the bot-wide budget is still enforced inside ``_enforce``.
-        if user_id is None:
+        result, _ = await self.complete_json_with_model(
+            purpose=purpose, system=system, user=user, schema=schema, user_id=user_id
+        )
+        return result
+
+    async def complete_json_with_model(
+        self,
+        *,
+        purpose: str,
+        system: str,
+        user: str,
+        schema: type[ModelT],
+        user_id: int | None = None,
+    ) -> tuple[ModelT, str]:
+        async def run() -> tuple[ModelT, str]:
             await self._enforce(user_id, purpose)
-            return await self._inner.complete_json(
+            return await complete_json_with_model(
+                self._inner,
                 purpose=purpose,
                 system=system,
                 user=user,
@@ -166,19 +179,16 @@ class QuotaLimitedClient:
                 user_id=user_id,
             )
 
+        # Without a learner, only the bot-wide budget applies.
+        if user_id is None:
+            return await run()
+
         # One learner, one model call at a time. The lock prevents parallel
         # calls; the quota itself reads committed audit rows, so a burst can
         # still overrun the soft cap slightly until the first transactions
         # commit. A hard cap needs an atomic reservation (see security.md).
         async with self._locks.hold(user_id):
-            await self._enforce(user_id, purpose)
-            return await self._inner.complete_json(
-                purpose=purpose,
-                system=system,
-                user=user,
-                schema=schema,
-                user_id=user_id,
-            )
+            return await run()
 
     async def _enforce(self, user_id: int | None, purpose: str) -> None:
         if not any(
