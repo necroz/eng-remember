@@ -25,6 +25,7 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol, TypeVar, cast, runtime_checkable
 
+import structlog
 from openai import (
     APIConnectionError,
     APIStatusError,
@@ -39,18 +40,27 @@ from openai.types.chat import ChatCompletionMessageParam
 from pydantic import BaseModel, ValidationError
 
 from eng_remember.config import LlmSettings
-from eng_remember.errors import LlmNotConfiguredError, LlmResponseError
+from eng_remember.errors import (
+    LlmError,
+    LlmGlobalBudgetExceededError,
+    LlmNotConfiguredError,
+    LlmQuotaExceededError,
+    LlmResponseError,
+)
 from eng_remember.repositories.llm_calls import LlmCallRecord
 from eng_remember.services.llm.prompts import REPAIR_TEMPLATE
 from eng_remember.services.llm.schema import extract_json_object
 
 __all__ = [
+    "FailoverClient",
     "JsonChatClient",
     "LlmCallSink",
     "LlmTransport",
     "OpenAiCompatibleClient",
     "OpenAiLike",
 ]
+
+log = structlog.get_logger(__name__)
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
 LlmCallSink = Callable[[LlmCallRecord], Awaitable[None]]
@@ -86,6 +96,24 @@ class OpenAiLike(Protocol):
 
 # Transport-level failures worth one more try.
 _RETRIABLE = (APIConnectionError, APITimeoutError, RateLimitError)
+
+# A monthly plan that is out of quota is not coming back inside the retry
+# budget: retrying the same key only adds latency and audit rows. The failover
+# route (or the caller's fallback to rules) should react after one attempt.
+_EXHAUSTED_QUOTA_CODES = {"insufficient_quota"}
+
+
+def _is_exhausted_quota(exc: OpenAIError) -> bool:
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict) and error.get("code") in _EXHAUSTED_QUOTA_CODES:
+            return True
+        if body.get("code") in _EXHAUSTED_QUOTA_CODES:
+            return True
+    return "insufficient_quota" in str(exc)
+
+
 # Failures where a retry is guaranteed to fail the same way.
 _FATAL = (AuthenticationError,)
 
@@ -304,6 +332,9 @@ class LlmTransport:
                 api_key=api_key.get_secret_value(),
                 base_url=self._settings.base_url,
                 timeout=self._settings.timeout_seconds,
+                # Some gateways require their own routing header; it belongs to
+                # the connection, not to each call.
+                default_headers=self._settings.extra_headers or None,
                 # Retries live in complete_json, where they are visible in the log.
                 max_retries=0,
             )
@@ -413,6 +444,10 @@ class OpenAiCompatibleClient:
                             error=f"{type(exc).__name__}: {exc}",
                         )
                         last_error = f"{type(exc).__name__}: {exc}"
+                        if _is_exhausted_quota(exc):
+                            # Fail fast: the plan is spent, retrying the same key
+                            # cannot help. The failover route gets its turn.
+                            raise LlmResponseError(last_error) from exc
                         if isinstance(exc, _RETRIABLE) and attempt < attempts:
                             continue
                         if (
@@ -565,3 +600,73 @@ class OpenAiCompatibleClient:
                 error=error,
             )
         )
+
+
+class FailoverClient:
+    """One logical model route with a standby behind it.
+
+    The primary is tried first. A model-layer failure that belongs to the
+    provider — a dead key, an exhausted monthly quota, an outage, an unusable
+    answer — switches to the standby for the same request. The bot's own
+    refusals (:class:`LlmQuotaExceededError`, :class:`LlmGlobalBudgetExceededError`)
+    are policy, not provider health, and are never bypassed by the standby.
+    """
+
+    def __init__(
+        self,
+        primary: JsonChatClient | None,
+        fallback: JsonChatClient | None,
+    ) -> None:
+        if primary is None and fallback is None:
+            raise ValueError("a failover client needs at least one route")
+        self._primary = primary
+        self._fallback = fallback
+
+    @property
+    def model_name(self) -> str:
+        route = self._primary if self._primary is not None else self._fallback
+        assert route is not None
+        return route.model_name
+
+    @property
+    def available(self) -> bool:
+        return (self._primary is not None and self._primary.available) or (
+            self._fallback is not None and self._fallback.available
+        )
+
+    async def complete_json(
+        self,
+        *,
+        purpose: str,
+        system: str,
+        user: str,
+        schema: type[ModelT],
+        user_id: int | None = None,
+    ) -> ModelT:
+        async def run(route: JsonChatClient) -> ModelT:
+            return await route.complete_json(
+                purpose=purpose,
+                system=system,
+                user=user,
+                schema=schema,
+                user_id=user_id,
+            )
+
+        primary = self._primary
+        if primary is None:
+            assert self._fallback is not None
+            return await run(self._fallback)
+        try:
+            return await run(primary)
+        except (LlmQuotaExceededError, LlmGlobalBudgetExceededError):
+            raise
+        except LlmError as exc:
+            if self._fallback is None:
+                raise
+            log.warning(
+                "llm_failover_used",
+                primary_model=primary.model_name,
+                fallback_model=self._fallback.model_name,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return await run(self._fallback)

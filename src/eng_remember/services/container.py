@@ -80,15 +80,16 @@ def build_services(
     settings: Settings,
     *,
     llm_transport: LlmTransport | None = None,
+    llm_fallback_transport: LlmTransport | None = None,
     backfill: BackfillQueue | None = None,
 ) -> Services:
     """Wire this request's services, optionally through process-wide objects.
 
-    The transport and the backfill queue outlive a single update: the transport
-    owns the provider connection and the lessons learned from rejected
-    parameters, the queue carries work from handlers to the worker. Callers that
-    omit either get an isolated instance, which is convenient for tests but not
-    what the bot does.
+    The transports and the backfill queue outlive a single update: the
+    transports own the provider connections and the lessons learned from
+    rejected parameters, the queue carries work from handlers to the worker.
+    Callers that omit them get isolated instances, which is convenient for
+    tests but not what the bot does.
     """
     users = UserRepository(session)
     decks = DeckRepository(session)
@@ -101,7 +102,12 @@ def build_services(
 
     # One client for every LLM-facing service, so a per-call audit sink and the
     # retry policy cannot differ between the parser and the explorer.
-    llm = build_llm_client(session, settings, transport=llm_transport)
+    llm = build_llm_client(
+        session,
+        settings,
+        transport=llm_transport,
+        fallback_transport=llm_fallback_transport,
+    )
     parser = MessageParser(llm=llm)
     explorer = WordExplorer(llm)
 

@@ -30,7 +30,8 @@ async def test_the_process_transport_reaches_every_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     transport = LlmTransport(settings.llm)
-    seen: list[object] = []
+    fallback_transport = LlmTransport(settings.llm)
+    seen: list[tuple[object, object]] = []
     real_build = build_services
 
     def spy(
@@ -38,16 +39,28 @@ async def test_the_process_transport_reaches_every_request(
         config: Settings,
         *,
         llm_transport: LlmTransport | None = None,
+        llm_fallback_transport: LlmTransport | None = None,
         backfill: Any = None,
     ) -> Services:
-        seen.append(llm_transport)
-        return real_build(session, config, llm_transport=llm_transport, backfill=backfill)
+        seen.append((llm_transport, llm_fallback_transport))
+        return real_build(
+            session,
+            config,
+            llm_transport=llm_transport,
+            llm_fallback_transport=llm_fallback_transport,
+            backfill=backfill,
+        )
 
     monkeypatch.setattr("eng_remember.bot.middlewares.db.build_services", spy)
-    dispatcher = build_dispatcher(settings, session_factory, llm_transport=transport)
+    dispatcher = build_dispatcher(
+        settings,
+        session_factory,
+        llm_transport=transport,
+        llm_fallback_transport=fallback_transport,
+    )
 
     await dispatcher.feed_update(bot, make_message_update("/start", update_id=1))
     await dispatcher.feed_update(bot, make_message_update("/start", update_id=2))
 
     assert len(seen) == 2
-    assert all(item is transport for item in seen)
+    assert all(primary is transport and standby is fallback_transport for primary, standby in seen)

@@ -272,8 +272,9 @@ def llm(monkeypatch: pytest.MonkeyPatch) -> ScriptedClient:
         settings: Settings,
         *,
         transport: object | None = None,
+        fallback_transport: object | None = None,
     ) -> ScriptedClient:
-        del session, settings, transport
+        del session, settings, transport, fallback_transport
         return client
 
     monkeypatch.setattr("eng_remember.services.container.build_llm_client", fake_build)

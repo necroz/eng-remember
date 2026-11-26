@@ -60,7 +60,11 @@ async def main() -> None:
     session_factory = create_session_factory(engine)
     # One connection owner for the whole process: every update's client is a
     # thin view over it, and what a provider rejects is learned only once.
-    llm_transport = LlmTransport(settings.llm) if settings.llm.is_configured else None
+    # The standby route gets its own owner and lessons.
+    llm_transport = LlmTransport(settings.llm) if settings.llm.primary_configured else None
+    llm_fallback_transport = (
+        LlmTransport(settings.llm.fallback_copy()) if settings.llm.fallback_configured else None
+    )
     # One backfill queue as well: review handlers put cards in, the worker
     # below takes them out.
     backfill = BackfillQueue()
@@ -68,6 +72,7 @@ async def main() -> None:
         settings,
         session_factory,
         llm_transport=llm_transport,
+        llm_fallback_transport=llm_fallback_transport,
         backfill=backfill,
     )
 
@@ -120,6 +125,7 @@ async def main() -> None:
                 stopping,
                 queue=backfill,
                 transport=llm_transport,
+                fallback_transport=llm_fallback_transport,
             ),
             name="enrichment-worker",
         )
@@ -150,6 +156,8 @@ async def main() -> None:
             try:
                 if llm_transport is not None:
                     await llm_transport.aclose()
+                if llm_fallback_transport is not None:
+                    await llm_fallback_transport.aclose()
             finally:
                 await engine.dispose()
                 log.info("bot_stopped")
