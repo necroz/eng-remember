@@ -124,6 +124,49 @@ async def test_export_caption_mentions_truncation(
     assert "из 3" in (method.caption or "")
 
 
+async def test_exported_parts_can_be_imported_one_after_another(
+    dispatcher: Dispatcher,
+    bot: Bot,
+    recording: RecordingSession,
+    services: Services,
+    user: User,
+    monkeypatch: pytest.MonkeyPatch,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    monkeypatch.setattr("eng_remember.services.csv_io.MAX_ROWS", 2)
+    deck = await services.decks.create(user.id, "Французский")
+    words = {"bonjour": "здравствуйте", "pomme": "яблоко", "maison": "дом"}
+    for term, translation in words.items():
+        draft = CardDraft(term=term, translation=translation, language="fra", tags=("base",))
+        await services.card_service.add_draft(user, draft, deck=deck)
+    await services.commit()
+
+    await send(dispatcher, bot, "/export", update_id=100)
+    docs = [method for method in recording.requests if isinstance(method, SendDocument)]
+    assert len(docs) == 2
+    assert "Часть 1 из 2" in (docs[0].caption or "")
+    assert "Часть 2 из 2" in (docs[1].caption or "")
+    await services.cards.delete_all(user.id)
+    await services.commit()
+
+    for index, method in enumerate(docs):
+        document = method.document
+        assert isinstance(document, BufferedInputFile)
+        assert document.filename and document.filename.endswith(f"-{index + 1}-of-2.csv")
+        patch_file(monkeypatch, document.data)
+        await send_file(dispatcher, bot, file_name=document.filename, update_id=101 + 2 * index)
+        confirm = button_data(recording, "fi:confirm:")
+        await tap(dispatcher, bot, confirm, update_id=102 + 2 * index)
+
+    async with session_factory() as check:
+        cards = (await check.scalars(select(Card))).all()
+    assert len(cards) == 6
+    assert {card.term: card.translation for card in cards} == words
+    assert all(
+        (card.language, card.tags, card.deck_id) == ("fra", ["base"], deck.id) for card in cards
+    )
+
+
 async def test_import_command_explains_the_format(
     dispatcher: Dispatcher,
     bot: Bot,
@@ -513,7 +556,7 @@ async def test_a_stale_cancel_does_not_break_another_flow(
     await send(dispatcher, bot, "/review", update_id=100)
     assert "run" in recording.last_text()
 
-    await tap(dispatcher, bot, FileImportCB(action="cancel").pack(), update_id=101)
+    await tap(dispatcher, bot, FileImportCB(action="cancel", token="old").pack(), update_id=101)
 
     assert last_callback_answer(recording).show_alert
 
@@ -550,4 +593,4 @@ async def test_a_utf16_file_is_refused(
 
 
 def test_confirm_callback_shape() -> None:
-    assert FileImportCB(action="confirm").pack() == "fi:confirm"
+    assert FileImportCB(action="confirm", token="preview").pack() == "fi:confirm:preview"

@@ -24,6 +24,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import asdict
+from secrets import token_hex
 
 import structlog
 from aiogram import Bot, F, Router
@@ -33,12 +34,13 @@ from aiogram.types import CallbackQuery, Message
 
 from eng_remember.bot import keyboards, texts
 from eng_remember.bot.callbacks import ClarifyCB, ImportCB
-from eng_remember.bot.rendering import callback_chat_id, edit_or_send, require_state
+from eng_remember.bot.rendering import callback_chat_id, edit_or_send, preview_data, require_state
 from eng_remember.bot.states import (
     CONTEXT_KEY,
     COUNT_KEY,
     DRAFT_KEY,
     ENGINE_KEY,
+    IMPORT_PREVIEW_TOKEN_KEY,
     LANGUAGE_KEY,
     OPTIONS_KEY,
     ORIGINAL_KEY,
@@ -185,6 +187,7 @@ def build_router() -> Router:
         own: Sequence[CardDraft] = (),
         engine: str = "",
         language: str | None = None,
+        expected_preview: str | None = None,
     ) -> None:
         """Look for words the user does not have yet, then offer them.
 
@@ -207,6 +210,7 @@ def build_router() -> Router:
                     bot=bot,
                     chat_id=chat_id,
                     state=state,
+                    expected_preview=expected_preview,
                     own=own,
                     engine=engine,
                     note=texts.more_unavailable(),
@@ -233,6 +237,7 @@ def build_router() -> Router:
                     bot=bot,
                     chat_id=chat_id,
                     state=state,
+                    expected_preview=expected_preview,
                     own=own,
                     engine=engine,
                     note=texts.more_needs_topic(),
@@ -263,6 +268,7 @@ def build_router() -> Router:
                     bot=bot,
                     chat_id=chat_id,
                     state=state,
+                    expected_preview=expected_preview,
                     own=own,
                     engine=engine,
                     note=texts.more_unavailable(),
@@ -280,6 +286,7 @@ def build_router() -> Router:
                     bot=bot,
                     chat_id=chat_id,
                     state=state,
+                    expected_preview=expected_preview,
                     own=own,
                     engine=engine,
                     note=texts.more_quota_exceeded(),
@@ -297,6 +304,7 @@ def build_router() -> Router:
                     bot=bot,
                     chat_id=chat_id,
                     state=state,
+                    expected_preview=expected_preview,
                     own=own,
                     engine=engine,
                     note=texts.more_unavailable(),
@@ -315,6 +323,7 @@ def build_router() -> Router:
                     bot=bot,
                     chat_id=chat_id,
                     state=state,
+                    expected_preview=expected_preview,
                     own=own,
                     engine=engine,
                     note=texts.more_failed(),
@@ -334,6 +343,7 @@ def build_router() -> Router:
                     bot=bot,
                     chat_id=chat_id,
                     state=state,
+                    expected_preview=expected_preview,
                     own=own,
                     engine=engine,
                     note=texts.more_found_nothing(),
@@ -349,6 +359,7 @@ def build_router() -> Router:
             bot=bot,
             chat_id=chat_id,
             state=state,
+            expected_preview=expected_preview,
             own=own,
             engine=engine or result.engine,
             found=result,
@@ -406,6 +417,7 @@ def build_router() -> Router:
         context: str | None = None,
         deck_name: str | None = None,
         language: str | None = None,
+        expected_preview: str | None = None,
     ) -> None:
         """Show a batch for confirmation and remember it for the save button.
 
@@ -413,6 +425,13 @@ def build_router() -> Router:
         "Ещё слова" can replace the second half without touching the first.
         What the button advertises is exactly what confirm will save.
         """
+        if expected_preview is not None:
+            data = await state.get_data()
+            if (
+                await state.get_state() != AddWords.confirming.state
+                or data.get(IMPORT_PREVIEW_TOKEN_KEY) != expected_preview
+            ):
+                return
         details = list(found.drafts) if found is not None else []
         batch = [*own, *details]
         if not batch:  # pragma: no cover - callers never offer an empty batch
@@ -420,6 +439,7 @@ def build_router() -> Router:
             return
 
         target = language or (found.language if found is not None else DEFAULT_LANGUAGE)
+        token = token_hex(8)
         await state.set_state(AddWords.confirming)
         await state.update_data(
             {
@@ -430,6 +450,7 @@ def build_router() -> Router:
                 COUNT_KEY: count,
                 CONTEXT_KEY: context,
                 LANGUAGE_KEY: target,
+                IMPORT_PREVIEW_TOKEN_KEY: token,
             }
         )
 
@@ -447,7 +468,9 @@ def build_router() -> Router:
         await bot.send_message(
             chat_id,
             preview,
-            reply_markup=keyboards.import_confirm(len(batch), offer_more=found is not None),
+            reply_markup=keyboards.import_confirm(
+                len(batch), token=token, offer_more=found is not None
+            ),
         )
 
     @router.message(Command("add"))
@@ -588,14 +611,15 @@ def build_router() -> Router:
     @router.callback_query(ImportCB.filter(F.action == "confirm"))
     async def confirm_import(
         query: CallbackQuery,
+        callback_data: ImportCB,
         bot: Bot,
         user: User,
         services: Services,
         state: FSMContext,
     ) -> None:
-        if not await require_state(query, state, AddWords.confirming):
+        data = await preview_data(query, state, AddWords.confirming, callback_data.token)
+        if data is None:
             return
-        data = await state.get_data()
         await state.clear()
 
         # The learner's own words and what the search found are one batch again
@@ -630,6 +654,7 @@ def build_router() -> Router:
     @router.callback_query(ImportCB.filter(F.action == "more"))
     async def more_suggestions(
         query: CallbackQuery,
+        callback_data: ImportCB,
         bot: Bot,
         user: User,
         services: Services,
@@ -641,9 +666,11 @@ def build_router() -> Router:
         themselves stays on the button, because they asked for it to be saved
         and did not withdraw it by asking to look further.
         """
-        if not await require_state(query, state, AddWords.confirming):
+        data = await preview_data(query, state, AddWords.confirming, callback_data.token)
+        if data is None:
             return
-        data = await state.get_data()
+        operation = token_hex(8)
+        await state.update_data({IMPORT_PREVIEW_TOKEN_KEY: operation})
         found_raw = data.get(DRAFT_KEY) or []
         own_raw = data.get(OWN_KEY) or []
         topic = data.get(TOPIC_KEY)
@@ -671,11 +698,14 @@ def build_router() -> Router:
             ),
             own=[CardDraft(**item) for item in own_raw if isinstance(item, dict)],
             engine=str(data.get(ENGINE_KEY) or ""),
+            expected_preview=operation,
         )
 
     @router.callback_query(ImportCB.filter(F.action == "cancel"))
-    async def cancel_import(query: CallbackQuery, bot: Bot, state: FSMContext) -> None:
-        if not await require_state(query, state, AddWords.confirming):
+    async def cancel_import(
+        query: CallbackQuery, callback_data: ImportCB, bot: Bot, state: FSMContext
+    ) -> None:
+        if await preview_data(query, state, AddWords.confirming, callback_data.token) is None:
             return
         await state.clear()
         await edit_or_send(query, texts.import_cancelled(), bot=bot)

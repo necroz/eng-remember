@@ -28,7 +28,7 @@ from eng_remember.domain.reminders import ReminderContext, ReminderKind, decide
 from eng_remember.domain.srs import new_allowance
 from eng_remember.errors import RecipientUnreachable
 from eng_remember.models.user import User
-from eng_remember.repositories.cards import CardRepository
+from eng_remember.repositories.cards import CardRepository, QueueCounts
 from eng_remember.repositories.reviews import ReviewRepository
 from eng_remember.repositories.streaks import StreakRepository
 from eng_remember.repositories.users import UserRepository
@@ -190,11 +190,21 @@ class ReminderService:
 
     async def _plan(self, batch: list[User], *, now: datetime) -> list[ReminderPlan]:
         """Decide the whole batch, with the counting queries batched as well."""
-        user_ids = [user.id for user in batch]
-        counts = await self._cards.queue_counts(user_ids, now=now)
-        introduced = await self._introduced_today(batch, now=now)
+        since_by_user = {user.id: local_day_start(user.timezone, now=now) for user in batch}
+        user_ids = list(since_by_user)
+        introduced = await self._reviews.introduced_counts(user_ids, since_by_user=since_by_user)
         streak_states = await self._streaks.by_user_ids(user_ids)
-        answered = await self._answered_today(batch, now=now)
+        by_boundary: dict[datetime, list[int]] = {}
+        for user_id, boundary in since_by_user.items():
+            by_boundary.setdefault(boundary, []).append(user_id)
+
+        counts: dict[int, QueueCounts] = {}
+        answered: dict[int, int] = {}
+        for boundary, learner_ids in by_boundary.items():
+            counts.update(
+                await self._cards.queue_counts(learner_ids, now=now, bury_reviewed_since=boundary)
+            )
+            answered.update(await self._reviews.counts_since(learner_ids, since=boundary))
 
         plans: list[ReminderPlan] = []
         today_by_user = {user.id: local_date(user.timezone, now=now) for user in batch}
@@ -204,8 +214,7 @@ class ReminderService:
             if queue is None:  # pragma: no cover - the query returns every id
                 continue
 
-            # The queue counts are raw; the promise must match what a session
-            # would actually serve, which is bounded by the daily budget.
+            # A session serves only as many eligible new cards as the budget allows.
             allowance = new_allowance(
                 user.new_cards_per_day, self._new_cards_per_day, introduced.get(user.id, 0)
             )
@@ -303,35 +312,6 @@ class ReminderService:
             due_week=await self._cards.count_due_within(
                 user.id, now=moment, until=moment + timedelta(days=7)
             ),
-        )
-
-    async def _answered_today(self, batch: list[User], *, now: datetime) -> dict[int, int]:
-        """Answers per learner since their own midnight.
-
-        Users are grouped by day boundary first: a whole batch usually spans two
-        or three distinct midnights, so this stays a couple of queries instead of
-        one per learner.
-        """
-        by_boundary: dict[datetime, list[int]] = {}
-        for user in batch:
-            boundary = local_day_start(user.timezone, now=now)
-            by_boundary.setdefault(boundary, []).append(user.id)
-
-        answered: dict[int, int] = {}
-        for boundary, user_ids in by_boundary.items():
-            answered.update(await self._reviews.counts_since(user_ids, since=boundary))
-        return answered
-
-    async def _introduced_today(self, batch: list[User], *, now: datetime) -> dict[int, int]:
-        """Cards introduced per learner since their own midnight.
-
-        The reminder tick needs the day's introductions to apply the new-card
-        budget; the repository groups the batch by shared day boundary so this
-        stays one query per boundary rather than one per learner.
-        """
-        since_by_user = {user.id: local_day_start(user.timezone, now=now) for user in batch}
-        return await self._reviews.introduced_counts(
-            list(since_by_user), since_by_user=since_by_user
         )
 
     async def _deliver(self, plan: ReminderPlan, run: ReminderRun, *, now: datetime) -> None:

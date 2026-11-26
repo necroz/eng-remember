@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TypeVar, cast
 
 import pytest
@@ -13,7 +14,7 @@ from eng_remember.errors import (
     LlmQuotaExceededError,
     LlmResponseError,
 )
-from eng_remember.services.llm.client import FailoverClient
+from eng_remember.services.llm.client import FailoverClient, complete_json_with_model
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
@@ -114,6 +115,40 @@ async def test_a_standby_failure_surfaces_its_own_error() -> None:
 
     assert primary.calls == 1
     assert fallback.calls == 1
+
+
+async def test_overlapping_requests_keep_their_own_model_names() -> None:
+    class Primary(Route):
+        async def complete_json(
+            self,
+            *,
+            purpose: str,
+            system: str,
+            user: str,
+            schema: type[ModelT],
+            user_id: int | None = None,
+        ) -> ModelT:
+            await asyncio.sleep(0)
+            if user == "needs standby":
+                raise LlmResponseError("provider is down")
+            return await super().complete_json(
+                purpose=purpose, system=system, user=user, schema=schema, user_id=user_id
+            )
+
+    client = FailoverClient(Primary("primary"), Route("standby"))
+    results = await asyncio.gather(
+        complete_json_with_model(
+            client, purpose="parse_message", system="rules", user="needs standby", schema=Answer
+        ),
+        complete_json_with_model(
+            client, purpose="parse_message", system="rules", user="another request", schema=Answer
+        ),
+    )
+
+    assert [(answer.route, model) for answer, model in results] == [
+        ("standby", "standby"),
+        ("primary", "primary"),
+    ]
 
 
 def test_at_least_one_route_is_required() -> None:

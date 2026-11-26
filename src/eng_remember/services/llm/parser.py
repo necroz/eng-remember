@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from eng_remember.config import Settings
 from eng_remember.errors import LlmError, ParseError
-from eng_remember.services.llm.client import JsonChatClient
+from eng_remember.services.llm.client import JsonChatClient, complete_json_with_model
 from eng_remember.services.llm.factory import build_llm_client
 from eng_remember.services.llm.fallback import FallbackParser
 from eng_remember.services.llm.prompts import (
@@ -92,14 +92,15 @@ class MessageParser:
         llm = self._llm
         if llm is not None and llm.available:
             try:
-                response = await llm.complete_json(
+                response, model = await complete_json_with_model(
+                    llm,
                     purpose=PURPOSE_PARSE,
                     system=PARSE_SYSTEM_PROMPT,
                     user=prompt,
                     schema=ParseResponse,
                     user_id=user_id,
                 )
-                return ParseOutcome(response=response, engine=llm.model_name)
+                return ParseOutcome(response=response, engine=model)
             except LlmError as exc:
                 log.warning("llm_parse_failed", error=str(exc), fallback=self._fallback.name)
 

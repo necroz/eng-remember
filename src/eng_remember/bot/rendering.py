@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from typing import Any
 
 import structlog
 from aiogram import Bot
@@ -11,12 +12,15 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
+from eng_remember.bot.states import IMPORT_PREVIEW_TOKEN_KEY
+
 __all__ = [
     "TELEGRAM_TEXT_LIMIT",
     "callback_chat_id",
     "edit_message_or_send",
     "edit_or_send",
     "fit_text",
+    "preview_data",
     "require_state",
     "text_units",
 ]
@@ -138,6 +142,20 @@ async def require_state(query: CallbackQuery, fsm: FSMContext, expected: State) 
         return True
     await query.answer(texts.stale_button(), show_alert=True)
     return False
+
+
+async def preview_data(
+    query: CallbackQuery, fsm: FSMContext, expected: State, token: str
+) -> dict[str, Any] | None:
+    """Read the pending batch only when this button belongs to it."""
+    from eng_remember.bot import texts
+
+    if await fsm.get_state() == expected.state:
+        data = await fsm.get_data()
+        if data.get(IMPORT_PREVIEW_TOKEN_KEY) == token:
+            return data
+    await query.answer(texts.stale_button(), show_alert=True)
+    return None
 
 
 async def edit_message_or_send(

@@ -73,12 +73,14 @@ def main_menu() -> ReplyKeyboardMarkup:
     )
 
 
-def import_confirm(count: int, *, offer_more: bool = False) -> InlineKeyboardMarkup:
+def import_confirm(count: int, *, token: str, offer_more: bool = False) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.button(text=f"✅ Сохранить ({count})", callback_data=ImportCB(action="confirm"))
+    builder.button(
+        text=f"✅ Сохранить ({count})", callback_data=ImportCB(action="confirm", token=token)
+    )
     if offer_more:
-        builder.button(text="🔄 Ещё слова", callback_data=ImportCB(action="more"))
-    builder.button(text="❌ Отмена", callback_data=ImportCB(action="cancel"))
+        builder.button(text="🔄 Ещё слова", callback_data=ImportCB(action="more", token=token))
+    builder.button(text="❌ Отмена", callback_data=ImportCB(action="cancel", token=token))
     builder.adjust(1)
     return builder.as_markup()
 
@@ -98,11 +100,11 @@ def clarification(options: list[str]) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def file_import_confirm() -> InlineKeyboardMarkup:
+def file_import_confirm(*, token: str) -> InlineKeyboardMarkup:
     """Confirmation of a CSV batch: exactly the same yes/no shape as capture."""
     builder = InlineKeyboardBuilder()
-    builder.button(text="✅ Сохранить", callback_data=FileImportCB(action="confirm"))
-    builder.button(text="❌ Отмена", callback_data=FileImportCB(action="cancel"))
+    builder.button(text="✅ Сохранить", callback_data=FileImportCB(action="confirm", token=token))
+    builder.button(text="❌ Отмена", callback_data=FileImportCB(action="cancel", token=token))
     builder.adjust(1)
     return builder.as_markup()
 

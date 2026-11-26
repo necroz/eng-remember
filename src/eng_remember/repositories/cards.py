@@ -19,6 +19,7 @@ from sqlalchemy import (
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 from sqlalchemy.orm.attributes import set_committed_value
+from sqlalchemy.sql.elements import ColumnElement
 
 from eng_remember.domain.enums import CardDirection
 from eng_remember.domain.examples import merge_examples
@@ -124,6 +125,18 @@ def _fit(value: str | None, column: str) -> str | None:
     if cleaned is None:
         return None
     return cleaned[: COLUMN_WIDTHS[column]].rstrip() or None
+
+
+def _unburied(since: datetime) -> ColumnElement[bool]:
+    sibling = aliased(Card)
+    return ~exists().where(
+        sibling.user_id == Card.user_id,
+        sibling.id != Card.id,
+        func.lower(sibling.term) == func.lower(Card.term),
+        sibling.language == Card.language,
+        sibling.reps > 0,
+        sibling.last_review_at >= since,
+    )
 
 
 class CardRepository:
@@ -285,18 +298,7 @@ class CardRepository:
             Card.due_at <= now,
         )
         if bury_reviewed_since is not None:
-            sibling = aliased(Card)
-            stmt = stmt.where(
-                ~exists().where(
-                    sibling.user_id == Card.user_id,
-                    sibling.id != Card.id,
-                    func.lower(sibling.term) == func.lower(Card.term),
-                    sibling.language == Card.language,
-                    sibling.reps > 0,
-                    sibling.last_review_at.is_not(None),
-                    sibling.last_review_at >= bury_reviewed_since,
-                )
-            )
+            stmt = stmt.where(_unburied(bury_reviewed_since))
         return list((await self._session.scalars(stmt.order_by(Card.id).limit(limit))).all())
 
     async def queue_counts(
@@ -304,40 +306,30 @@ class CardRepository:
         user_ids: Sequence[int],
         *,
         now: datetime,
+        bury_reviewed_since: datetime,
     ) -> dict[int, QueueCounts]:
-        """Due and new counts for many learners in one query.
+        """Due and eligible new counts for learners sharing a local day boundary.
 
-        These are raw counts: they say how much sits in the collection, not how
-        much today's session will serve. The daily new-card budget is applied by
-        the caller, which knows the learner's settings and their introduction
-        count for today.
-
-        The reminder tick examines a batch of users; asking per user would be one
-        round trip per notification, which is exactly the shape that turns a
-        periodic job into a problem at a few thousand accounts.
+        Count due repetitions individually, and count at most one new direction
+        per word and language. The caller applies each learner's daily budget.
         """
         if not user_ids:
             return {}
 
-        due_case = case((and_(Card.reps > 0, Card.due_at <= now), 1), else_=0)
-        new_case = case(
-            (
-                and_(
-                    Card.reps == 0,
-                    Card.due_at <= now,
-                    Card.direction == CardDirection.FORWARD,
-                ),
-                1,
-            ),
-            else_=0,
-        )
-        stmt = (
-            select(Card.user_id, func.sum(due_case), func.sum(new_case))
+        due = case((Card.reps > 0, 1), else_=0)
+        new = case((and_(Card.reps == 0, _unburied(bury_reviewed_since)), 1), else_=0)
+        by_word = (
+            select(Card.user_id, func.sum(due).label("due"), func.max(new).label("new"))
             .where(
                 Card.user_id.in_(list(user_ids)),
                 Card.is_suspended.is_(False),
+                Card.due_at <= now,
             )
-            .group_by(Card.user_id)
+            .group_by(Card.user_id, func.lower(Card.term), Card.language)
+            .subquery()
+        )
+        stmt = select(by_word.c.user_id, func.sum(by_word.c.due), func.sum(by_word.c.new)).group_by(
+            by_word.c.user_id
         )
         rows = (await self._session.execute(stmt)).all()
         counted = {
@@ -388,10 +380,18 @@ class CardRepository:
             stmt = stmt.where(Card.deck_id == deck_id)
         return int(await self._session.scalar(stmt) or 0)
 
-    async def count_for_user(self, user_id: int, *, deck_id: int | None = None) -> int:
+    async def count_for_user(
+        self,
+        user_id: int,
+        *,
+        deck_id: int | None = None,
+        direction: CardDirection | None = None,
+    ) -> int:
         stmt = select(func.count(Card.id)).where(Card.user_id == user_id)
         if deck_id is not None:
             stmt = stmt.where(Card.deck_id == deck_id)
+        if direction is not None:
+            stmt = stmt.where(Card.direction == direction)
         return int(await self._session.scalar(stmt) or 0)
 
     async def count_by_deck(self, user_id: int) -> dict[int, int]:

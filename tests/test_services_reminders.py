@@ -156,6 +156,50 @@ async def give_streak(
 
 
 class TestWhoGetsReminded:
+    @pytest.mark.parametrize("days_since_answer", [0, 1])
+    async def test_new_reverse_card_obeys_the_same_day_boundary_as_review(
+        self,
+        reminders: ReminderService,
+        services: Services,
+        user: User,
+        session: AsyncSession,
+        days_since_answer: int,
+    ) -> None:
+        now = moment(9, days=2)
+        forward = await services.card_service.add_draft(
+            user, CardDraft(term="apple", translation="яблоко"), now=now - timedelta(days=2)
+        )
+        last_review = now - timedelta(days=days_since_answer, hours=1)
+        await services.review_service.answer(user, forward, ReviewRating.GOOD, now=last_review)
+        forward.due_at = now + timedelta(days=2)
+        await session.commit()
+
+        queue = await services.review_service.build_queue(user, now=now)
+        run = await reminders.run(now=now)
+
+        if days_since_answer:
+            assert len(queue.cards) == 1
+            assert len(run.sent) == 1
+            assert run.sent[0].kind is ReminderKind.MORNING
+            assert run.sent[0].new_available == 1
+        else:
+            assert not queue.cards
+            assert not run.sent
+
+    async def test_two_new_directions_count_as_one_in_the_morning(
+        self, reminders: ReminderService, services: Services, user: User
+    ) -> None:
+        now = moment(9, days=2)
+        await services.card_service.add_draft(
+            user, CardDraft(term="apple", translation="яблоко"), now=now - timedelta(days=2)
+        )
+        await services.commit()
+
+        run = await reminders.run(now=now)
+
+        assert len(run.sent) == 1
+        assert run.sent[0].new_available == 1
+
     async def test_a_learner_with_work_gets_the_morning_reminder(
         self,
         reminders: ReminderService,

@@ -10,8 +10,9 @@ from __future__ import annotations
 import csv
 import io
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
+from itertools import chain
 
 from eng_remember.domain.languages import DEFAULT_LANGUAGE
 from eng_remember.models.card import Card
@@ -23,6 +24,7 @@ __all__ = [
     "CsvParseResult",
     "CsvRow",
     "cards_to_csv",
+    "cards_to_csv_parts",
     "parse_cards_csv",
 ]
 
@@ -78,28 +80,55 @@ class CsvParseResult:
 
 
 def cards_to_csv(cards: Sequence[Card], *, deck_names: Mapping[int, str] | None = None) -> str:
-    """The whole collection as one file. Deck names travel with the cards so a
-    round-trip can rebuild the same structure."""
+    """Serialize cards as one CSV document."""
+    return "".join(_csv_lines(cards, deck_names or {}))
+
+
+def cards_to_csv_parts(
+    cards: Sequence[Card], *, deck_names: Mapping[int, str] | None = None
+) -> list[bytes]:
+    """Encode importable files, each with its own BOM and header."""
+    lines = _csv_lines(cards, deck_names or {})
+    header = next(lines).encode("utf-8-sig")
+    parts: list[bytes] = []
+    part = bytearray(header)
+    rows = 0
+    for line in lines:
+        encoded = line.encode("utf-8")
+        if len(header) + len(encoded) > MAX_FILE_BYTES:
+            raise ValueError("a single card exceeds the CSV file limit")
+        if rows >= MAX_ROWS or len(part) + len(encoded) > MAX_FILE_BYTES:
+            parts.append(bytes(part))
+            part = bytearray(header)
+            rows = 0
+        part.extend(encoded)
+        rows += 1
+    parts.append(bytes(part))
+    return parts
+
+
+def _csv_lines(cards: Sequence[Card], names: Mapping[int, str]) -> Iterator[str]:
     buffer = io.StringIO()
     writer = csv.writer(buffer, delimiter=CSV_DELIMITER, lineterminator="\r\n")
-    writer.writerow(_HEADER)
-    names = deck_names or {}
-
-    for card in cards:
-        writer.writerow(
-            [
-                card.term,
-                card.translation,
-                card.transcription or "",
-                card.part_of_speech or "",
-                card.example or "",
-                card.notes or "",
-                "|".join(card.tags),
-                names.get(card.deck_id, ""),
-                card.language or DEFAULT_LANGUAGE,
-            ]
+    rows = (
+        (
+            card.term,
+            card.translation,
+            card.transcription or "",
+            card.part_of_speech or "",
+            card.example or "",
+            card.notes or "",
+            "|".join(card.tags),
+            names.get(card.deck_id, ""),
+            card.language or DEFAULT_LANGUAGE,
         )
-    return buffer.getvalue()
+        for card in cards
+    )
+    for row in chain((_HEADER,), rows):
+        writer.writerow(row)
+        yield buffer.getvalue()
+        buffer.seek(0)
+        buffer.truncate()
 
 
 def parse_cards_csv(text: str) -> CsvParseResult:
