@@ -43,6 +43,21 @@ def test_apostrophe_folding_can_collide_real_words() -> None:
     assert normalize("it’s") == normalize("its")
 
 
+def test_listed_meanings_in_another_order_are_correct() -> None:
+    """A gloss lists words; repeating them in reverse order is the same answer."""
+    assert matches("сырой влажный", "влажный, сырой")
+    assert matches("сырой, влажный", "влажный, сырой")
+    assert matches("влажный сырой", "влажный, сырой")
+    assert matches("влажный", "влажный, сырой")
+    assert matches("сырой", "влажный, сырой")
+
+
+def test_the_word_list_does_not_accept_extra_or_repeated_words() -> None:
+    assert not matches("сырой тёплый", "влажный, сырой")
+    assert not matches("очень влажный", "влажный, сырой")
+    assert not matches("влажный влажный", "влажный, сырой")
+
+
 def test_normalize_does_not_convert_chinese_variants() -> None:
     assert normalize("书", "cmn") != normalize("書", "cmn")
 

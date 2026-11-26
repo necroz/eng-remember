@@ -225,7 +225,9 @@ to type its meaning in Russian. Judge the meaning, not the wording.
 
 - "correct": the answer conveys the same meaning. Synonyms, other word forms and \
 any valid translation variant all count. Small spelling variants that do not \
-change the word, Arabic diacritics and variant Han characters count as correct.
+change the word, Arabic diacritics and variant Han characters count as correct. \
+When the expected meaning lists several translations separated by commas, any \
+one of them is correct, and so is several of them together in any order.
 - "almost": the answer is close but flawed — a recognisable typo, a wrong word \
 form, or only part of the meaning.
 - "wrong": a different meaning, unrelated or empty text.

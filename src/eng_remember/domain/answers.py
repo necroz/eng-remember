@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections import Counter
 from enum import StrEnum
 
 from eng_remember.domain.enums import ReviewRating
@@ -97,6 +98,20 @@ def translation_variants(text: str) -> list[str]:
     return [variant for variant in dict.fromkeys([whole, *parts]) if variant]
 
 
+def _meaning_words(text: str) -> list[str]:
+    """Words of every meaning the card lists, as one normalized bag.
+
+    The translation is a dictionary gloss: ``"влажный, сырой"`` is two
+    acceptable meanings, and a learner may answer either one or repeat several
+    of them together ("сырой влажный"). Each comma/slash-separated part
+    contributes its words; the bag caps how many times a word may appear.
+    """
+    words: list[str] = []
+    for part in _VARIANT_SEPARATORS.split(text):
+        words.extend(normalize(part).split())
+    return words
+
+
 def matches(answer: str, translation: str, language: str = NATIVE_LANGUAGE) -> bool:
     """True when the answer repeats a meaning the card lists.
 
@@ -105,7 +120,15 @@ def matches(answer: str, translation: str, language: str = NATIVE_LANGUAGE) -> b
     inside a French term cannot silently accept half of it.
     """
     if resolve_language(language) == NATIVE_LANGUAGE:
-        return not set(translation_variants(answer)).isdisjoint(translation_variants(translation))
+        expected = translation_variants(translation)
+        if not set(translation_variants(answer)).isdisjoint(expected):
+            return True
+        # Compare against the list of listed words rather than one string: the
+        # same meanings in another order ("сырой влажный" for "влажный, сырой")
+        # are the same answer, while an extra word is not.
+        allowed = Counter(_meaning_words(translation))
+        given = Counter(normalize(answer).split())
+        return bool(given) and all(count <= allowed[word] for word, count in given.items())
     return normalize(answer, language) == normalize(translation, language)
 
 
