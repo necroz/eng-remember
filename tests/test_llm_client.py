@@ -480,6 +480,21 @@ async def test_rate_limit_is_retried() -> None:
     assert len(fake.endpoint.calls) == 2
 
 
+async def test_an_exhausted_provider_quota_is_not_retried() -> None:
+    """A monthly plan that is spent will not recover inside the retry budget."""
+    spent = openai.RateLimitError(
+        "insufficient quota",
+        response=http_response(429),
+        body={"error": {"code": "insufficient_quota", "message": "plan is spent"}},
+    )
+    client, fake = make_client([spent])
+
+    with pytest.raises(LlmResponseError):
+        await complete(client)
+
+    assert len(fake.endpoint.calls) == 1
+
+
 async def test_server_error_is_retried_but_only_up_to_the_budget() -> None:
     client, fake = make_client([api_error("server", "boom", 500)] * 3)
 

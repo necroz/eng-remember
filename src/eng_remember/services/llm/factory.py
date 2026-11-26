@@ -13,7 +13,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from eng_remember.config import Settings
 from eng_remember.repositories.llm_calls import LlmCallRecord, LlmCallRepository
-from eng_remember.services.llm.client import JsonChatClient, LlmTransport, OpenAiCompatibleClient
+from eng_remember.services.llm.client import (
+    FailoverClient,
+    JsonChatClient,
+    LlmTransport,
+    OpenAiCompatibleClient,
+)
 from eng_remember.services.llm.quota import QuotaLimitedClient
 
 __all__ = ["build_llm_client"]
@@ -24,6 +29,7 @@ def build_llm_client(
     settings: Settings,
     *,
     transport: LlmTransport | None = None,
+    fallback_transport: LlmTransport | None = None,
 ) -> JsonChatClient | None:
     """A client bound to this request's session, or ``None`` when unconfigured.
 
@@ -38,7 +44,8 @@ def build_llm_client(
     ``transport`` is the process-wide connection owner. Production always passes
     one; without it a private transport is built for this call, which keeps
     isolated tests and one-off callers working at the cost of a connection that
-    such a caller has to close itself.
+    such a caller has to close itself. ``fallback_transport`` plays the same role
+    for the standby route.
     """
     if not settings.llm.is_configured:
         return None
@@ -53,5 +60,17 @@ def build_llm_client(
             record = replace(record, request_text=None, response_text=None)
         await repository.add(record)
 
-    client = OpenAiCompatibleClient(settings.llm, sink=sink, transport=transport)
+    primary = (
+        OpenAiCompatibleClient(settings.llm, sink=sink, transport=transport)
+        if settings.llm.primary_configured
+        else None
+    )
+    fallback = (
+        OpenAiCompatibleClient(
+            settings.llm.fallback_copy(), sink=sink, transport=fallback_transport
+        )
+        if settings.llm.fallback_configured
+        else None
+    )
+    client = FailoverClient(primary, fallback)
     return QuotaLimitedClient(client, calls=repository, settings=settings.llm)

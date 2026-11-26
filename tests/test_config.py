@@ -138,6 +138,94 @@ def test_the_easy_threshold_leaves_room_for_typing() -> None:
     assert ReviewSettings().easy_threshold_seconds == 10.0
 
 
+def test_a_standby_route_makes_the_model_configured() -> None:
+    """A key on either route is enough to use the model."""
+    settings = LlmSettings(fallback_api_key=SecretStr("standby-key"))
+
+    assert settings.primary_configured is False
+    assert settings.fallback_configured is True
+    assert settings.is_configured is True
+
+
+def test_the_standby_inherits_the_endpoint_and_model_when_omitted() -> None:
+    settings = LlmSettings(
+        base_url="https://primary.example/v1",
+        api_key=SecretStr("primary-key"),
+        model="primary-model",
+        fallback_api_key=SecretStr("standby-key"),
+    )
+
+    standby = settings.fallback_copy()
+
+    assert standby.base_url == "https://primary.example/v1"
+    assert standby.model == "primary-model"
+    assert standby.api_key is not None
+    assert standby.api_key.get_secret_value() == "standby-key"
+    assert standby.fallback_configured is False
+
+
+def test_headers_stay_on_the_host_they_were_meant_for() -> None:
+    """A routing header of the primary must not leak to another provider."""
+    settings = LlmSettings(
+        base_url="https://gateway.example/v1",
+        api_key=SecretStr("primary-key"),
+        model="primary-model",
+        extra_headers={"x-opencode-session": "bot"},
+        fallback_base_url="https://standby.example/v1",
+        fallback_api_key=SecretStr("standby-key"),
+    )
+
+    standby = settings.fallback_copy()
+
+    assert standby.extra_headers == {}
+
+
+def test_a_standby_on_the_same_host_reuses_the_headers() -> None:
+    settings = LlmSettings(
+        base_url="https://gateway.example/v1",
+        api_key=SecretStr("primary-key"),
+        model="primary-model",
+        extra_headers={"x-opencode-session": "bot"},
+        fallback_api_key=SecretStr("standby-key"),
+        fallback_model="standby-model",
+    )
+
+    standby = settings.fallback_copy()
+
+    assert standby.extra_headers == {"x-opencode-session": "bot"}
+
+
+def test_explicit_standby_headers_win() -> None:
+    settings = LlmSettings(
+        base_url="https://gateway.example/v1",
+        api_key=SecretStr("primary-key"),
+        extra_headers={"x-opencode-session": "bot"},
+        fallback_base_url="https://standby.example/v1",
+        fallback_api_key=SecretStr("standby-key"),
+        fallback_extra_headers={"x-standby": "1"},
+    )
+
+    standby = settings.fallback_copy()
+
+    assert standby.extra_headers == {"x-standby": "1"}
+
+
+def test_the_standby_uses_its_own_endpoint_and_model() -> None:
+    settings = LlmSettings(
+        base_url="https://primary.example/v1",
+        api_key=SecretStr("primary-key"),
+        model="primary-model",
+        fallback_base_url="https://standby.example/v1",
+        fallback_api_key=SecretStr("standby-key"),
+        fallback_model="standby-model",
+    )
+
+    standby = settings.fallback_copy()
+
+    assert standby.base_url == "https://standby.example/v1"
+    assert standby.model == "standby-model"
+
+
 def test_parse_mode_markdown_rejected() -> None:
     """The bot's texts are HTML; another parse mode would show raw tags."""
     with pytest.raises(ValidationError):

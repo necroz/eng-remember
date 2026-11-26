@@ -38,6 +38,7 @@ def build_dispatcher(
     session_factory: SessionFactory,
     *,
     llm_transport: LlmTransport | None = None,
+    llm_fallback_transport: LlmTransport | None = None,
     backfill: BackfillQueue | None = None,
 ) -> Dispatcher:
     """Wire the dispatcher.
@@ -74,6 +75,7 @@ def build_dispatcher(
         session_factory,
         settings,
         llm_transport=llm_transport,
+        llm_fallback_transport=llm_fallback_transport,
         backfill=backfill,
     )
     user_middleware = UserMiddleware()

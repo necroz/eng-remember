@@ -33,6 +33,7 @@ class DbSessionMiddleware(BaseMiddleware):
         settings: Settings,
         *,
         llm_transport: LlmTransport | None = None,
+        llm_fallback_transport: LlmTransport | None = None,
         backfill: BackfillQueue | None = None,
     ) -> None:
         self._session_factory = session_factory
@@ -40,6 +41,8 @@ class DbSessionMiddleware(BaseMiddleware):
         # One transport for the whole process: every update reuses its
         # connection and the provider limitations it has already learned.
         self._llm_transport = llm_transport
+        # The standby route owns its own connection and lessons.
+        self._llm_fallback_transport = llm_fallback_transport
         # Likewise one backfill queue: the worker that drains it lives outside
         # any single update.
         self._backfill = backfill
@@ -55,6 +58,7 @@ class DbSessionMiddleware(BaseMiddleware):
                 session,
                 self._settings,
                 llm_transport=self._llm_transport,
+                llm_fallback_transport=self._llm_fallback_transport,
                 backfill=self._backfill,
             )
             try:

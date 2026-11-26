@@ -87,6 +87,39 @@ docker compose exec db psql -U eng -d postgres \
 `llm.max_calls_per_day`), так что остальные переменные раздела `LLM` пишутся по
 той же схеме.
 
+### Запасной провайдер
+
+Если основной эндпоинт недоступен — просрочен ключ, кончилась квота провайдера,
+сбой на их стороне — бот повторяет тот же запрос на запасном маршруте и пишет в
+лог `llm_failover_used`. Собственные лимиты бота (вызовы на ученика, общий
+бюджет токенов) при этом не обходятся: это политика, а не здоровье провайдера.
+
+```ini
+LLM__FALLBACK_BASE_URL=https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+LLM__FALLBACK_API_KEY=sk-...
+LLM__FALLBACK_MODEL=deepseek-v4.1-flash
+```
+
+Пустой `LLM__FALLBACK_API_KEY` выключает запасной маршрут. Если не указать
+`LLM__FALLBACK_BASE_URL`/`MODEL`, они наследуются от основного; лимиты, таймауты
+и ретраи у маршрутов общие. Квота провайдера, исчерпанная по коду
+`insufficient_quota`, не ретраится: бот сразу переходит на запасной маршрут (или
+на разбор по правилам, если его нет).
+
+### Заголовки провайдера
+
+Некоторым шлюзам нужен собственный заголовок на каждом запросе. Он задаётся
+JSON-объектом и не переезжает на другой хост: у запасного маршрута со своим
+`LLM__FALLBACK_BASE_URL` будут только `LLM__FALLBACK_EXTRA_HEADERS`, а маршрут на
+том же хосте унаследует заголовки основного.
+
+```ini
+LLM__EXTRA_HEADERS={"x-opencode-session":"eng-remember-bot"}
+```
+
+Так подключается OpenCode Go: `LLM__BASE_URL=https://opencode.ai/zen/go/v1`,
+`LLM__MODEL=deepseek-v4.1-flash`, ключ `oc_sk_...` из OpenCode Console.
+
 ### Готовые наборы
 
 ```ini

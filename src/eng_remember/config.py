@@ -102,6 +102,23 @@ class LlmSettings(BaseModel):
     base_url: str = "https://api.openai.com/v1"
     api_key: SecretStr | None = None
     model: str = "gpt-4o-mini"
+    # Optional standby endpoint used when the primary fails: a dead key, an
+    # exhausted provider quota or an outage. Empty ``fallback_api_key`` disables
+    # it. The standby inherits every policy setting (limits, timeouts, retries)
+    # from this object; only the wire destination and the model change.
+    fallback_base_url: str = ""
+    fallback_api_key: SecretStr | None = None
+    fallback_model: str = ""
+    # Extra HTTP headers sent with every request. Some gateways route on a
+    # header of their own (OpenCode Go requires ``x-opencode-session``), while
+    # OpenRouter likes attribution headers. Kept as a mapping so provider quirks
+    # stay configuration, not code.
+    extra_headers: dict[str, str] = Field(default_factory=dict)
+    # The standby route usually lives on a different host, so it does not
+    # inherit the primary's headers: a session or attribution header meant for
+    # one provider should not leak to another. When the standby has no endpoint
+    # of its own it is the same host, and the primary's headers are reused.
+    fallback_extra_headers: dict[str, str] = Field(default_factory=dict)
     temperature: float = Field(default=0.0, ge=0.0, le=2.0)
     # Structured JSON tasks do not need chain-of-thought, but not every provider
     # knows this parameter: "none" is a 400 on gpt-4o-mini. It is therefore
@@ -147,10 +164,46 @@ class LlmSettings(BaseModel):
     )
 
     @property
-    def is_configured(self) -> bool:
+    def primary_configured(self) -> bool:
         if not self.enabled or self.api_key is None:
             return False
         return bool(self.api_key.get_secret_value().strip())
+
+    @property
+    def fallback_configured(self) -> bool:
+        if not self.enabled or self.fallback_api_key is None:
+            return False
+        return bool(self.fallback_api_key.get_secret_value().strip())
+
+    @property
+    def is_configured(self) -> bool:
+        """The bot has at least one usable model route."""
+        return self.primary_configured or self.fallback_configured
+
+    def fallback_copy(self) -> LlmSettings:
+        """The same policy pointed at the standby destination.
+
+        Only call this when :attr:`fallback_configured` is true. The copy keeps
+        the primary's retry/deadline/quota policy and inherits its endpoint and
+        model when the standby does not name its own.
+        """
+        own_endpoint = self.fallback_base_url.strip()
+        if self.fallback_extra_headers:
+            headers = self.fallback_extra_headers
+        elif own_endpoint:
+            headers = {}
+        else:
+            headers = self.extra_headers
+        return self.model_copy(
+            update={
+                "base_url": own_endpoint or self.base_url,
+                "api_key": self.fallback_api_key,
+                "model": self.fallback_model.strip() or self.model,
+                "extra_headers": headers,
+                "fallback_api_key": None,
+                "fallback_extra_headers": {},
+            }
+        )
 
 
 class SrsSettings(BaseModel):
